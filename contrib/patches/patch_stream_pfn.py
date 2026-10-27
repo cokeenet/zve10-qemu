@@ -48,26 +48,32 @@ def patch_one(path: Path, text_off: int, vaddr: int, desc: str) -> bool:
 
 def main():
     if len(sys.argv) < 2:
-        # 默认目录：解包树的 kmod/
-        base = Path('/mnt/g/WorkBuddy/zve10/unpacked/zv1f/firmware.tar_unpacked/'
-                    '0700_part_image/dev/nflasha15_unpacked/kmod')
-    else:
-        base = Path(sys.argv[1])
-        if base.is_file():
-            base = base.parent
+        print(__doc__)
+        print()
+        print('用法: patch_stream_pfn.py <kmod 目录 | 某个 .ko 文件>')
+        print('     目录下存在 stream.ko / stream2.ko 时逐个打补丁（缺哪个就跳过哪个）')
+        sys.exit(2)
+    base = Path(sys.argv[1])
+    if base.is_file():
+        base = base.parent
 
     ok = True
+    hit = 0
     for fname, text_off, vaddr, desc in TARGETS:
         p = base / fname
         if not p.exists():
-            print('  !! %s 不存在，跳过' % p)
-            ok = False
+            print('  -- %s 不存在，跳过' % p)
             continue
+        hit += 1
         try:
             patch_one(p, text_off, vaddr, desc)
         except AssertionError as e:
             print('    !! %s' % e)
             ok = False
+    if hit == 0:
+        print('  !! 一个目标都没找到（期望 %s）'
+              % ' / '.join(t[0] for t in TARGETS))
+        sys.exit(1)
     sys.exit(0 if ok else 1)
 
 if __name__ == '__main__':

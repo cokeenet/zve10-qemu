@@ -1,12 +1,34 @@
 #!/usr/bin/env python3
-"""检查 backup_db 结构是否与 Data_SearchId 兼容"""
-import struct, sys
+"""检查 backup_db 结构是否与 Data_SearchId 兼容
 
-path = sys.argv[1] if len(sys.argv) > 1 else '/mnt/g/WorkBuddy/zve10/work/db_host.bin'
+用法:
+    check_db.py [DB_FILE]
+
+    DB_FILE  要检查的数据库文件，默认 ./backup_db.bin
+              （可以是 make_backup_db.py 生成的，也可以是从运行内存 dump 出来的）
+"""
+import struct, sys, os
+
+path = sys.argv[1] if len(sys.argv) > 1 else None
+if path is None:
+    # 默认依次找常见产物名
+    for cand in ('backup_db.bin', 'backup_db_v3.bin'):
+        if os.path.exists(cand):
+            path = cand
+            break
+    else:
+        print('当前目录下没有 backup_db.bin / backup_db_v3.bin')
+        print('用法: check_db.py [DB_FILE]   （默认 ./backup_db.bin 或 ./backup_db_v3.bin）')
+        sys.exit(1)
+if not os.path.exists(path):
+    print('文件不存在: %s' % path)
+    print('用法: check_db.py [DB_FILE]   （默认 ./backup_db.bin）')
+    sys.exit(1)
 try:
     d = open(path, 'rb').read()
-except:
-    print('文件不存在:', path); sys.exit(1)
+except Exception as e:
+    print('读取失败: %s (%s)' % (path, e)); sys.exit(1)
+print('检查: %s' % path)
 
 print('文件大小: %d B (0x%x)' % (len(d), len(d)))
 print('头 0x00-0x14:', d[:0x14].hex(' '))
