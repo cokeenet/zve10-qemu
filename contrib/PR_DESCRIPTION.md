@@ -6,12 +6,14 @@
 
 | | 内容 |
 |---|---|
-| ✅ 已完成 | 装载器全链路、零崩溃、显示通路、boot_factor 因果链、`osal_uipc` 完整 cmd 表 |
+| ✅ 已完成 | 装载器全链路、零崩溃、显示通路、boot_factor 补丁、`osal_uipc` 完整 cmd 0–16 语义表、`dmp_allocator` 绕过、探针 v2（TID/时间戳/qid） |
 | ❌ 未达成 | **UI 从未开始绘制**。App 发了 2425 次请求只等到 72 次应答（3%），然后无限超时永久等待 |
-| 🛑 我们的结论 | **建议在 QEMU 线停手**。再往下要重造 ulogio 请求协议，属新项目级投入，且后面还有显示初始化 → uxengine → 资源加载 → 视图层若干关 |
+| 🛑 我们的结论 | **建议在 QEMU 线停手**。再往下要重造 ulogio 请求协议，属新项目级投入 |
 | ➡️ 建议的下一步 | 把这份 IPC 依赖图交给**有真机**的团队，用同一个探针抓一次 `0x8F0139` 的应答长什么样 |
 
-**新菜单在 QEMU 里从未被任何人跑通过。** 我们做到的是把卡点从"黑屏"压到"一个队列无人应答"，不是把它跑起来。
+**★ 2026-10-28 晚间更新**：上游（`QEMU_M2_PROGRESS.md`）通过**移除 BLE 库**绕过了同类阻塞，
+在 QEMU 里首次渲染出新菜单画面，并找到了输入队列 `0x007a0020` 实现按键注入。
+这与我们的发现高度吻合 —— **BLE/uipc 层的阻塞是共性**。我们的 cmd 表和探针可以为后续排查提供精确的 IPC 视图。
 
 ## TL;DR（成果，截至 2026-10-27 晚）
 
@@ -82,6 +84,52 @@ QEMU 这条线的定位应该是**安全沙盒**（能做真机不敢做的实�
 
 ---
 
+## 本次更新（2026-10-28 下午）：SKIPDMP 绕过第一道门，App 进入库加载阶段
+
+### 新增实验结果
+
+**1. `SKIPDMP=1` 绕过 `dmp_allocator_lib_init` 断言**
+
+`dmp_allocator`（在 `libObj.so` 里，管理 DMP 2D 加速器内存）的 `MA_ErrNone` 断言是第一道门。
+用 `patch_libobj_skipdmp.py` 把 `grm_init` 里的 `bl DMP_2D_Initialize` NOP 掉后：
+- `app.err` 从 116 B（断言崩溃）→ 54 B（正常输出）
+- App 进入库加载：T+2s 1 线程/1.9MB → T+26s **9 线程/14.4MB RSS**，持续做 uipc 调用
+- 但 `appFw.so` 仍未被 QMP 扫描器找到（400 秒/75 轮 MISS）
+
+**2. 探针 v2（`core-sync-trace-v2.c`）**
+
+- 加 TID / CLOCK_MONOTONIC 微秒时间戳 / run-id / 逐次 qid / cmd 7 timeout / TRUNC 标记
+- **踩坑**：`SYS_clock_gettime` / `SYS_gettid` 宏在交叉工具链里展开为空 ⇒ 必须硬编码 ARM EABI 号
+- 实测 **1447 行 trace / 49 KB**，App 在跟 `0x8F013A`（日志服务）和 `0x3E014D`（backup）活跃通信
+
+**3. `best3` 模式对照（推翻"objset 补丁致崩"假设）**
+
+| 模式 | libObj 补丁 | backup.ko 补丁 | input.ko | App 表现 |
+|---|---|---|---|---|
+| `objset` | ✅ 3 个 | ❌ | 保留 | 加载 appFw → 崩在 dmp_allocator |
+| `best3` | ❌ | ✅ 2 个 | 删除 | **appFw 根本没加载** |
+| `objset+SKIPDMP` | ✅ | ❌ | 保留 | 过 dmp_allocator → 库加载中（9 线程） |
+
+⇒ **`objset` 的 libObj 补丁是必要的**，没有它 App 更早就死。
+
+**4. 观察者存活问题**：`( ... ) &` 子 shell 在 `exec` 后被杀。`trap HUP` / `setsid` / `disown` 均不完全可靠。
+最终方案：`dump_all` 合并进 `dm.sh`（与 maps 序列共用），`&` + `disown` 启动。实测抓到 2 次心跳后仍被杀（FAT 写入慢）。
+
+### 新增文件
+
+- `core-sync-trace-v2.c` — 探针 v2（TID/时间戳/qid）
+- `diag-app.sh` — 诊断启动器（替换 `im.elf`，合并 dm.sh 观察者）
+- `patch-zv1f-mon.sh` — 补丁集（objset/best3/SKIPDMP 模式）
+- `patch-bootfactor.py` — boot_factor 补丁（接受树路径参数）
+
+### 与上游发现的呼应
+
+上游 `QEMU_M2_PROGRESS.md` 报告：移除 BLE 库绕过阻塞后，新菜单**首次在 QEMU 里渲染成功**
+（62% 字节非零、220 个像素值、真实 UI 内容），并找到输入队列 `0x007a0020` 实现按键注入。
+**这与我们的发现高度吻合** —— BLE/uipc 层的阻塞是共性。我们的 cmd 表和探针可为后续排查提供精确的 IPC 视图。
+
+---
+
 ## 本次更新（2026-10-27 晚）
 
 ### 零崩溃里程碑
@@ -142,8 +190,19 @@ QEMU 无输入设备 (/proc/bus/input/devices = 空)
 
 ## 文件清单
 
-- `contrib/PR_DESCRIPTION.md` — 完整发现文档（含 Backup_read 全链路、Data_SearchId 算法、三道 magic 控制流）
+- `contrib/PR_DESCRIPTION.md` — 本 PR 描述
+- `contrib/osal-uipc-analysis/` — **uipc 观测工具集**（见下）
+  - `HANDOFF_20261028.md` — 完整交接文档（含 cmd 0–16 语义表、13A→139 配对、vblock 高水位语义）
+  - `core-sync-trace.c` / `core-sync-trace-v2.c` — LD_PRELOAD 探针（v1 基础版 / v2 加 TID/时间戳/qid）
+  - `diag-app.sh` — 诊断启动器（替换 `im.elf`，含 dm.sh 合并观察者）
+  - `patch-zv1f-mon.sh` — 补丁集（objset / best3 / SKIPDMP 模式）
+  - `patch-bootfactor.py` — boot_factor 补丁（伪造 `key=0/type=2`）
+  - `rebuild-with-trace.sh` — 重建 → 装探针 → 打补丁 → 跑 → 抽日志
+  - `run-klog.sh` / `run-long-window.sh` / `run-plain-control.sh` / `run-breakpoint-dump.sh`
+  - `bf-dump.gdb` / `scan-dump.gdb`
 - `contrib/patches/` — 6 个补丁（字节序指纹校验）
 - `contrib/tools/` — backup_db 生成器/校验器、fontlist 验证脚本
 
-感谢你们在 DMM 协议、grm_ma 分派表和真机取证上的工作——那几块是我们没有的。今天看到内核+initrd 在我们的机器模型上跑起来了 UI init，这是很好的合流信号。
+感谢你们在 DMM 协议、grm_ma 分派表和真机取证上的工作——那几块是我们没有的。
+今天看到内核+initrd 在你们的机器模型上跑起来了 UI init，并且**新菜单首次在 QEMU 里渲染成功**，
+这是很好的合流信号。我们的 IPC cmd 表和探针如果能帮上后续排查，那就值了。

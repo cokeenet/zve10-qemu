@@ -14,12 +14,16 @@
 
 | 文件 | 作用 |
 |---|---|
-| `core-sync-trace.c` | ★ `LD_PRELOAD` 探针：拦截 `ioctl` + 补 `libCoreSync` 三符号（只占一个 preload 槽） |
+| `core-sync-trace.c` | ★ `LD_PRELOAD` 探针 v1：拦截 `ioctl` + 补 `libCoreSync` 三符号（只占一个 preload 槽） |
+| `core-sync-trace-v2.c` | ★★ 探针 v2：加 TID / 单调时间戳 / run-id / 逐次 qid / cmd 7 timeout / TRUNC 标记 |
+| `diag-app.sh` | 诊断启动器（替换 `im.elf`）：设环境 → 起 dm.sh → exec 真 App |
+| `patch-zv1f-mon.sh` | 补丁集：支持 objset / best3 / SKIPDMP 等模式，生成 `/usr` 树 |
+| `patch-bootfactor.py` | `get_boot_factor` 补丁（伪造 `key=0/type=2`），接受树路径参数 |
 | `run-klog.sh` | 用 QMP `pmemsave` 从物理 `0x30000000` 读 klog（含 8 MB 缓冲区的正确配置） |
 | `run-long-window.sh` | 长窗口运行 + host CPU / 串口采样 |
 | `run-plain-control.sh` | 无 gdb / 无 QMP 的对照运行（排除"观测手段打断 App"） |
 | `run-breakpoint-dump.sh` | 用 `scan-dump.gdb` 下断点并 dump 寄存器/栈 |
-| `rebuild-with-trace.sh` | 重建 `/usr` 树 → 装入探针 → 打补丁 → 重新打包 → 跑一轮 → 抽日志 |
+| `rebuild-with-trace.sh` | 重建 `/usr` 树 → 装入探针 → 打补丁 → 重新打包 → 跑一轮 → 抽日志（支持 `PATCH_MODE` / `OBS_SECS`） |
 | `bf-dump.gdb` / `scan-dump.gdb` | gdb 脚本：扫签名定基址、下断点、命中时打印 r0–r15 + 栈扫描 |
 
 ## 使用前必改
