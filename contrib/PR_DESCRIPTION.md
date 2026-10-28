@@ -44,8 +44,8 @@
 
 ## 本次更新（2026-10-28）：uipc 卡点彻底定位，并建议在 QEMU 线停手
 
-> 完整交接：**[`contrib/osal-uipc-analysis/HANDOFF_20261028.md`](osal-uipc-analysis/HANDOFF_20261028.md)**
-> 工具集：**[`contrib/osal-uipc-analysis/`](osal-uipc-analysis/)**
+> 完整交接：**[`contrib/osal-uipc-analysis/HANDOFF_20261028.md`](https://github.com/mizmo635/zve10-qemu/blob/zve10-contrib-loader-and-backup/contrib/osal-uipc-analysis/HANDOFF_20261028.md)**
+> 工具集：**[`contrib/osal-uipc-analysis/`](https://github.com/mizmo635/zve10-qemu/tree/zve10-contrib-loader-and-backup/contrib/osal-uipc-analysis)**
 
 ### 一句话
 
