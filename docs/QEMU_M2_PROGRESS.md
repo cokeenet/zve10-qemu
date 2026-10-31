@@ -11779,3 +11779,38 @@ libbackup 已恢复原版（bfcb3bcd），Image 已重建
 ② 依赖原厂硬件状态机（ISR/寄存器契约只能部分复现，绕过即崩）
 ⇒ 此时正确做法是转真机验证，而不是继续在模拟器里堆 hack
 ```
+
+---
+
+# 2026-10-31 第一百二十层：关于「E10 的 Backup.bin 行不行」——三个变体全部实测
+
+## 测试的三种 E10 Backup.bin
+```
+A. 固件默认     md5=20b79fce  1235836 B  版本串 30110_06.2026060501
+B. 真机生成     md5=66f065e5  1235836 B  版本串 30110_06.2026060501
+C. 改版本串版   md5=0ab8901e  1235836 B  版本串 22110_05.2025042601（手工改 0x40）
+```
+## 结果（三者完全一致）
+```
+backup.ko: status=0，Backup_debug 输出 ** NO SAVE MODE **
+backup SSM(0x3e014d) 仍 5601 次重试
+启动 8407 行、ENTER=1、INITSEQ=66、帧 0
+⇒ **E10 的 Backup.bin 能加载，但完全不解锁 backup 服务**
+```
+
+## 更关键的证据：不是文件问题
+```
+libbackup.so 的 UND 符号里没有 osal_rcv_msg_tmo，
+只有 osal_reg_msg_queue_cb / osal_unreg_msg_queue_cb
+⇒ 备份服务端应由某个进程"注册回调"来提供服务
+⇒ 全树 REG 记录 62 条，**没有任何一条是 0x3e014d**
+⇒ 也就是说：**"备份服务"的注册者根本没启动**，
+   与 Backup.bin 是 E10 还是 M2 无关
+```
+
+## 结论
+```
+E10 Backup.bin：可以加载，但不行（不等于解锁）
+真正缺的是"备份服务注册者"（应在 appFw/libupdaterufp 的某个初始化路径里）
+以及/或 M2 真机首启生成的 Backup.bin + 其内部状态
+```
