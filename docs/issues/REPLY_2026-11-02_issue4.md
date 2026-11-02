@@ -22,19 +22,9 @@ The load-bearing parts of your message for us:
 
 And thank you for the RP2040 BootROM / USB-C serial injection comment. That lane exists precisely because we bricked a unit early on and needed a way back that did not depend on the system booting, so it is good to hear it looks useful from the outside.
 
-## On your dump offer
-
-**Yes please, and thank you.** We would rather not have you spend effort blindly, so here is what would move us forward most, in priority order:
-
-1. **`/setting` full contents from a device that has booted normally at least once** — especially `Backup.bin`. On our side that is currently a hard wall: `backup.ko` must `file_load` a valid `/setting/Backup.bin` at insert time, the firmware package does not ship one (the `0800_appli/setting` payload contains only `DmmConfig.bin`, `facedmy.bin`, `kemco.txt`, `ulogio.bin`, `appfw_infra`), so it is evidently generated on first boot. Without it the backup service never answers and our boot stops at the same point every time; with `Backup_load=0` insertion fails outright (`insmod ... Input/output error`, status 5) and takes `ulogio`/`dmm`/`udate` down with unresolved `Backup_read*` symbols.
-2. **The first 64 KB of an `nflasha` user-area image** (hex or raw) — to compare against `partinf.conf`.
-3. If it is cheap: the **`/version.txt`** and **`ulogio.bin`** from the same device, so we can confirm which generation pairs with which backup database.
-
-We will not publish any of it, and we will describe findings without redistributing your binaries.
-
 For what it is worth, our current blocker is on the graphics side and we know it: the application registers `sugilite_interrupt` on IRQ 76 and reads status at `bar + 0x34`, and we only have a minimal emulated device. It delivers interrupts and the driver even submits a handful of fence packets, but the ioctl waiting on the completion bit never returns, and forcing it open aborts the application. That is a device-model problem on our side, not anything from your notes.
 
-Thanks again for taking the time to write this up properly instead of letting us stay wrong. Corrections like this are worth more than new findings.
+Thanks again for taking the time to write this up properly instead of letting us stay wrong. Corrections like this are worth more than new findings. If you ever want a second pair of eyes on something on your side, we are glad to return the favour.
 
 ---
 
