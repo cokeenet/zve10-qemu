@@ -5,9 +5,16 @@
 
 ---
 
-## 一、突破口：`DavidBuchanan314/fwtool.py`
+## 一、突破口：`fwtool`
 
-> A tool to unpack Sony camera firmware images（源自 nex-hack 的 fwtool，ma1co 维护）
+> ### ⚠️ 归属更正（2026-11-03）
+> 本文件原先标题写作 `DavidBuchanan314/fwtool.py`，**归属不完整**。
+> 链条其实是：**nex-hack 原创 → ma1co 维护上游 → DavidBuchanan314 为下游分支**。
+> 我们实际参考的是能解析 ZV-E10 的那个版本，两个仓库都在参考集里；
+> 此处不改变技术结论（AES-CBC、密钥硬编码在工具内），只更正署名。
+> 详见 `docs/ACKNOWLEDGEMENTS.md` §3。
+
+> A tool to unpack Sony camera firmware images（源自 nex-hack，`ma1co` 维护上游）
 
 **支持列表里明确写着 ZV-E10**：
 

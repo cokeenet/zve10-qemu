@@ -166,11 +166,14 @@ cd fastboot && make build
 
 - **Lost-week-1025** — CXD90045-FPSU
 - **DavidBuchanan314** — ILCE-7M4-RE、Sony-ILCE-7M4-Linux
-- **ma1co** — Sony-PMCA-RE、PMCA-QEMU、`fwtool.py`
-- **chocotan** — a7c2-re（原生 QEMU 相机实验、软件 GPE / ramfb 思路）
+- **ma1co** — Sony-PMCA-RE、PMCA-QEMU、`fwtool`（上游维护者；原始版本出自 nex-hack）
+- **chocotan** — a7c2-re（逆向研究）与 a7c2-qemu（QEMU 机器模型）
 - **YuuLuo** — a7c2-service-preload（服务模式 / `ld.so.preload` 先行工作）
-- **qn06142** — zv-e10-re（固件 2.0x 持久化与启动参数结论）
+- **qn06142** — zv-e10-re（固件 2.0x 持久化与启动参数结论，并主动纠正我们的错误结论）
 - **dino2048** — zv-e10-toolkit
+- **ChambersXDU** — sony-a7c2-research
+- **ice21415** — a6000-firmware-platform
+- **BI2QFA** — a6300_updater_emu
 - QEMU 社区，以及所有公开过相机逆向笔记的人
 
 ---

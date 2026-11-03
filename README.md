@@ -167,11 +167,14 @@ This work stands on a lot of public research. See [docs/ACKNOWLEDGEMENTS.md](doc
 
 - **Lost-week-1025** — CXD90045-FPSU
 - **DavidBuchanan314** — ILCE-7M4-RE, Sony-ILCE-7M4-Linux
-- **ma1co** — Sony-PMCA-RE, PMCA-QEMU, `fwtool.py`
-- **chocotan** — a7c2-re (native QEMU camera experiments, software GPE / ramfb approach)
+- **ma1co** — Sony-PMCA-RE, PMCA-QEMU, `fwtool` (upstream maintainer; originally from nex-hack)
+- **chocotan** — a7c2-re (reverse engineering) and a7c2-qemu (QEMU machine model)
 - **YuuLuo** — a7c2-service-preload (service mode / `ld.so.preload` prior work)
 - **qn06142** — zv-e10-re (firmware 2.0x persistence and boot-argument findings)
 - **dino2048** — zv-e10-toolkit
+- **ChambersXDU** — sony-a7c2-research
+- **ice21415** — a6000-firmware-platform
+- **BI2QFA** — a6300_updater_emu
 - The QEMU community, and everyone who has published camera reverse-engineering notes
 
 ---
