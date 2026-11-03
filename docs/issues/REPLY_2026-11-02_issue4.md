@@ -26,6 +26,12 @@ For what it is worth, our current blocker is on the graphics side and we know it
 
 Thanks again for taking the time to write this up properly instead of letting us stay wrong. Corrections like this are worth more than new findings. If you ever want a second pair of eyes on something on your side, we are glad to return the favour.
 
+## One last thing, totally optional 🙂
+
+We run a small Discord server for camera reverse-engineering chat: **https://discord.gg/49T7pVRnfB**
+
+Fair warning: the day-to-day conversation there is **mostly in Chinese** — we're a small bunch and that's just where the chat naturally landed. But the door is wide open, plenty of us read English fine, and if you drop a message we'll do our best to switch. Tooling dumps, dead ends, "why is this register like that" complaints — all welcome. It would be lovely to have you around, no pressure at all if Discord isn't your thing. 🙂
+
 ---
 
 Best regards,
