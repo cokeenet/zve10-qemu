@@ -13378,3 +13378,58 @@ C. 回到 a7c2 第 3 步：主动调用"创建 screen/controller"的入口
 ⇒ 判据：确认某函数是否被调用，最硬的证据是**扫 BL 指令**
    （ARM: 0xEBxxxxxx，Thumb: 0xF000xxxx），比 readelf UND 可靠得多。
 ```
+
+---
+
+# ★★★★★★★ 2026-11-05 第一百四十三层：**drawFramebuffer/notifyDraw 在 appFw 里确认零调用；发现 GRM_fbrmSetScreenPreference 有 10 处调用**
+
+## ① 方法有效性已交叉验证
+```
+objdump -d appFw.so | grep "osal_rcv_msg_tmo@plt"   → 4 处   ✅ 方法有效
+objdump -d appFw.so | grep "drawFramebuffer@plt"    → 0 处
+objdump -d appFw.so | grep "notifyDraw@plt"         → 0 处
+```
+**⇒ 结论确凿：`appFw` 里这两个函数的 PLT 桩存在但**没有任何调用**。**
+
+## ② libObj 内部也没有调用链
+```
+在 libObj.so 内扫 Thumb BL/BLX + ARM BL，目标 = drawFramebuffer / notifyDraw：
+  0 处
+GraphicsEngine 的其它方法（sys_getInstance / processSystemMessage / updateResource）
+在 libObj 内部同样 0 处调用
+⇒ 它们都是**纯导出接口**，等外部调用
+```
+
+## ③ ★★★ 但发现一条活跃路径：`GRM_fbrmSetScreenPreference` 在 appFw 里有 **10 处**调用
+```
+729fb6, 72a038, 74366e, 7436e0, 75a992, 75aa04, 7748d2, 774968, 7800f2, 780164
+（全是 blx GRM_fbrmSetScreenPreference@plt）
+```
+**⇒ 这是"设置屏幕偏好"接口，是 appFw 里**唯一活跃**的绘图相关调用。**
+   `libObj` 里它的实现 @0x1155ac（88 字节），我们一直没看它。
+
+## ④ 下一步（方向明确）
+```
+A. 反汇编 GRM_fbrmSetScreenPreference 的实现（libObj @0x1155ac）
+   —— 它是否创建/选择 screen？是否会间接触发 drawFramebuffer？
+B. 在 argtrace 里挂 GRM_fbrmSetScreenPreference 的钩子，
+   看这 10 处调用时的参数（哪个 screen、什么偏好）
+C. 看这 10 个调用点分别属于哪个函数（用 objdump 上下文找函数边界）
+```
+
+## 本层净收益
+```
+✅ 交叉验证了"零调用"结论（用 osal_rcv_msg_tmo@plt 的 4 处作对照）
+✅ 确认 drawFramebuffer/notifyDraw 在 libObj 内外**都是零调用**
+✅ 找到 appFw 里唯一活跃的绘图相关路径：GRM_fbrmSetScreenPreference（10 处）
+❌ 帧 = 0
+```
+
+## 方法论（第 132 条）★★★
+**"零结果必须用阳性对照验证方法本身"：
+```
+我扫 BL 指令得到"0 处调用"，但无法区分是"真的没有"还是"我的扫描方法坏了"。
+加了对照：同一个 objdump 管道扫 osal_rcv_msg_tmo@plt → 4 处。
+方法有效 ⇒ "0 处"这个结论可信。
+⇒ 判据：任何"没找到/0 次"的结论，必须先用一个**已知存在**的目标跑同一套方法做阳性对照。
+```
