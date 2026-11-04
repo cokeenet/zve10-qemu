@@ -12095,3 +12095,57 @@ ENTER=1  INITSEQ=66  FAKETS=10
   B. 看 libObj 的 uxengine_init2 之后是否本应创建 0x308 启动屏（a7c2 说初始有 0x308/28 控件）
   C. 若我们的树连 0x308 都没建，说明 uxengine_init2 的某个前置没完成
 ```
+
+---
+
+# ★★★★★★★ 2026-11-05 第一百二十五层：**硬证据 —— 进程没死，卡在 Application_Start 内部**
+
+## ① 新增心跳机制，回答"静默"到底是"死了"还是"卡着"
+```c
+/* my_start 钩子内置位，一个独立线程每 5 秒打印一次 */
+APPSTART_WATCH=1  →  g_in_start 置 1 → 心跳线程每 5s 打印
+```
+**实测（out/hb，确切 PID 278509）：**
+```
+行数 7834、ENTER=1、**RETURN=0**
+APPSTART still-inside t=5s ... t=105s   共 21 次心跳
+GRMFILL=0
+```
+**⇒ 这是本项目第一次拿到硬证据：im.elf 进程**活着**，
+   一直停在 `Application_Start` 里面，超过 105 秒不返回。
+   之前"日志静默"被反复误读为"进程死了/崩了"，现在可以明确否定。**
+
+## ② `Application_Start` 的完整调用序列（已反汇编确认）
+```
+0x54d580  Application_Start                       (ARM, size=72)
+  54d590  blx  0x92559c     ← 未知（在 appFw 远端）
+  54d59a  bl   0x54d154     TextSprite::freezeDrawText+0x22660
+  54d5a6  bl   0x54d2b0     TextSprite::freezeDrawText+0x227bc
+  54d5ac  bl   0x54f664     ★ 帧循环（账本 105 层就记录过）
+  54d5b0  blx  0x923c84     ← 未知
+  54d5b6  bl   0x54d538     TextSprite::freezeDrawText+0x22a44
+  54d5ba  add  sp, sp, #0x8a0 ; pop
+```
+**⇒ 这 6 个调用里必有一个在阻塞。下一步逐个 hook（用 appFw 基址 + 偏移解析）。**
+
+## ③ 本层同时修掉的两个东西
+```
+1) ulog 队列池耗尽（上一层的 ULOG_DRAIN）仍在生效：VALLOCFAIL 694 → 0
+2) 清理了编译器暴露的问题：g_in_start 前置声明、移除未用框架
+   （教训：注入库每次改完必须检查 arm-linux-readelf 的 UND 符号，
+     上一轮就是 g_svc_backup 未定义导致整个 .so 加载失败）
+```
+
+## ④ 下一步
+```
+逐个 hook Application_Start 的 6 个调用（按顺序），定位第一个不返回的：
+  ① 0x92559c   (blx, 远端)
+  ② 0x54d154
+  ③ 0x54d2b0
+  ④ 0x54f664   ← 帧循环，最可疑
+  ⑤ 0x923c84
+  ⑥ 0x54d538
+方法：appFw 基址用 dladdr(&Application_Start) 取得，偏移相加得函数指针，
+     每个包一层 logline("AS step=N ENTER/RETURN")。
+预期：日志停在第 N 个 ENTER 而没有对应 RETURN ⇒ 那就是阻塞点。
+```
