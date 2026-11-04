@@ -11814,3 +11814,79 @@ E10 Backup.bin：可以加载，但不行（不等于解锁）
 真正缺的是"备份服务注册者"（应在 appFw/libupdaterufp 的某个初始化路径里）
 以及/或 M2 真机首启生成的 Backup.bin + 其内部状态
 ```
+
+---
+
+# ★★★★★★★★ 2026-11-05 第一百二十一层：**转向 a7c2 路线；backup 服务首次打通**
+
+## ① 路线转向（用户决定）
+```
+不再建模 GPU（sugilite/IRQ76/寄存器状态机）——那是"反方向"的努力。
+改走 chocotan/a7c2-re 的路：**用户态注入替身库**，软件执行绘图 + AP-only 提交 + ramfb。
+分析见 docs/A7C2_QEMU_NATIVE_RECIPE.md
+```
+
+## ② ★★★ a7c2 对 backup 队列 0x3e014d 的现成解法（已移植成功）
+他们的 `menu-observe.c` 里有两段代码，正好解我们的死结：
+
+```c
+/* 1) 拦截同步消息，回复 status=0 —— 注意状态字在 +4，不是 +0x14 */
+if (id == 0x003e014d && real_msg_size(message) >= 8) {
+    ((unsigned int *)message)[1] = 0;   /* reply status at +4: success */
+    return 0;
+}
+
+/* 2) 给 valloc 造带 osal 头的假消息（sync send 是内联服务的，不进内核队列）*/
+unsigned char *raw = malloc(16 + 112);
+*(unsigned int *)(raw + 8) = 112;       /* osal size 在 -8 */
+*message = raw + 16;
+```
+
+**我们移植到 `src/argtrace.c` 后的实测（out/m2sys0）：**
+```
+BACKUP_ALLOC qid=0x3e014d size=64 n=1..9      ← 9 次分配，全部成功
+BACKUP_SYNC  qid=0x3e014d status=0  n=1..9    ← 9 次应答，全部 success
+glibc 检测 = 0                                 ← 加了 fake_msg_track/free 追踪，无堆损坏
+```
+**⇒ backup 队列的死结解开了。** 但启动仍停在 `MWF_Init`（473 行），说明还有别的缺失。
+
+## ③ 本轮踩到的两个坑（重要）
+```
+坑 1：Image 尺寸不能随便缩
+  279 MB Image → 8394 行（正常）
+  238 MB Image → 停在 init_irq_proc 或 473 行
+  原因：guest 只有 473 MB 可用内存（1G 中 575MB 被保留），initramfs 要整个解压进 ramfs
+  ⇒ 但缩太多也不行：实测 238MB 反而崩在 init_irq_proc（内存碎片/布局）
+  ⇒ 参考树 usr=218MB、system/ 为空、总树 231MB 能跑 ⇒ 目标是把树压到 ~230MB 而不是无脑删
+
+坑 2：内核编译必须显式 export PATH
+  否则 Error 127（找不到 arm-buildroot-linux-gnueabihf-gcc），Image 不更新却看不出来
+```
+
+## ④ a7c2 还提供了什么（下一步照抄）
+他们的 `menu-observe.c`（3159 行）里有一整套替身服务，按我们需要逐个移植：
+```
+QEMU_CAPID_SERVICE        CAPID 服务
+QEMU_SA_ADDRESS_SERVICE   SA 地址服务
+QEMU_HDMI_FORMAT_SERVICE  HDMI 格式服务
+QEMU_DISPLAY_INFO_SERVICE 显示信息服务
+QEMU_SUBSCRIPTION_SERVICE 订阅服务
+SENSOR_GETINH (0x80924127) 传感器状态（回全零 40 字节）
+LENS 版本服务 (0x912503d0) 借 ulog io 队列池 (0x8f013a)
+0x92840747 / 0x00930101    updater/其它队列
+```
+
+## ⑤ 下一步
+```
+A. 定位 MWF_Init 到底在等什么（现在 backup 已应答，所以不是它）
+B. 移植 a7c2 的其它替身服务（CAPID / SA / HDMI / subion / sensor）
+C. 把树压到 ~230MB 稳定启动（不能靠无脑删，要按参考树对齐）
+```
+
+## 方法论（第 116 条）★★★
+**"别人踩过的坑，先照抄再优化"：
+```
+我们花了 3 轮在 backup 队列上试伪造 valloc / 改 libbackup / 换 Backup.bin，全部失败。
+a7c2 用 20 行代码解决：状态字在 +4、假消息带 16 字节 osal 头、加 free 追踪。
+⇒ 判据：卡在同族问题上时，先看同代机型的公开实现，通常有现成答案
+```
