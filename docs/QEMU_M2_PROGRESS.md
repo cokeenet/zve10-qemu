@@ -12228,3 +12228,80 @@ ASSTEP stage1 ENTER off=0x54d154 fn=0x2ebc4154
   · 断点命中顺序 = 实际执行顺序；哪个断点之后不再命中，就是阻塞点
 工具：/usr/bin/gdb-multiarch（configure 时已检测到）
 ```
+
+---
+
+# ★★★★★★★ 2026-11-05 第一百二十七层：**帧循环内部结构测绘完成；gdb 方案受限于裸机 MMU**
+
+## ① gdb 断点法验证结果：不可行（有证据）
+```
+QEMU 加 -gdb tcp::1234，gdb-multiarch 连上：
+  pc = 0x60148cdc  ← 内核空间，且只有 "Thread 1.1 (CPU#0 [halted])"
+```
+**⇒ QEMU 的 gdbstub 给的是**整机 CPU 视角**（裸机），不是 Linux 进程视角。
+   guest 内核开了 MMU，用户态（appFw 在 0x2e...）与内核（0x6014...）用不同映射，
+   而 gdbstub 只能按 guest 虚拟地址停 CPU，抓不到"某个进程的某个函数"。
+**⇒ 断点法撤回**（除非先算出 appFw 用户态 VA→物理地址的映射，代价过高）。
+
+## ② ★★★★ 帧循环（appFw+0x54f664）内部结构已测绘
+```asm
+54f664: stmdb sp!, {r4-r9,sl,fp,lr}
+54f668: sub.w sp, sp, #2048          ← 2KB 栈帧，典型 UI 主循环
+54f66c: sub sp, #28
+54f674: bl  0x54ef74                 ← 初始化
+54f68a: bl  0x54833c                 ← 某个 setter
+54f694..54f6b0: blx 0x925fb0 / 0x9256a8 / 0x9246b8   ← 跨库调用（对象构造）
+54f6be: blx memset@plt               ← 大量 memset（清帧结构）
+54f726: bl  0x54821c
+54f72a: bl  0x5483e4
+54f74e: bl  0x52b0ca
+54f7cc: bl  0x54821c                 ← 同一个函数被调两次
+54f7d0: bl  0x548380
+54f808: bl  0x547eb8
+54f80c: bl  0x548146
+54f83a: bl  0x52bf6c
+54f894: blx _ZN8UXEngine6wgtsysEv@plt              ← 取 WidgetSystem 单例
+54f898: blx _ZN2ux6wgtsys12WidgetSystem12processEventEv@plt  ★★★
+54f8ea: blx memcpy@plt
+```
+**函数总长 908 字节（0x54f664..0x54f9f0，之后是字面量池）。**
+
+### ★ 最重要的一条
+**`54f898` 调用 `ux::wgtsys::WidgetSystem::processEvent()`** ——
+这是 UI 事件泵。a7c2 报告里"输入分三层验证"的最后一层就是它：
+`私有通道 → guest 原输入队列 → 固件语义处理 → 新画面`。
+
+**⇒ 我们的引擎如果能走到 54f898，就说明它真的在跑 UI 事件循环。
+   如果卡在它**之前**（比如 54f674 的初始化或某个 blx），就是构造阶段的问题。**
+
+## ③ 下一步（两条并行，都可落地）
+```
+A. 静态：把 0x54ef74（帧循环第一个调用）往下拆，看它是否在等某个对象/资源
+B. 动态：既然 gdb 不行，改用**已有且验证过的 argtrace 手段**——
+   把 Application_Start 的 6 个调用点各改成"先打点再执行原指令"的
+   ARM 桩（这次用真参数，不主动调用），实现方式：
+     · mprotect 让 appFw 的 .text 可写
+     · 保存 4 字节原 BL，写入 BL 到我们的 stub
+     · stub 用 ARM 模式：push {lr}; bl <log>; 恢复原 BL 后执行; pop {pc}
+   风险：stub 需要正确保存/恢复 16 个寄存器，实现要谨慎。
+C. 更省事的替代：把 ARGTRACE 的目标从"函数级"下沉到
+   "在 osal_wai_sem_tmo / osal_rcv_msg_tmo 里记录 caller 的 mod+off"（已有能力），
+   然后看**帧循环开始后**最后停在哪个 caller —— 这能直接指向等待点。
+```
+
+## ④ 本层净收益
+```
+✅ 帧循环内部结构完整测绘（含唯一的事件泵调用点 54f898）
+✅ gdb 断点法被证伪，明确记录原因（裸机 stub + MMU）
+✅ 六段调用的静态目标地址此前已两路互证
+```
+
+## 方法论（第 119 条）★
+**"QEMU gdbstub 只能看到 CPU，看不到进程"：
+```
+它停的是 guest 的某个 CPU 核，pc 可能是内核地址；
+用户态进程的断点需要 guest 虚拟地址 → 物理地址映射，
+或者干脆用 guest 内的注入库（我们已有的 argtrace）来观测。
+⇒ 判据：想调 guest 用户态程序时，优先用 LD_PRELOAD 注入，
+   而不是连 QEMU gdbstub。
+```
