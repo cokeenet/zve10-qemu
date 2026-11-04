@@ -1,58 +1,55 @@
-# Evidence and additional material available on request
+# 可按需提供的证据与额外材料
 
-Nothing below is shipped on the branch by default. Offer it selectively, and only after
-confirming it fits the upstream distribution policy (no Sony firmware / binaries / copies).
+以下内容**默认不随分支发布**。只在上游需要时逐项提供，且先确认符合对方的分发政策
+（不含 Sony 固件 / 二进制 / 副本）。
 
 ---
 
-## Our own probe output — safe to share as text
+## 我们自己的探针输出（纯文本，可给）
 
-| Local file | Size | Content |
+| 本地文件 | 大小 | 内容 |
 |---|---:|---|
-| `work/KLOG_ioctl.txt` / `KLOG_ioctl2.txt` | 18 KB each | Early ioctl probe logs |
-| `work/KLOG_ioctl3.txt` / `KLOG_ioctl4.txt` | 174 KB each | GPEW / GPEIRQ full trace |
-| `work/KLOG_ioctl7.txt` | 644 KB | Extended trace |
-| `work/qemu_gpe_err.txt` | 2.3 KB | `DMP_2D_Initialize : 0` evidence |
-| `work/ko_gles_ioctl_r.txt` | 30 KB | Driver ioctl branch disassembly with relocations |
+| `work/KLOG_ioctl.txt` / `KLOG_ioctl2.txt` | 各 18 KB | 早期 ioctl 探针日志 |
+| `work/KLOG_ioctl3.txt` / `KLOG_ioctl4.txt` | 各 174 KB | GPEW / GPEIRQ 完整 trace |
+| `work/KLOG_ioctl7.txt` | 644 KB | 扩展 trace |
+| `work/qemu_gpe_err.txt` | 2.3 KB | `DMP_2D_Initialize : 0` 证据 |
+| `work/ko_gles_ioctl_r.txt` | 30 KB | 驱动 ioctl 分支带重定位反汇编 |
 
-The 42 GPEW writes, 8 raises / 8 acks and the 1:1 kick/IRQ/ack ratio come from these logs.
-`KLOG_ioctl5.bin` / `KLOG_ioctl6.bin` (1 MB each) are raw memory snapshots — **hold back**,
-they may contain firmware-derived bytes.
+42 次 GPEW 写、8 次抬线 / 8 次 ack、kick/IRQ/ack 1:1 都出自这些日志。
+`KLOG_ioctl5.bin` / `KLOG_ioctl6.bin`（各 1 MB）是物理内存快照，**暂不提供**，
+可能含固件派生字节。
 
-## We offered these in the issue comment
+## issue 里我们承诺过的四项
 
-| Item | Local file | Recommendation |
+| 项目 | 本地文件 | 处理 |
 |---|---|---|
-| GPE model patch complete diff | `GPE_MODEL_PATCH.md` §2 (inline C) | ✅ Shipped |
-| GPEW / GPEIRQ log originals | `KLOG_ioctl3/4/7.txt` | Offer on request; text only |
-| 2D command descriptor raw dump bytes | `work/gpe.bin` (16 KB) | ⚠️ Check provenance first — likely captured from guest memory. Offer as a hex excerpt of the repeating 8-word structure, not as a binary file |
-| Full 17 ioctl annotations | `GRM_GLES_IOCTL_TABLE.md` | ✅ Shipped |
+| GPE 模型补丁完整 diff | `GPE_MODEL_PATCH.md` §2（内联 C 代码） | ✅ 已交付 |
+| GPEW / GPEIRQ 日志原文 | `KLOG_ioctl3/4/7.txt` | 按需提供，纯文本 |
+| 2D 命令描述符原始 dump 字节 | `work/gpe.bin`（16 KB） | ⚠️ 先核来源（疑似 guest 内存抓取）；建议只给重复 8 字结构的十六进制摘录，不给二进制文件 |
+| 全 17 条 ioctl 注解 | `GRM_GLES_IOCTL_TABLE.md` | ✅ 已交付 |
 
-## Never ship
+## 绝不对处发
 
-- `work/grm_gles.ko` — original Sony kernel module (16 KB)
-- `work/fb_gpedst.bin` (1 MB) and the derived PNGs — framebuffer captures
-- `dump_20261028/ptbl.bin`, `Backup.bin`, `nflasha15.img`, `zve10_dump_20261028.zip`
-- any `.elf`, `.so`, `.ko`, `.img` or partition image from the donor firmware
+- `work/grm_gles.ko` —— 原厂 Sony 内核模块（16 KB）
+- `work/fb_gpedst.bin`（1 MB）及其派生 PNG —— 帧缓冲抓取
+- `dump_20261028/ptbl.bin`、`Backup.bin`、`nflasha15.img`、`zve10_dump_20261028.zip`
+- 任何来自供体固件的 `.elf` / `.so` / `.ko` / `.img` 或分区镜像
 
-## Additional original analysis we could contribute (not requested)
+## 另外可以贡献的原创分析（对方没要）
 
-These are **our own written conclusions**, not firmware bytes, so they carry no
-distribution problem:
+这些是**我们自己写的结论**，不是固件字节，无分发问题：
 
-1. **Sony private partition table format** — magic `82461.00` (`+0x00`), `u32 n = 30`
-   (`+0x08`), `u32 ver = 1` (`+0x0c`), then 30 records of
-   `{ u16 unk; u16 start_64k; u16 unk; u16 len_64k; u32 type; u32 valid; }` at `+0x10`.
-   Verified record-by-record against `/proc/partitions`. May be useful to the fastboot /
-   eMMC partition-write path.
-2. **`osal_uipc.ko` cmd 0–16 semantics** and the 11,389-call IPC statistics — already in PR #3.
-3. **ZV-1F as a QEMU guest: three pitfalls** — in `GPE_MODEL_PATCH.md` §5.
-4. **Real-camera read-only capture constraints** — `contrib/REAL_CAMERA_FINDINGS.md`;
-   note the LZP/`usr` claim there is superseded by the upstream issue #4 clarification.
+1. **Sony 私有分区表格式** —— `+0x00` magic `82461.00`，`+0x08` `u32 n = 30`，
+   `+0x0c` `u32 ver = 1`，`+0x10` 起 30 条
+   `{ u16 unk; u16 start_64k; u16 unk; u16 len_64k; u32 type; u32 valid; }`。
+   已与 `/proc/partitions` 逐条核对，对 fastboot / eMMC 分区写入路径可能有用。
+2. **`osal_uipc.ko` cmd 0–16 语义**与 11389 次 IPC 统计 —— 已在 PR #3 内。
+3. **ZV-1F 作 QEMU guest 的三个坑** —— `GPE_MODEL_PATCH.md` §5。
+4. **真机只读采集的约束** —— `contrib/REAL_CAMERA_FINDINGS.md`；
+   注意其中 LZP / `/usr` 的旧说法已被上游 issue #4 的澄清取代。
 
-## Suggested sequence
+## 建议顺序
 
-1. Push this package to our branch (or paste Version B of the reply).
-2. Wait for their model result. If they still hang, offer `KLOG_ioctl3/4.txt` and the
-   hex excerpt of the 2D descriptor.
-3. Only then raise the partition-table format as a separate, unrelated contribution.
+1. 把本包 push 到分支，贴 A 版中文回复。
+2. 等对方模型实测结果；若仍卡住，再给 `KLOG_ioctl3/4.txt` 与 2D 描述符十六进制摘录。
+3. 分区表格式作为独立话题，最后再提，别和这次交付混在一起。

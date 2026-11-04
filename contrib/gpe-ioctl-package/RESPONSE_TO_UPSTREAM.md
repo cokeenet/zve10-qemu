@@ -1,103 +1,104 @@
-# Reply to PR #3 — ready to paste
+# 给 PR #3 的回复稿（中文，可直接粘贴）
 
-Two versions. **Use A after the branch is pushed**; **B works immediately without a push**
-(it carries the actionable points inline). Both assume the PR description has been corrected
-first — the corrections are already applied locally; see `PR_CORRECTIONS_20261104.md`
-in the parent `contrib/` directory.
+两版。**A 版用于分支已 push 之后**；**B 版不依赖 push**（把关键结论直接写在评论里）。
+两版都默认 PR 描述已更正——本地已改好，记录见上级目录 `contrib/PR_CORRECTIONS_20261104.md`。
 
----
-
-## Version A · after pushing the branch
-
-```
-Hi @cokeenet,
-
-Thank you for the correction — that is exactly the kind of error that is easy to build on,
-and we appreciate you writing it up with the evidence. We have removed both retracted claims
-from our PR description (the "new menu rendered in emulation" result and the "0x7a0020 input
-queue missing" reading), dropped the BLE/uipc "common blocker" parallel, and marked the BLE
-removal as a workaround rather than a porting path. Your points about the frame-capture helper
-selecting the wrong PID and the registration table being a callback list, not a queue list,
-are noted.
-
-As offered in our earlier issue comment, the material is now on our branch at
-`contrib/gpe-ioctl-package/`:
-
-  - `GRM_GLES_IOCTL_TABLE.md` — full 17-command `/dev/dmpgles2` ioctl annotation table
-    (command numbers, call sites, driver branch offsets, blocking behaviour, ISR / semaphore /
-    completion mechanisms, plus the cross-validation and runtime evidence)
-  - `GPE_MODEL_PATCH.md` — the interrupt surface (`sugilite_interrupt`, `bar + 0x34`,
-    ack registers, doorbell) and a ~60-line `bionz.c` device model patch ready to merge
-  - `GPE_WINDOW_DESIGN.md` and our probe / disassembly scripts
-
-The parts that should close your "interrupts delivered but the completion ioctl never
-returns" gap:
-
-  1. `0xC0048203` waits on `dev->a8 & mask`; the ISR fills `a8` from the HIGH 16 bits of
-     `bar + 0x34`. Delivering the IRQ without presenting those status bits is not enough.
-  2. libObj hardcodes the wait mask to bit26 (`0x04000000`).
-  3. The ISR calls `__wake_up(dev + 0x4C, 1, 1, NULL)` and NEVER `complete_all`. The
-     completion pair is a separate path: `0xC004820D` waits (10^7 jiffies) and
-     `0xC004820E` completes. Modelling the IRQ wait as a completion will never wake it.
-  4. On the doorbell (`bar + 0x1800`, the only kick point), set the status BEFORE raising
-     the line — `sugilite_interrupt` does `if (st == 0) BUG()`.
-  5. `bar + 0x1C` is dual-purpose (init writes 0x10000 as config, ISR writes 0 as ack);
-     branch on the written value. IRQ index is `irq[76 - 32]` = `irq[44]`.
-
-Our side verified `DMP_2D_Initialize : 0` with 8 kicks / 8 IRQs / 8 acks, strictly 1:1.
-Note that 2D commands do not go through ioctl at all — libObj mmaps `0xF1000000` (16 KiB)
-via `/dev/mem` and writes MMIO directly.
-
-Nothing in that directory is Sony firmware or a binary: it is analysis text and code we wrote
-ourselves, with no `.ko`, no dumps and no framebuffer captures. Happy to provide the raw
-GPEW/GPEIRQ logs and the 2D descriptor dump bytes separately if useful — we kept those out
-of the branch to stay within your distribution policy.
-
-Thanks again for the careful retraction, and for the kind words about the negative-results
-table. Happy to iterate on the patch if your model behaves differently.
-```
+> ⚠️ **时间线提醒（2026-11-04 21:10 核实）**：PR #3 目前 **0 条评论、0 条 review 评论**。
+> 上游那份「更正」只是提交进仓库的**草稿文件**
+> `docs/issues/REPLY_PR3_2026-11-04.md`，在 `docs/issues/README.md` 里标着「⏳ 待粘贴」——
+> 因为他们的 token 只有 `contents:write`、没有 `issues:write`，发不了评论。
+> **对方尚未公开发布任何内容。** 所以下面两版都不写「谢谢你们的更正」（那会时间线对不上）。
+> 我们是在**履行自己之前在 issue 里许下的 offer**，不是回应一条已发出的请求。
 
 ---
 
-## Version B · no push needed (actionable points inline)
+## A 版 · push 之后贴（推荐）
 
 ```
-Hi @cokeenet,
+@cokeenet 你们好，
 
-Thank you for the correction. We have removed both retracted claims from our PR description
-and dropped the BLE/uipc "common blocker" parallel; the BLE removal is now described as a
-workaround, not a porting path.
+看到仓库里 2026-10-28 那条撤回记录了（抓帧脚本 `pgrep | head -1` 抓到了另一个 QEMU 进程；
+`0x7a0020` 两代机型都不存在，注册表是回调注册表而不是队列表）。我们的 PR 描述正好引用了
+这两条，已经改掉：两条结论删除，「BLE/uipc 阻塞是共性」那段删除，BLE 移除改标为
+workaround 而不是移植路径。另外我们把自己审计早就推翻的两条（3% 应答率、`13A`↔`139` 配对）
+也一并更正了，勘误表放在描述开头。
 
-We did promise the GPE diff and the 17-ioctl annotations, and they exist — full table and a
-~60-line `bionz.c` patch. Before pushing a directory to the branch, here are the five points
-that bear directly on your current blocker, in case they save you a round:
+之前在 issue 里我们说过可以立即给 GPE 模型补丁和 17 条 ioctl 注解，现在放到分支上了：
+`contrib/gpe-ioctl-package/`
 
-  1. `0xC0048203` waits on `dev->a8 & mask` via `prepare_to_wait` + `schedule_timeout`.
-     `sugilite_interrupt` fills `a8` with `st & 0xFFFF0000` from `bar + 0x34`, so raising
-     IRQ 76 without presenting those high status bits leaves the ioctl asleep forever.
-  2. libObj hardcodes the mask to bit26 (`0x04000000`) at `libObj+0x12cc2c`.
-  3. The ISR only calls `__wake_up(dev + 0x4C, 1, 1, NULL)` — it NEVER calls
-     `complete_all`. `complete_all` belongs to `0xC004820E`, paired with the
-     `0xC004820D` wait (10^7 jiffies). Modelling the IRQ wait as a completion cannot work.
-  4. Doorbell is `bar + 0x1800` (0x1804 stores without raising). Set
-     `int_status |= 0x04000000` BEFORE `qemu_set_irq(irq, 1)`: the ISR starts with
-     `if (st == 0) BUG()`.
-  5. `bar + 0x1C` is dual-purpose — init writes 0x10000 as config, ISR writes 0 as ack —
-     so branch on the written value. The IRQ array index is `irq[76 - 32]` = `irq[44]`.
+  - `GRM_GLES_IOCTL_TABLE.md` —— `/dev/dmpgles2` 全 17 条 ioctl 逐条注解：命令号、
+    用户态调用点、驱动分支偏移、是否阻塞、ISR / 信号量 / completion 三套机制，
+    附交叉验证和运行时证据（747 行）
+  - `GPE_MODEL_PATCH.md` —— 中断面完整表（`sugilite_interrupt`、`bar+0x34` 各位定义、
+    ack 寄存器、用户态门铃），以及**约 60 行可直接合入的 `bionz.c` 设备模型补丁**
+  - `GPE_WINDOW_DESIGN.md` 和我们自己的探针 / 反汇编脚本
 
-Also: 2D commands are not submitted through ioctl. libObj gets `phys=0xF1000000`,
-`size=0x4000` via `0xC0048202` / `0x80048206`, mmaps through `/dev/mem`, and writes MMIO.
-On our side this yields `===== DMP_2D_Initialize : 0` with 8 kicks / 8 IRQs / 8 acks.
+针对你们 README 里那个卡点（中断能送达、fence 包能提交，但等完成位的 ioctl 永不返回），
+表里这几条应该能直接定位：
 
-Say the word and we will push the full table and patch to our branch (text and our own code
-only, no Sony binaries). We will not send anything you would have to keep out of the repo.
+  1. `0xC0048203` 等的是 `dev->a8 & mask`；`a8` 由 ISR 从 `bar+0x34` 的**高 16 位**累加。
+     只把 IRQ 抬起来、不把状态位摆上去，这个 ioctl 就一直醒不过来。
+  2. 用户态等待掩码是写死的 bit26（`0x04000000`，`libObj+0x12cc2c`）。
+  3. ISR 只调用 `__wake_up(dev+0x4C, 1, 1, NULL)`，**从不 `complete_all`**。
+     completion 是另一条路：`0xC004820D` 等（10^7 jiffies ≈ 27 小时），`0xC004820E` 触发。
+     把中断等待按 completion 建模，永远不会唤醒。
+  4. 门铃是 `bar+0x1800`（唯一 kick 点，`0x1804` 只存不抬）：必须**先置状态再抬线**，
+     因为 ISR 开头就是 `if (st == 0) BUG()`。
+  5. `bar+0x1C` 是双用途（init 写 `0x10000` 是配置，ISR 写 `0` 才是 ack），要按**写入值**分支；
+     IRQ 数组下标是 `irq[76-32]` = `irq[44]`，别写成 `irq[76]`。
+
+我们这边的实测：`app.err` 出现 `===== DMP_2D_Initialize : 0`，
+8 次 kick / 8 次 IRQ / 8 次 ack，严格 1:1，无中断风暴。
+另外 2D 命令根本不走 ioctl —— libObj 用 `0xC0048202` / `0x80048206` 拿到
+`phys=0xF1000000, size=0x4000`，通过 `/dev/mem` mmap 之后纯 MMIO 写。
+
+这个目录里只有分析文本和我们自己写的代码，不含 `grm_gles.ko`、不含任何 `.bin`、
+不含帧缓冲和真机 dump，与你们仓库的分发政策一致。如果需要，GPEW/GPEIRQ 日志原文
+和 2D 描述符的字节可以另外给，我们没往分支里放。
+
+感谢把否定结论也公开留档，省得我们继续在错的结论上盖楼。
+补丁在你们模型上表现不一样的话，我们随时跟着改。
 ```
 
 ---
 
-## 中文对照要点（不必贴）
+## B 版 · 不 push 也能贴（关键结论内联）
 
-- 两段都先承认更正、说明 PR 描述已改，避免显得在辩解。
-- A 版给出分支路径，B 版不依赖分支也能立刻解对方的卡点。
-- 两版都明确「不含 Sony 二进制」，呼应对方仓库的分发政策。
-- 不承诺超出我们实际验证过的东西；`DMP_2D_Initialize : 0` 与 8:8:8 是实测，其余是静态反汇编结论，文档里已分开标注。
+```
+@cokeenet 你们好，
+
+看到仓库里 2026-10-28 的撤回记录了。我们的 PR 描述引用过那两条结论，已经删除，
+「BLE/uipc 阻塞是共性」那段也删了，BLE 移除改标为 workaround 而非移植路径。
+
+之前在 issue 里承诺过的 GPE 补丁和 17 条 ioctl 注解确实都做完了（完整表 + 约 60 行
+`bionz.c` 补丁）。在把目录推到分支之前，先把和你们当前卡点直接相关的几条贴出来，
+也许能省一轮：
+
+  1. `0xC0048203` 等 `dev->a8 & mask`；`a8` 由 `sugilite_interrupt` 用
+     `st & 0xFFFF0000` 从 `bar+0x34` 累加。只抬 IRQ 76 而不在高 16 位摆状态，
+     ioctl 会永远睡下去。
+  2. libObj 把等待掩码写死为 bit26（`0x04000000`）。
+  3. ISR 只 `__wake_up`，**从不 `complete_all`**；`complete_all` 属于
+     `0xC004820E`，和 `0xC004820D` 的等待（10^7 jiffies）配对。
+  4. 门铃 `bar+0x1800`（`0x1804` 只存不抬）：先 `int_status |= 0x04000000`
+     再 `qemu_set_irq(irq, 1)`，因为 ISR 开头是 `if (st == 0) BUG()`。
+  5. `bar+0x1C` 双用途（init 写 `0x10000` 配置 / ISR 写 `0` ack），按写入值分支；
+     IRQ 下标 `irq[76-32]` = `irq[44]`。
+
+另外：2D 命令不走 ioctl，是 `/dev/mem` mmap `0xF1000000`（16KB）后纯 MMIO。
+我们这边实测 `===== DMP_2D_Initialize : 0`，8 kick / 8 IRQ / 8 ack。
+
+需要完整表和补丁的话说一声，我们就推到分支上（只有文本和我们自己的代码，
+不含任何 Sony 二进制，不会让你们仓库为难）。
+```
+
+---
+
+## 使用说明
+
+- **A 版**是本次选定路径（push 分支 → 贴 A 版）。
+- 两版都刻意**不提**「看到你们的回复草稿」——只说「看到仓库里的撤回记录」，这是公开事实，
+  不显得在盯对方的内部文件。
+- 两版都明确「不含 Sony 二进制」，呼应对方仓库的政策。
+- 不承诺超出实测范围的东西：`DMP_2D_Initialize : 0` 与 8:8:8 是实测，
+  其余是静态反汇编结论，包内文档已分开标注。

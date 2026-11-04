@@ -1,78 +1,70 @@
-# GPE / grm_gles.ko contribution package
+# GPE / grm_gles.ko 贡献包
 
-Prepared in response to the request in `REPLY_PR3_2026-11-04.md` (PR #3):
-the **full `grm_gles.ko` ioctl annotation table** and the **GPE model diff**.
+交付内容：`grm_gles.ko` **全 17 条 ioctl 注解表** 与 **GPE 设备模型补丁**。
+对应 PR #3 里上游希望看到的两样材料（见其仓库 `docs/issues/REPLY_PR3_2026-11-04.md` 草稿）。
 
-> ⚠️ **Distribution note.** This directory contains **only original analysis text and code we wrote**.
-> It contains **no Sony firmware, binaries, certificates or copies thereof** — in particular no
-> `grm_gles.ko`, no `.bin` dumps, no framebuffer captures. Disassembly excerpts are minimal
-> quotations for explanatory purposes. Offered under terms compatible with
-> PolyForm Noncommercial 1.0.0.
+> ⚠️ **分发说明**：本目录**只有原创分析文本和我们自己写的代码**，
+> **不含任何 Sony 固件、二进制、证书或副本** —— 不含 `grm_gles.ko`、不含 `.bin` dump、
+> 不含帧缓冲截图；反汇编片段仅为说明所需的最小引用。许可与 PolyForm Noncommercial 1.0.0 兼容。
 
 ---
 
-## Files
+## 文件清单
 
-| File | What it is |
+| 文件 | 内容 |
 |---|---|
-| `GRM_GLES_IOCTL_TABLE.md` | Full 17-command `/dev/dmpgles2` ioctl table: command number, `_IOC` fields, user-space call site, enclosing function, driver branch address, semantics, blocking behaviour, wake-up mechanism. Includes cross-validation against two independent derivations and the runtime evidence (747 lines) |
-| `GPE_MODEL_PATCH.md` | Interrupt-surface analysis (`sugilite_interrupt`, `bar + 0x34` bit definitions, ack registers, user-space doorbell) **plus a ~60-line `bionz.c` device model patch ready to merge** |
-| `GPE_WINDOW_DESIGN.md` | Design notes for modelling the 16 KiB `0xF1000000` register window |
-| `RESPONSE_TO_UPSTREAM.md` | English reply ready to paste into PR #3 (Chinese reference below it) |
-| `EVIDENCE_AND_EXTRAS.md` | Additional material available on request; deliberately not shipped here |
-| `probe_dmpgles_driver.sh`, `dis_ioctl.sh`, `ioctl_trace.*`, `scan_ioctl*.py` | Our own probe / disassembly / ioctl enumeration tooling |
+| `GRM_GLES_IOCTL_TABLE.md` | `/dev/dmpgles2` 全 17 条 ioctl 逐条注解：命令号、`_IOC` 字段、用户态调用点、所在函数、驱动分支地址、语义、是否阻塞、唤醒机制；含两路独立推导的交叉验证与运行时证据（747 行） |
+| `GPE_MODEL_PATCH.md` | 中断面分析（`sugilite_interrupt`、`bar+0x34` 位定义、ack 寄存器、用户态门铃），**附约 60 行可直接合入的 `bionz.c` 设备模型补丁** |
+| `GPE_WINDOW_DESIGN.md` | `0xF1000000` 那 16KB 寄存器窗口的建模设计笔记 |
+| `RESPONSE_TO_UPSTREAM.md` | 给 PR #3 的**中文**回复稿，A/B 两版可直接粘贴 |
+| `EVIDENCE_AND_EXTRAS.md` | 可按需提供的额外材料清单（默认不随分支发布） |
+| `probe_dmpgles_driver.sh`、`dis_ioctl.sh`、`ioctl_trace.*`、`scan_ioctl*.py` | 我们自己的探针 / 反汇编 / ioctl 枚举工具 |
 
 ---
 
-## What should unblock your device model
+## 针对上游卡点的七条
 
-Your README describes the blocker as: the driver registers a threaded interrupt on **IRQ 76**,
-reads status at **`bar + 0x34`**, interrupts are delivered and fence packets are submitted,
-but **the ioctl waiting on the completion bit never returns**. These are the seven points from
-our table that pinpoint it:
+上游 README 把当前阻塞描述为：图形驱动在 **IRQ 76** 注册线程化中断、在 **`bar+0x34`** 读状态；
+中断能送达、fence 包能提交，但**等完成位的 ioctl 永不返回**。我们表里对应的关键结论：
 
-1. **Completion test.** `ioctl 0xC0048203` waits on `dev->[0xa8] & mask` via
-   `prepare_to_wait` + `schedule_timeout` (max 10 rounds). The driver tests
-   `tst(arg & 0xC4000000, dev->a8)` and clears the hit bits with `bic`.
-2. **Where `a8` comes from.** `sugilite_interrupt` accumulates
-   `dev->a8 |= (st & 0xFFFF0000) | (read(bar+0x34) & 0xFFFF0000)`.
-   **The model must present the high 16 status bits at `bar+0x34` before ack** — raising IRQ
-   alone is not enough, which matches "interrupts delivered, ioctl never returns".
-3. **The mask is fixed in user space.** `libObj` hardcodes bit26
-   (`0x04000000`, `mov.w r2,#0x4000000` @ `libObj+0x12cc2c`).
-4. **`__wake_up`, never `complete_all`.** The ISR only calls `__wake_up(dev + 0x4C, 1, 1, NULL)`.
-   The completion mechanism belongs to a *different* pair: `0xC004820D` waits on a completion
-   (`10^7` jiffies ≈ 27 h, effectively forever), `0xC004820E` calls `complete_all`.
-   Modelling the IRQ path as a completion will never wake `0xC0048203`.
-5. **Order matters.** On the doorbell (`bar + 0x1800`, the only kick point; `0x1804` stores
-   without raising), set `int_status |= 0x04000000` **before** `qemu_set_irq(irq, 1)`.
-   The ISR does `if (st == 0) BUG()` — a level raised before the status is visible is a kernel BUG.
-6. **Ack is value-sensitive.** `bar + 0x1C` is dual-purpose: init writes `0x10000` as config,
-   the ISR writes `0` as ack. `0xC18 = 0` and `0x3C/0x44 = 1` are the other ack forms.
-   Branch on the **written value**, not just the offset.
-7. **IRQ array index.** In `cxd90045_init()` use `irq[76 - 32]` = `irq[44]`, not `irq[76]`.
+1. **完成判定**。`ioctl 0xC0048203` 通过 `prepare_to_wait` + `schedule_timeout`
+   （最多 10 轮）等 `dev->[0xa8] & mask`；驱动用 `tst(arg & 0xC4000000, dev->a8)` 判定，
+   命中后用 `bic` 清位。
+2. **`a8` 从哪来**。`sugilite_interrupt` 累加
+   `dev->a8 |= (st & 0xFFFF0000) | (read(bar+0x34) & 0xFFFF0000)`。
+   **模型必须在 ack 之前把状态高 16 位摆到 `bar+0x34`** —— 只抬中断不够，
+   这正对应「中断送达但 ioctl 不返回」。
+3. **掩码写死在用户态**。`libObj` 固定用 bit26
+   （`0x04000000`，`mov.w r2,#0x4000000` @ `libObj+0x12cc2c`）。
+4. **只有 `__wake_up`，从不 `complete_all`**。ISR 只调 `__wake_up(dev+0x4C, 1, 1, NULL)`。
+   completion 属于**另一对**：`0xC004820D` 等（`10^7` jiffies ≈ 27 小时，等价永久），
+   `0xC004820E` 调 `complete_all`。把中断等待建成 completion 就永远唤不醒 `0xC0048203`。
+5. **顺序不能反**。门铃 `bar+0x1800`（唯一 kick 点，`0x1804` 只存不抬）：
+   先 `int_status |= 0x04000000`，**再** `qemu_set_irq(irq, 1)`。
+   ISR 开头是 `if (st == 0) BUG()`，抬线早于状态可见会触发内核 BUG。
+6. **ack 按写入值判定**。`bar+0x1C` 双用途：init 写 `0x10000` 是配置，ISR 写 `0` 才是 ack；
+   `0xC18 = 0` 和 `0x3C/0x44 = 1` 是另外两种 ack 形式。别只看偏移。
+7. **IRQ 数组下标**。`cxd90045_init()` 里用 `irq[76 - 32]` = `irq[44]`，不是 `irq[76]`。
 
-2D commands do **not** travel through ioctl: `libObj` obtains `phys=0xF1000000, size=0x4000`
-via `0xC0048202` / `0x80048206`, mmaps it through `/dev/mem`, and writes MMIO directly.
+补充：**2D 命令不走 ioctl**。`libObj` 用 `0xC0048202` / `0x80048206` 取得
+`phys=0xF1000000, size=0x4000`，经 `/dev/mem` mmap 后直接 MMIO 写。
 
 ---
 
-## Verification status (our side)
+## 我们这边的验证状态
 
-- `app.err` shows `===== DMP_2D_Initialize : 0` — the call returns.
-- GPEW log: 42 writes (`0x1800`×8 / `0x1804`×8), **8 raises / 8 acks, strictly 1:1**,
-  plus one extra `0xC18 = 0` during init. No interrupt storm.
-- Static checks: none of the 34 `sugilite_register_init` write offsets is `0x1800`/`0x1804`
-  (so no spurious raise at boot); one raise maps to exactly one ack.
+- `app.err` 出现 `===== DMP_2D_Initialize : 0` —— 该调用确实返回。
+- GPEW 日志：42 次写（`0x1800`×8 / `0x1804`×8），**8 次抬线 / 8 次 ack，严格 1:1**，
+  另有一次 init 期的 `0xC18 = 0`；无中断风暴。
+- 静态核对：`sugilite_register_init` 的 34 个写偏移里没有 `0x1800` / `0x1804`
+  （开机不会误抬线）；一次抬线对应恰好一次 ack。
 
-Items we did **not** close are listed as such in `GRM_GLES_IOCTL_TABLE.md` §5.
-We have deliberately kept negative results in the record.
+未闭环的项在 `GRM_GLES_IOCTL_TABLE.md` §5 单列，否定结果也一并保留在案。
 
 ---
 
-## Scope note
+## 适用范围
 
-This is independent analysis of the same `grm_gles.ko` / SUGILITE surface from a
-**ZV-1F donor tree** on a self-built `cxd90045` QEMU machine. Your ZV-1M2 / E10 trees may
-differ in generated addresses; the command numbers, bit semantics and wake-up split above
-are the portable parts.
+这是从 **ZV-1F 供体树**、自研 `cxd90045` QEMU 机型上做的独立分析。
+上游的 ZV-1M2 / ZV-E10 树生成地址可能不同；上面的命令号、位语义、
+`wake_up` / `completion` 分工是可移植的部分。
