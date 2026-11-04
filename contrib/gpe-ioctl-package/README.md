@@ -1,7 +1,7 @@
 # GPE / grm_gles.ko 贡献包
 
-交付内容：`grm_gles.ko` **全 17 条 ioctl 注解表** 与 **GPE 设备模型补丁**。
-对应 PR #3 里上游希望看到的两样材料（见其仓库 `docs/issues/REPLY_PR3_2026-11-04.md` 草稿）。
+本包整理 `/dev/dmpgles2` 图形设备的 ioctl 语义与 QEMU 设备模型补丁，供参考。
+包含 `grm_gles.ko` **全 17 条 ioctl 注解表** 与 **GPE 设备模型补丁**。
 
 > ⚠️ **分发说明**：本目录**只有原创分析文本和我们自己写的代码**，
 > **不含任何 Sony 固件、二进制、证书或副本** —— 不含 `grm_gles.ko`、不含 `.bin` dump、
@@ -16,8 +16,6 @@
 | `GRM_GLES_IOCTL_TABLE.md` | `/dev/dmpgles2` 全 17 条 ioctl 逐条注解：命令号、`_IOC` 字段、用户态调用点、所在函数、驱动分支地址、语义、是否阻塞、唤醒机制；含两路独立推导的交叉验证与运行时证据（747 行） |
 | `GPE_MODEL_PATCH.md` | 中断面分析（`sugilite_interrupt`、`bar+0x34` 位定义、ack 寄存器、用户态门铃），**附约 60 行可直接合入的 `bionz.c` 设备模型补丁** |
 | `GPE_WINDOW_DESIGN.md` | `0xF1000000` 那 16KB 寄存器窗口的建模设计笔记 |
-| `RESPONSE_TO_UPSTREAM.md` | 给 PR #3 的**中文**回复稿，A/B 两版可直接粘贴 |
-| `EVIDENCE_AND_EXTRAS.md` | 可按需提供的额外材料清单（默认不随分支发布） |
 | `probe_dmpgles_driver.sh`、`dis_ioctl.sh`、`ioctl_trace.*`、`scan_ioctl*.py` | 我们自己的探针 / 反汇编 / ioctl 枚举工具 |
 
 ---
