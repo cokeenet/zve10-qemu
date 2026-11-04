@@ -11961,3 +11961,72 @@ a7c2 的"替身服务"清单不能照抄（至少 backup/sensor 这两条不能�
 这三样才是"出画面"的关键，而替身服务只是让流程能走到那里。
 ⇒ 下一轮：定位我们这代的"菜单 controller 创建入口"，并开始写软件 GPE。
 ```
+
+---
+
+# ★★★★★★★ 2026-11-05 第一百二十三层：**GRM 绘图入口从未被调用；引擎从不清屏**
+
+## ① ★★★★ 决定性测量：`GRMFILL=0` `GRMBLIT=0`
+
+在注入库里直接 hook `libObj.so` 的两个绘图出口：
+```c
+int GRM_gpermFillrect(unsigned a,unsigned b,void*c,void*d)  /* libObj.so 0x117b4c, ARM 模式, size=314 */
+int GRM_gpermRectblit(unsigned a,unsigned b,void*c,void*d)  /* libObj.so 0x117c86, size=824 */
+```
+**实测（out/grmprobe，8411 行 / ENTER=1 / FAKETS=10）：**
+```
+GRMFILL = 0
+GRMBLIT = 0
+```
+**⇒ 引擎从未请求绘制任何一个像素 —— 连清屏都没有。**
+
+## ② 这与 a7c2 的第一阶段完全对应
+他们 `BOOT-TROUBLESHOOTING.md` 第 143 行的描述：
+> 「初始只有屏集776（`0x308`）、28项对话框/启动控件，**GPE 只有清屏**」
+
+**我们是连清屏都没有 ⇒ 比他们的起点还早一步。**
+
+## ③ `Application_Start ENTER` 之后完全静默（新证据）
+```
+第 2132 行：ARGTRACE >>> Application_Start ENTER
+第 2133 行起：什么都没有
+```
+**⇒ Application_Start 一进去就阻塞了。**
+
+进入前的现场（第 2102-2131 行）：
+```
+tid=190 在 libObj.so+0x12a22b 高频 osal_snd_sync_msg(0x14c0424)
+         （连续 20+ 次，无应答）
+随后 Application_Start ENTER，然后静默
+```
+**⇒ `0x14c0424` 是这代引擎启动期的同步请求队列，高频且无应答。**
+   这条比 backup/sensor 都更靠近真正的阻塞点。
+
+## ④ 本代与 a7c2 的结构差异（重要，避免照抄错层）
+| 项目 | a7c2（A7C II） | 我们（ZV-1M2 树） |
+|---|---|---|
+| 绘图库 | `libgpe.so`，C++ `mpgpe::Gperm::FillRect` 等 | **无 libgpe.so**；`libObj.so` 导出 21 个 `GRM_*` |
+| 绘图入口 | `_ZN5mpgpe13GpermFillRectE...`（可符号拦截） | `GRM_gpermFillrect` / `GRM_gpermRectblit`（C 符号） |
+| controller | appFw 里 `0x1e78870` 九参数入口 | **appFw 没有导出 controller/manager 符号** |
+| 菜单切换 | 主动调 `0x1e78870` 切 0x308→0x346 | 未找到对应入口 |
+
+**⇒ a7c2 的"符号级拦截"方法我们要改成拦截 `GRM_*`（已做，但确认没被调用）。
+   a7c2 的"主动调 controller 入口"这条路我们还没找到落点。**
+
+## ⑤ 下一步（优先级重排）
+```
+① ★ 查 0x14c0424 是谁该应答（Application_Start 前的高频同步请求，目前无应答）
+② 查 Application_Start 进去后到底卡在哪（需要更深的探针：栈回溯或 pc 采样）
+③ controller 入口定位：从 appFw 的 Application_Start 反汇编往下追，
+   找创建 screen/controller 的调用（可能通过函数指针表，不导出符号）
+```
+
+## 方法论（第 118 条）★★★
+**"确认引擎到底有没有请求画东西"是最快区分阶段的方法：
+```
+不要先去实现绘图、也不要先猜 GPU 模型。
+先在绘图出口下探针，看它被调用 0 次还是 N 次：
+  0 次 ⇒ 问题在"建菜单/进生命周期"，与绘图层无关
+  N 次 ⇒ 问题在"绘图实现/参数解析"或"提交/消费"
+本轮因此省掉了整个"软件 GPE"的实现工作（在 GRMFILL=0 的情况下写了也没用）。
+```
