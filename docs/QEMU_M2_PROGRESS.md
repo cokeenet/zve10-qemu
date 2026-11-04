@@ -13575,3 +13575,88 @@ libObj.so md5 = 738a2331（固件原版）
   若启动变差（本例 ENTER 从 1 变 0）⇒ 它原来**是成功的且必需**
 ⇒ 判据：无法直接观测返回值时，用"跳过/替换"做对照实验反推其原状态。
 ```
+
+---
+
+# ★★★★★★★★ 2026-11-05 第一百四十六层：**GraphicsEngine 单例**存在**（0x0a3e4044），缺的是触发**
+
+## ① 定位并读取了 GraphicsEngine 单例指针（运行时硬证据）
+```asm
+101e70 <GraphicsEngine::sys_getInstance()>:
+  101e70: ldr  r3, [pc,#12]        ; 字面量 0x252ee8
+  101e72: ldr  r2, [pc,#16]        ; 字面量 0x2730
+  101e74: add  r3, pc              ; r3 = 0x101e78 + 0x252ee8 = 0x354d60（.got 基址）
+  101e7a: ldr  r3, [r3, r2]        ; r3 = .got + 0x2730 = **0x357490**
+  101e7c: ldr  r0, [r3, #0]        ; r0 = *(0x357490) = 单例指针
+```
+**验证：`0x357490` 在 `.got` 段（0x354d60..0x357738）内 ✅，
+对应重定位是 `R_ARM_RELATIVE`（本地指针，非导入符号）。**
+
+## ② ★★★★★ 运行时读取结果
+```c
+/* argtrace: dladdr 拿 libObj 基址，读 base + 0x357490 */
+GE_PROBE base=0xa01c000 slot=0xa373490 value=0x0a3e4044
+```
+**⇒ `value = 0x0a3e4044` **非零** ⇒ `GraphicsEngine` 实例**已成功构造**。**
+**⇒ 640×480 渲染目标存在，引擎对象有效。**
+
+## ③ 因此整条链的状态是
+```
+Application_System_Init  →  ✅ 执行（284 字节，走 AppFw 分支）
+osal_create_waitable_thread(Main) → ✅ 线程创建
+Main()                   →  ✅ 执行
+uxengine_init2(640,480,…) →  ✅ 执行成功（跳过它则 Application_Start 进不去）
+initializeArena / Kernel::sys_setCurrentDirectory / ResourceManager::setDatabase …
+Application_Start        →  ✅ ENTER=1（进入）
+GraphicsEngine 单例       →  ✅ **存在（0x0a3e4044）**
+drawFramebuffer          →  ❌ **从未被调用**
+```
+
+## ④ drawFramebuffer 开头无失败条件
+```asm
+e565a: stmdb sp!, {r4-r8,lr}
+e565e: mov   r4, r0            ; this
+e5662: add   r5, r4, #0x74
+e5668: bl    0x113e8c          ; 直接开始渲染
+e566c: bl    0x10fe8c
+e5672: bl    0x1004f8
+e5676: ldrb  r3, [r4,#0x23a]   ; 中途才有一个条件
+e567a: cbnz  r3, e5698
+⇒ **进入即渲染，没有前置失败判断。**
+```
+
+## ⑤ 结论：缺的不是"能不能画"，而是"没人让它画"
+```
+引擎对象存在、渲染目标存在、drawFramebuffer 是完整实现且无前置条件
+⇒ 唯一缺的是：**某个东西应该调用它，但没调用**
+⇒ 这与 a7c2 第 3 步完全对应：**"用原框架建立菜单"** ——
+   菜单 controller 被创建后，才会触发 drawFramebuffer。
+   我们的树里，菜单从未被创建（没有 screen/controller 创建记录）。
+```
+
+## ⑥ 下一步（最后 5 轮的方向）
+```
+A. 在 argtrace 里**直接调用 drawFramebuffer**（用已知的单例指针 0xa3e4044）
+   —— 最直接：如果调用了，帧会不会出现？
+   风险：可能导致崩溃（依赖未初始化），但这是"能否出画面"的直接测试
+B. 同时挂 notifyDraw（WidgetSystem 单例同理）
+C. 若 A 能出帧 ⇒ 证明渲染路径可用，只需找到"该调用它的地方"
+```
+
+## 本层净收益
+```
+✅ 用运行时内存读取证明 GraphicsEngine 单例存在（0x0a3e4044）
+✅ 证明 drawFramebuffer 无前置失败条件
+✅ 把问题彻底收窄：不是"画不了"，是"没人让它画"
+❌ 帧 = 0
+```
+
+## 方法论（第 135 条）★★★
+**"读运行时内存比静态追调用链更直接"：
+```
+静态追 sys_getInstance 的调用者 → 0 处，陷入僵局。
+改成：算出单例指针的 GOT 槽位（0x357490），在运行时直接读它。
+  一次就读到 0x0a3e4044 ⇒ 实例存在，问题不在构造。
+⇒ 判据：静态分析陷入"谁调用它"的死胡同时，改为**读运行时状态**
+   （单例指针、标志位、返回值），能一跳越过整个调用链。
+```
