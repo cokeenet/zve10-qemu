@@ -94,10 +94,36 @@ Sony 出厂自带开发者钩子：
 
 | 机制 | 用法 | 风险 |
 |---|---|---|
-| `/setting/mode/preload` + `dmode=3p` | `bootin.elf` 读该文件拼成 `LD_PRELOAD=` 注入 `im.elf`，**每次开机生效** | 不需要刷固件；但**坏 .so 同样会变砖**（正是我们踩过的坑） |
+| `/setting/mode/preload` + `dmode=3p` | ⛔ **本条已证伪（见下方更正）** | — |
 | `/setting/env.txt` + dmode 含 `e` | `set_oreore_env()` 逐行 `putenv`，所有服务继承 | 低 |
 | `change_mode.sh 0/1/2` | 分别停在「内核后 / 全局 infra 后 / RTOS 后」 | 调试定位极好用 |
 | `up.sh` + `ud_datcnv.elf` | 型号/区域/版本伪装，**强制更新器接受任意镜像** | 我们 L4 恢复路线可直接用 |
+
+> ### ⛔ 更正（2026-11-05）：`dmode=3p` 的 `p` 标志是**清除** `LD_PRELOAD`，不是启用
+>
+> 我们此前把 `dmode=3p` + `/setting/mode/preload` 写成"每次开机生效的官方注入钩子"，
+> **这是错的**。`qn06142/zv-e10-re` 反汇编 `bootin.elf` 后发现，并在**我们自己的
+> `bootin.elf` 上逐条复核一致**：
+>
+> ```arm
+> 9b22: ldr  r3, [r4, #0]
+> 9b24: tst.w r3, #64        @ 检查 dmode 里的 'p' 标志
+> 9b28: beq.n 9b30
+> 9b2a: ldr  r0, [pc, #132]  @ 指向字符串 "LD_PRELOAD"
+> 9b2c: blx  putenv          @ putenv("LD_PRELOAD") —— 没有 '=' ⇒ glibc 移除该键
+> 9b30: ...（继续检查 #8 等其它标志）
+> 9b40: execve("/usr/bin/im.elf")
+> ```
+>
+> ⇒ `putenv("KEY")`（无 `=value`）在 glibc 里等于**删除**该环境变量。
+> **`p` 标志恰恰是在 `execve` 之前把 `LD_PRELOAD` 抹掉**，是"禁止 preload"的开关，
+> 而不是"启用 preload"。
+>
+> **影响**：任何依赖 `dmode=3p` 注入 `.so` 的方案都不会生效（这解释了本项目
+> `INCIDENT_WRONG_LBA.md` 里记录的"preload 有值但该路径不生效（惰性）"现象）。
+> **要把代码注入 `im.elf`，只能改 `/setting/mode/dmode` 的其它标志位、改 `bootin.elf`
+> 本身，或用其它注入通道** —— 具体哪个标志/路径可用有待实测。
+
 
 ## 4. 能力边界（互补，不重叠）
 

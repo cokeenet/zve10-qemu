@@ -75,7 +75,7 @@
 │                                 └─ system/...      (资源模块)  │
 └──────────────────────────────────────────────────────────────┘
                               │
-                              ▼  dmode=3p + preload
+                              ▼  ⛔ dmode=3p 会清除 LD_PRELOAD（2026-11-05 证伪）
 ┌──────────────────────────────────────────────────────────────┐
 │ zvegisk.so（31 KB，-nostdlib 纯 syscall，零 libc 依赖）        │
 │                                                               │
@@ -311,7 +311,7 @@ safemode -> do nothing ← ★ 保护生效
 ① 模块系统（load_modules / run_code_module）一行都没在真机跑过
 ② apply_overlay_tree（单文件覆盖）没跑过
 ③ rollback_mounts 只在 watchdog 失败路径里，没触发过
-④ 没部署到开机（dmode=3p + preload）
+④ ⛔ 该注入路径不存在（dmode=3p 清除 preload，2026-11-05 证伪）
 ```
 
 ### ⬜ 规划中未实现
