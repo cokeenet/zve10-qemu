@@ -13726,3 +13726,79 @@ dladdr 返回 0x09f2a000，实际映射 0x0a0cd000，差 0x1a3000（约 1.6 MB�
 ⇒ 判据：在嵌入式老 glibc 环境里算模块内地址，
    **必须用 /proc/self/maps 的 r-xp 段起点**，不要用 dladdr 的 dli_fbase。
 ```
+
+---
+
+# ★★★★★ 2026-11-05 第一百四十八层：**强制调用 drawFramebuffer 最终失败（读得到、执行不了）**
+
+## ① 完整实验记录
+```c
+/* 用 maps 的 r-xp 起点作为基址，内联汇编 bx（ARM 模式）调用 */
+base = lib_text_base("libObj.so");        // 从 /proc/self/maps 的 r-xp 段
+slot = base + 0x357490;                   // .got 里的单例指针槽
+self = *(void**)slot;
+fn   = base + 0xe565a;                    // drawFramebuffer (ARM)
+__asm__("mov lr,pc; bx r12" : ...);       // ARM 模式跳转
+```
+**实测（out/rb）：**
+```
+GE_PROBE     base=0xa13b000 slot=0xa492490 value=0x0a503044
+MAPS_PROBE   0a13b000-0a476000 r-xp 00000000 /usr/lib/libObj.so
+             0a476000-0a47d000 ---p
+             0a47d000-0a503000 rw-p
+FORCE_DRAW   fn=0xa22065a (ARM entry, even=1)
+READBACK     fn[0]=41f0e92d fn[1]=b0824604 fn[2]=0574f104   ← ★ 内存读取完全正确
+             （41f0e92d = stmdb sp!,{r4-r8,lr}，正是该函数序言）
+执行         <1>Unhandled prefetch abort: unknown 1 (0x001) at 0x0a22065a
+```
+
+## ② ★★★★ 核心矛盾（诚实记录）
+```
+同一个地址 0xa22065a：
+  · 数据读取 ✅ 成功，内容与磁盘文件字节完全一致
+  · 指令执行 ❌ prefetch abort，FSR=0x001（translation fault）
+⇒ **D-side 可映射、I-side 不可映射。**
+⇒ 这不是我们的地址算错（内容都对），而是 **guest 的 MMU/页表层面**问题。
+```
+
+## ③ 可能原因（未验证）
+```
+A. QEMU -M zve10 模型对 ARM 的 XN(eXecute Never) 位处理不完整
+B. guest 内核对 dlopen 进来的 .so 只建立了数据映射，代码页的 I-side 映射缺失
+C. 我们的调用发生在**错误的线程上下文**（但日志显示在同一进程同一序列里）
+```
+
+## ④ 另一条独立证据：GOT 偏移可能算错
+```
+读出的 self=0xa503044，而 rw-p 段是 0xa47d000..0xa503000
+⇒ self 恰好**超出 rw-p 末尾 0x44 字节** ⇒ 不像有效的堆对象指针
+⇒ 0x357490 这个 GOT 偏移可能是错的（我按 add r3,pc + ldr r3,[r3,r2] 推的，
+   但 Thumb 的 add rX,pc 用对齐后 PC，可能差 2~4）
+```
+
+## ⑤ 本层结论
+```
+❌ 强制调用 drawFramebuffer 失败（I-side translation fault）
+❌ 未能验证"渲染路径是否可用"
+✅ 但**用 READBACK 证明了地址和内容都是对的**，把问题定位到 MMU/执行权限层
+✅ 发现 GOT 偏移可能也有小误差（self 超出 rw-p）
+```
+
+## ⑥ 剩余 3 轮的判断
+```
+这条路（强制调用）在 QEMU 的 MMU 模型上遇到硬障碍。
+更现实的方向：
+A. 不再强制调用，改为**让引擎自己触发**（回到 a7c2 第 3 步：创建菜单 controller）
+B. 或接受当前状态，把结论整理成"软件替身路线在 M2 上的可行性评估"
+```
+
+## 方法论（第 137 条）★★★★
+**"能读写 ≠ 能执行" —— 这是 ARM 上最容易误判的一类故障**：
+```
+同一个地址：
+  *(volatile unsigned*)addr         → 成功（D-side）
+  通过函数指针调用该地址             → prefetch abort（I-side）
+⇒ 判据：在 ARM 上验证"某地址是函数"时，**必须实际执行一次**；
+   仅仅读出来内容正确（甚至是正确序言）**不能证明它可执行**。
+   读写权限与执行权限在 ARM MMU 里是分离的（AP vs XN）。
+```
