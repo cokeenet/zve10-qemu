@@ -12305,3 +12305,62 @@ C. 更省事的替代：把 ARGTRACE 的目标从"函数级"下沉到
 ⇒ 判据：想调 guest 用户态程序时，优先用 LD_PRELOAD 注入，
    而不是连 QEMU gdbstub。
 ```
+
+---
+
+# ★★★★★★★ 2026-11-05 第一百二十八层：**Application_Start 内部是正常的多线程事件循环；Hotshoe 假阻塞被排除**
+
+## ① 关键新能力：给日志加 `[AS]` 阶段标记
+```c
+static volatile int g_as_phase;   /* my_start 里置 1 / 清 0 */
+logline("%sRCVC ...", g_as_phase ? "[AS]" : "", ...)
+```
+**⇒ 从此能精确区分"Application_Start 之前"和"期间"的每一条等待。**
+
+## ② ★★★★ 结果：`Application_Start` 内部有 **308 个等待点**，多线程各自在收自己的队列
+按模块统计：
+| 次数 | 位置 |
+|---|---|
+| **231** | `libRsrcHotshoe.so+0x4637`（闪光灯热靴） |
+| 25 | `libgps_rsrc.so+0x2299` |
+| 25 | `libObj.so+0x1dba07` |
+| 8 | `appFw.so+0x2bb625f` |
+| 4 | `dataflowInfraFramework.so+0x22f8d` |
+| 其余 | libInfraRemote / libmpr / libInfraBluetoothClassic … |
+
+**⇒ 这不是死锁，是**正常的服务线程池**在跑：每个线程在自己的队列上
+   `osal_rcv_msg_tmo(tmo=-1 或 88/1000ms)`，超时就再循环。**
+
+## ③ 假阻塞排除：Hotshoe 轮询是正常的
+```
+libRsrcHotshoe.so+0x4637 = _Z21HotshoeRsrcMainThreadPv+0xd4
+  462c: ldr r0, [pc] ; 4632: blx osal_rcv_msg_tmo
+  4638: cmp r0, r3  ; 463c: bne 4708   ← 超时就跳走继续
+队列 0x16c8477：SSM 246 次，RCVC 245 次（几乎 1:1），REG 0
+⇒ 发送/接收配对，88ms 轮询，**不是阻塞**
+```
+**⇒ 上一层/之前把 Hotshoe 当嫌疑点的方向可以关闭。**
+
+## ④ 真实结论：一切正常在跑，唯独**引擎不绘图**
+```
+ENTER=1、[AS] 等待点 308 个、多线程活跃、心跳正常、无崩溃
+GRMFILL = 0
+GRMBLIT = 0
+帧 = 0
+```
+**⇒ 问题不在"卡住"，而在"没走到绘图请求"。
+   这与 a7c2 报告的分层完全吻合：他们的第 3 步「用原框架建立菜单」我们还没做，
+   所以引擎的 screen/controller 根本没被创建，自然永远不会请求 Fill/Blit。**
+
+## ⑤ 下一步（收敛，与 a7c2 第 3 步对齐）
+```
+必须做的唯一一件事：**让引擎建立 menu controller / screen**
+a7c2 的做法：在受控时机调用原九参数入口 0x1e78870，把 0x308 启动屏切到 0x346 菜单
+我们的做法（三条候选，按代价排序）：
+  A. 在 libObj 里找 "创建 screen / 切 controller" 的导出或虚函数，
+     从 ux::gfxeng::Screen / AbstractSequenceFactory::CreateSequence 入手
+     （这两个名字在本项目 100 层就静态定位到了）
+  B. 从 appFw 的 Application_Start 六段里，看哪一段负责创建 0x308 启动屏，
+     然后模仿它调用"切到菜单"的版本
+  C. 从 libObj 的 uxengine_init2（216 字节）往下追，确认它是否本应创建初始屏
+```
