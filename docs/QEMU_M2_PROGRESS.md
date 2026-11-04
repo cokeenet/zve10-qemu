@@ -13156,3 +13156,66 @@ C. 重新评估：如果 libgpe.so/gui.so 在原厂 ZV-1M2 设备上确实不存
    ③ 运行时有没有真的调用（钩子/断点计数）
    三者缺一不可。
 ```
+
+---
+
+# ★★★★★★★★ 2026-11-05 第一百四十层：**ABI 硬墙 —— 跨固件借库不可行（glibc 2.11 vs 2.17）**
+
+## ① 方案 A（用 ZVE10M2 的库补齐）**已关闭**，原因是硬性 ABI 不兼容
+
+```
+我们 guest 的 glibc:     2.11.2
+ZV-1M2 固件所有库:       最高 GLIBC_2.4   ✅ 匹配
+ZVE10M2 的 libgpe.so:    需要 GLIBC_2.17  ❌ 不兼容
+```
+
+**`libgpe.so` 里出现 `memcpy@GLIBC_2.17` / `memset@GLIBC_2.17` / `snprintf@GLIBC_2.17` /
+`printf@GLIBC_2.17` —— 这些符号在 glibc 2.11 里不存在（它们是从 libc 的旧符号
+（`memcpy@GLIBC_2.4`）改过去的），加载时会直接 `symbol lookup error`。**
+
+## ② 因而得到一条结构性结论
+```
+ZV-1M2     = glibc 2.11 世代（所有库 GLIBC_2.4）
+ZVE10M2    = glibc 2.17+ 世代
+⇒ **两个固件不能交叉借库**，无论库有没有
+```
+
+## ③ 那么 `libgpe.so` / `gui.so` 在 ZV-1M2 上到底存不存在？
+```
+ZV-1M2 固件包（145 个 .so）：**没有 libgpe.so，没有 gui.so**
+ZV-1M2 所有分区（COMPARE/extracted/ZV1M2 全树）：**也没有**
+```
+**⇒ 两种可能：**
+```
+H-A: ZV-1M2 的 UI 完全不用 libgpe/gui（走 GPU 硬件路径）
+H-B: 这两个库在设备的**只读分区**里，固件包不包含
+     （我们只看了 usr/lib，没看 /system、nflasha3 等）
+```
+
+## ④ 下一步（把 H-B 排除掉）
+```
+检查 ZV-1M2 的其它分区镜像里是否含 libgpe.so / gui.so：
+  · nflasha3 (/system, 48MB)
+  · nflasha6 (/Jiritsu)
+  · nflasha5 (Warm Boot Image, 含内核/initrd)
+方法：在 firmware.tar_unpacked/0700_part_image/dev/ 下逐个搜索
+```
+
+## ⑤ 目前的总账（诚实盘点）
+```
+✅ 已确认：Application_Start 被进入、引擎多线程正常运行、无死锁
+✅ 已确认：154 个库被查找、118 成功、53 失败（含 libgpe/gui）
+✅ 已确认：drawFramebuffer / notifyDraw **从未被调用**
+✅ 已确认：跨固件借库不可行（glibc 2.11 vs 2.17）
+❌ 帧 = 0
+⇒ 距离"出画面"仍差整个 UI 库层
+```
+
+## 方法论（第 129 条）★★★
+**"跨固件借库前先比 glibc 版本"：
+```
+我花了半轮去核对 libgpe.so 的未定义符号能不能被满足，
+但真正的阻断点是 `memcpy@GLIBC_2.17` —— 一行 readelf -V 就能看出来。
+⇒ 判据：任何跨版本借用二进制之前，先 `readelf -V` 比最高 GLIBC 版本；
+   版本不够就立即关闭这条路，不必再查其它符号。
+```
