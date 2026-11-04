@@ -12624,3 +12624,73 @@ ulogio 的依赖（已查明）：
 ⇒ 判据：怀疑某函数是否被调用时，在它第一行加无条件探针，
    不要依赖"某条日志没出现"来反推。
 ```
+
+---
+
+# ★★★★★★★ 2026-11-05 第一百三十三层：**ulogio 的依赖已全部查明；卡在 osal_ulogio.ko 的 init 参数**
+
+## ① 诊断结果（加了启动探针，一次性查清）
+```
+ULOGIO_DIAG /proc/klog      MISSING   ← 缺失
+ULOGIO_DIAG /dev/mem        EXISTS
+ULOGIO_DIAG ulogio.bin      EXISTS
+ULOGIO_EXIT=255
+```
+
+## ② `/proc/klog` 由 `osal_ulogio.ko` 创建，但模块 init 提前失败
+```asm
+ulogio_init(r0=setting_data, r1=size):     ; osal_ulogio.ko 0xc14, ARM 模式
+  c20: cmp  r0, #0
+  c24: cmpne r1, #0
+  c34: moveq r2, #1                        ; 任一为 NULL ⇒ 错误路径
+  c3c: ldr  r0, [pc,#128]                  ; "[ulogio] setting data not specified!"
+  c48: bl   printk
+  c4c: b    cbc                            ; 返回 -1
+```
+**⇒ 模块要求**两个参数都非空**：`ulogio_initdata`（数据指针）+ `ulogio_initdata_size`（长度）。
+   我们只传了 `ulogio_initfile=/setting/ulogio.bin`，
+   而 `initfile` 这条路径在当前内核/模块组合下没有把文件内容填进 initdata。**
+
+## ③ 已经排除的原因
+```
+✅ 不是 ulogio.bin 格式问题：M2 版(3400B) 与 E10 版(3796B) 的 tag 结构完全一致
+   LGNM/RECO/LOGB/PRTB/CHAN/ISYS/DBGL/DBCL/FLTA/TERM/TELN/FBOX/FLTF/RCVF/ALGP/ALGB/ALGD/ALGK/ALGT/SUBS...
+✅ 不是 /dev/mem 缺失（EXISTS）
+✅ 不是 kikilog.dat 缺失（已从固件恢复 1,957,888 B，无效）
+✅ 不是模块加载顺序问题（osal_uipc → backup → osal_ulogio，符合 depends）
+```
+
+## ④ 下一步（两条，都好操作）
+```
+A. 改用 initdata 传参：
+   把 ulogio.bin 的内容以 initdata=<hex> ulogio_initdata_size=<n> 传入
+   （insmod 的 charp 参数支持直接给字符串，但不适合二进制 3400 B）
+   ⇒ 实际做法：写个小工具读文件 → 通过模块参数传入；或
+     改用一个内核能读的路径（模块有 filp_open/vfs_read，说明它**能**读文件，
+     只是 initfile 的解析逻辑没走通）
+
+B. ★ 更彻底：把 ulogio_initfile 的解析逻辑 patch 掉，
+   或在 init 里**先用用户态**把 ulogio.bin 读出来、再 rmmod/insmod 传 initdata
+
+C. 退一步：既然 ulogio 只是"日志消费者"，而我们不需要日志内容 ——
+   回到"接管队列"的思路，但这次**在 guest 内核侧**做（改 osal_ulogio.ko 或
+   加一个自己的 .ko 来 drain 那两个队列）。
+```
+
+## ⑤ 本层净收益
+```
+✅ ulogio 退出原因**精确定位到 osal_ulogio.ko ulogio_init 的参数检查**
+✅ 排除了 4 个可疑原因（格式/内存/数据文件/顺序）
+✅ 拿到 `/proc/klog` 缺失这个硬事实
+❌ GRMFILL 仍为 0
+```
+
+## 方法论（第 122 条）★
+**"加启动探针比反复猜测快得多"：
+```
+此前 3 轮都在猜 ulogio 为什么退出（格式？/dev/mem？配置？）。
+本轮在 init 里加 4 行 shell 探针（test -e），一次跑就拿到了确定答案：
+  /proc/klog MISSING / /dev/mem EXISTS / ulogio.bin EXISTS
+⇒ 判据：对环境依赖不明的程序，第一件事是在启动脚本里把所有依赖逐个 test 一遍，
+   而不是从它的源码或日志里推断。
+```
