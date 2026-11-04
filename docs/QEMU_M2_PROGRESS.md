@@ -12149,3 +12149,82 @@ GRMFILL=0
      每个包一层 logline("AS step=N ENTER/RETURN")。
 预期：日志停在第 N 个 ENTER 而没有对应 RETURN ⇒ 那就是阻塞点。
 ```
+
+---
+
+# ★★★★★★★ 2026-11-05 第一百二十六层：**拿到 Application_Start 六段的真实地址；主动调用法有缺陷**
+
+## ① 成功：用 maps + 运行时指令字，解出六段的真实目标
+```c
+/* 在 my_start 里读 /proc/self/maps 拿 appFw 基址（ASLR 每次不同），
+   再读每个调用点的原始指令字，离线解码 */
+ASDUMP appfw_base=0x2ec0b000
+ASDUMP entry=0x2f158580 (expect Application_Start)
+ASDUMP site=0 off=0x10 at=0x2f158590 w0=e804f3d8 w1=6008f507
+...
+```
+**解码结果（与 objdump 静态反汇编完全一致，两路互证）：**
+| site | 调用点 | 类型 | 目标（appFw 内偏移） |
+|---|---|---|---|
+| 0 | +0x10 | BLX | +0x92559c |
+| 1 | +0x1a | BL  | +0x54d154 |
+| 2 | +0x26 | BL  | +0x54d2b0 |
+| 3 | +0x2c | BL  | **+0x54f664（帧循环）** |
+| 4 | +0x30 | BLX | +0x923c84 |
+| 5 | +0x36 | BL  | +0x54d538 |
+
+## ② 主动逐段调用（AS_STAGES）—— 方法本身有缺陷，结论不可用
+```
+ASSTEP base=0x2e677000
+ASSTEP stage1 ENTER off=0x54d154 fn=0x2ebc4154
+（此后再无输出）
+⇒ 表面上看"stage1 阻塞了"
+```
+**但反汇编 stage1（0x54d154，Thumb）发现它只有 12 条指令：**
+```asm
+54d154: push {r4,r5,r7,lr}
+54d156: add  r7, sp, #0
+54d158: ldr  r4, [pc,#20]      ; 基址字面量
+54d15a: mov  r5, r0
+54d15c: bl   0x54d138          ; 又一个 8 指令的小函数
+54d160: ldr  r3, [pc,#16]
+54d162: add  r4, pc
+54d164: mov  r0, r5
+54d166: ldr  r3, [r4, r3]      ; 读 GOT
+54d168: adds r3, #8
+54d16a: str  r3, [r5, #0]      ; 写回 [r0]
+54d16c: pop  {r4,r5,r7,pc}
+```
+**⇒ 它只做「读 GOT、加 8、写回 [r0]」，物理上不可能阻塞。**
+**⇒ 说明它是在**我们的调用参数不对**的情况下死的（r0 不是真实对象），
+   而不是它在正常路径上阻塞。**
+
+**结论：AS_STAGES 主动调用法不可靠，撤回"stage1 是阻塞点"的判断。**
+
+## ③ 正确的方法：不改调用顺序，只在**调用点之间**打点
+```
+不改 Application_Start 的行为，而是在它自己的执行过程中，
+于 6 个 bl 之后各插一个"返回即打点"的钩子：
+  · 6 个 bl 都是 4 字节，可整体替换为 bl 到 trampoline（需保存原指令）
+  · trampoline 执行原调用，返回后打点，再跳回原 next-PC
+难点：需要正确的 GOT/字面量上下文，否则同样会因 r0/r1 不对而崩。
+更稳妥的替代：**用 gdb 连 QEMU gdbstub，在 6 个地址下断点**（不改任何代码）。
+```
+
+## ④ 本层净收益
+```
+✅ 六段的真实地址已确定（含帧循环 0x54f664），两路互证
+✅ 确认 Application_Start 是"直线六连调"，无分支
+✅ 修掉 ulog 队列耗尽（VALLOCFAIL 694 → 0），本层持续生效
+❌ 主动调用法证伪，撤回 stage1 判断
+```
+
+## ⑤ 下一步
+```
+换 gdb 断点法（不侵入固件）：
+  · QEMU 加 -s（gdbstub 1234）
+  · gdb-multiarch 连上，在 appfw_base+0x54d154/0x54d2b0/0x54f664/0x54d538 下断
+  · appfw_base 从 /proc/PID/maps 或 ASDUMP 日志读
+  · 断点命中顺序 = 实际执行顺序；哪个断点之后不再命中，就是阻塞点
+工具：/usr/bin/gdb-multiarch（configure 时已检测到）
+```
