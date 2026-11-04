@@ -12919,3 +12919,68 @@ im.elf 是加载器：读 libIMDB 的表 → 逐条 dlopen(name, flags)
 ⇒ 判据：判断"缺不缺库"之前，先看**运行时实际 dlopen 了哪些**，
    而不是对比"清单 vs 文件系统"。清单是模板，运行时行为才是真相。
 ```
+
+---
+
+# ★★★★★★★ 2026-11-05 第一百三十七层：**IMDB 钩子破坏启动（已回退）；确认只有 3 个 dlopen 是真的**
+
+## ① "只 dlopen 3 个"这个结论是可靠的
+```
+im.elf 的 UND：dlopen@GLIBC_2.4
+appFwBoot 的 UND：dlopen@GLIBC_2.4
+我们的钩子：dlvsym(RTLD_NEXT, "dlopen", "GLIBC_2.4")
+⇒ **同一个符号、同一个版本，钩子覆盖面没问题**
+⇒ 运行时确实只 dlopen 了 appFwBoot.so / appFw.so / libObj.so
+```
+
+## ② 尝试给 IMDB 遍历接口挂钩子 → **破坏启动，已回退**
+```c
+int IMDB_get_entries(void **entries, unsigned *count)
+int IMDB_find_entry(const char *name, void **out)
+int IMDB_find_target_bit(void *entry, unsigned bit)
+```
+**结果：启动从 7800 行掉到 424 行。**
+```
+IMDB_PROBE target_bit n=1 entry=0x5e941f43 bit=1 ret=2   ← 只有这一次，且 entry 是无效指针
+（get_entries / find_entry 一次都没命中）
+```
+**⇒ 这三个函数的真实签名与我的猜测不符（反汇编那三个地址得到的是数据，
+   说明符号地址是 Thumb 带位或这些是跳板）。钩子把调用方的参数搞乱了。
+⇒ 全部移除，恢复基线。**
+
+## ③ 那么 im.elf 到底怎么加载库？
+```
+im.elf 只 23 KB，不导出 main，字符串里有：
+  libIMDB.so / IMDB_find_entry / IMDB_get_entries / IMDB_find_target_bit
+  以及 libbackup.so / libosal_utm.so / libosal_uipc.so / libjemalloc_ds.so.1
+  / libSTMcmdexecute.so / libssl.so.3 / libstdc++.so.6 / libm.so.6 …
+⇒ 它确实用 IMDB_* 三件套来遍历清单，但**在 QEMU 里只走了 3 条**
+```
+
+## ④ 下一步（换成不侵入的方式）
+```
+A. 用 LD_DEBUG=libs 让 glibc 自己打印所有 dlopen 记录（最省事、零侵入）
+   之前第 58 层已验证过"相机 loader 的 LD_DEBUG 能力可用"
+B. 或用 strace 类手段看文件打开序列
+C. 或在 init 里给 im.elf 加 LD_DEBUG=libs 环境变量
+⇒ 优先 A：LD_DEBUG=libs 会打印每一次 dlopen 的文件名与成功/失败，
+   比我们自己的钩子更权威，而且不改任何代码。
+```
+
+## 本层净收益
+```
+✅ 确认"只 3 个 dlopen"结论可靠（钩子与目标用同一符号同一版本）
+✅ 试过 IMDB 三件套钩子：破坏启动，已回退（并记录了原因）
+✅ 给出下一步的零侵入方案（LD_DEBUG=libs）
+❌ GRMFILL 仍为 0
+```
+
+## 方法论（第 126 条）★★★
+**"改动观测手段本身会改变被观测对象"：
+```
+给 IMDB 三个函数挂钩子，启动从 7800 行掉到 424 行。
+原因：这些符号的地址不是普通函数入口（Thumb 位或跳板），
+     我的固定签名钩子把寄存器/栈搞乱了。
+⇒ 判据：给不熟悉的 ABI 挂钩子前，先用 LD_DEBUG / ltrace 这类
+   **不改代码**的手段观测；确认签名后再写钩子。
+```
