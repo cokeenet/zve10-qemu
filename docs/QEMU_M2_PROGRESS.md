@@ -13293,3 +13293,88 @@ drawFramebuffer 的 ARM 反汇编（前 20 条）显示它是**真实现**：
 ⇒ 判据：怀疑"缺库"之前，先确认**目标功能是否已经有实现**
    （看 libObj/appFw 的导出里有没有对应函数体），有就不必补库。
 ```
+
+---
+
+# ★★★★★★★★ 2026-11-05 第一百四十二层：**`drawFramebuffer` 的调用者找到了，但它也不调用**
+
+## ① GOT/PLT 结构已完全解出
+```
+appFw 里 drawFramebuffer 只有 1 个重定位：
+  0377afe0  00012116 R_ARM_JUMP_SLOT  _ZN2ux6gfxeng14GraphicsEngine15drawFramebufferEv
+PLT 桩：
+  529684 <drawFramebuffer@plt>:
+    add ip, pc, #0x3200000
+    add ip, ip, #0x51000
+    ldr pc, [ip, #2388]!        ; 跳到 GOT 槽位 0x377afe0
+```
+
+## ② ★★★ 决定性验证：**appFw 里没有任何 BL 指令跳转到这个 PLT**
+```
+扫描全部 ARM 模式 BL 指令（0xEBxxxxxx），找目标 = 0x529684：
+  **0 处**
+⇒ appFw **完全不调用** drawFramebuffer。
+  它出现在 UND 表里只是因为链接器保留了符号，
+  或者是给 dlsym/外部传参用的。
+```
+
+## ③ 全树只有两个库导入这两个符号
+```
+drawFramebuffer 的导入者：
+  · appFw.so          ← 已证：0 处调用
+  · AdjChkConfig.so   ← 已加载并 init，但日志里从未出现 drawFramebuffer 调用
+notifyDraw 的导入者：同样是这两个
+```
+
+## ④ AdjChkConfig.so 的性质（已查明）
+```
+已成功加载 + init（LD_DEBUG 确认）：
+  114: find library=AdjChkConfig.so
+  114:   trying file=/usr/lib/AdjChkConfig.so
+  114: calling init: /usr/lib/AdjChkConfig.so
+导出符号全是调整检查相关：
+  app_adjchk_ui::presenter_jiritsu::open_tp_check / close_jiritsu
+  app_adjchk_ui::pin_manager_infra_pin / view_icon / scoped_qid …
+⇒ **这是"调整检查 UI"（产线/维修用的触摸屏检查界面），不是正常菜单**
+⇒ 与 appFwBoot 的 strcmp 分支对应：
+   arg=="AppFw" → 加载 appFw.so（正常 UI）
+   否则          → 加载 AdjChkConfig.so（调整检查）
+   我们走的是 AppFw 分支（日志确认 hooked Application_Start）
+```
+
+## ⑤ 因此得到一个重要结论
+```
+ZV-1M2 这套树里：
+  · 没有任何库**调用** drawFramebuffer / notifyDraw
+  · 正常菜单（appFw）不调用；调整检查（AdjChkConfig）也不调用
+⇒ **这两个符号是死代码，或者需要某个我们没触发的条件**
+
+最可能的解释：**正常菜单从未被创建**（a7c2 第 3 步"用原框架建立菜单"），
+所以构造函数/初始化里"创建 screen → 触发 draw"这条链根本没启动。
+```
+
+## ⑥ 下一步
+```
+A. 查 libObj 内部是否有**调用** drawFramebuffer 的地方（自调用）
+B. 查 GraphicsEngine 的其它方法里是否有调用链
+   （如 update() / process() / render() 等）
+C. 回到 a7c2 第 3 步：主动调用"创建 screen/controller"的入口
+```
+
+## 本层净收益
+```
+✅ 完整解出 GOT/PLT 结构，确认 appFw 对 drawFramebuffer 是 0 调用
+✅ 查明 AdjChkConfig.so 的性质（调整检查 UI，已加载 init，不是菜单）
+✅ 确认"死代码"结论：两个导入者都不调用
+❌ 帧 = 0
+```
+
+## 方法论（第 131 条）★★★
+**"UND 表里有 ≠ 会调用（第三层）"：
+```
+第一层：符号存在 ≠ 代码用它（GRM_gpermFillrect）
+第二层：符号被导入 ≠ 运行时会调用（drawFramebuffer 的 UND 项）
+第三层：**即使有 PLT 桩和 GOT 槽位，也可能没有任何 BL 跳过去**
+⇒ 判据：确认某函数是否被调用，最硬的证据是**扫 BL 指令**
+   （ARM: 0xEBxxxxxx，Thumb: 0xF000xxxx），比 readelf UND 可靠得多。
+```
