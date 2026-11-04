@@ -12984,3 +12984,91 @@ C. 或在 init 里给 im.elf 加 LD_DEBUG=libs 环境变量
 ⇒ 判据：给不熟悉的 ABI 挂钩子前，先用 LD_DEBUG / ltrace 这类
    **不改代码**的手段观测；确认签名后再写钩子。
 ```
+
+---
+
+# 🚨🚨🚨 2026-11-05 第一百三十八层：**重大纠正 —— 我的 dlopen 钩子严重漏报；实际加载 154 个库、53 个失败**
+
+## ① 上一轮"只 dlopen 3 个库"的结论**是错的**
+```
+我的 dlopen 钩子只记录了 3 个：
+  appFwBoot.so / appFw.so / libObj.so
+LD_DEBUG=libs 显示实际加载了 **154 个库**，其中 118 个成功 init。
+```
+**⇒ 我的钩子只覆盖了进程启动早期的一小段。im.elf 的后续 dlopen 走的是别的路径
+   （很可能因为 libdl.so.2 被单独 dlopen 后，其内部的 dlopen 不走全局符号）。**
+**⇒ 上一轮基于"只 3 个"的所有推论作废。**
+
+## ② ★★★ 真实数据（LD_DEBUG=libs，权威）
+```
+find library 的唯一库名: 154 个
+calling init 成功:       118 个
+find 了但没 init 的:      53 个  ← **这就是缺失的库**
+（注意：唯一的 "not found" 是 `/init: line 42: head: not found`，是我探针脚本的 bug，无关）
+```
+
+## ③ ★★★★ 53 个缺失库，关键的有
+```
+libgpe.so          ← ★ 绘图库（a7c2 路线的核心！）
+gui.so             ← ★ UI 主库
+libNVM.so / libMprSeq.so / libAdjustUIProxy.so / libinfraStillPool.so
+libInfraUpmPro.so / libJiritsuUIView.so / libJiritsuSlave.so
+libdiablo.so / libbkdmn.so / libmprctrl.so / libfan.so / libi2cuipc.so …
+```
+
+### libgpe.so 的加载记录（决定性证据）
+```
+114: find library=libgpe.so [0]; searching
+114:   search path=/usr/lib:/lib  (LD_LIBRARY_PATH)
+114:   trying file=/usr/lib/libgpe.so       ← 不存在
+114:   trying file=/lib/libgpe.so            ← 不存在
+114:   search cache=//etc/ld.so.cache
+⇒ 加载失败 ⇒ 绘图库从未进入进程 ⇒ **GRMFILL 永远是 0**
+```
+
+## ④ 53 个库在各固件里的分布（说明它们是可选/条件加载）
+| 固件 | 有 | 总数 |
+|---|---|---|
+| **ZV1M2（我们用的）** | **1** | 53 |
+| ZVE10M2（ZV-E10 II） | 16 | 53 |
+| ZVE10（一代） | 4 | 53 |
+
+**⇒ 三个固件里都基本找不到这 53 个库。
+   ⇒ 它们不是"我们拷漏了"，而是**IMDB 清单里的可选/条件项**
+     （可能由 profile 位、机型、区域、功能开关决定）。**
+**⇒ 但也可能：ZV-1M2 固件包里的 /usr 是**精简版**，
+   真正的完整 UI 库在设备的另一个分区（如 /system 或只在实际机器上）。**
+
+## ⑤ 这解释了整条链
+```
+libgpe.so 缺失 → 没有软件绘图实现
+gui.so 缺失    → 没有 UI 主库
+⇒ 引擎即使跑到 Application_Start，也**没有任何可用的绘图后端**
+⇒ GRMFILL/GRMBLIT = 0 是必然结果，与"卡住"无关
+```
+
+## ⑥ 下一步（三条，按可行性）
+```
+A. ★ 检查 ZV-1M2 设备上这些库是否在别的分区
+   （/system、/usr/local、nflasha3 等；我们只看了 usr/lib）
+B. 用 ZVE10M2 的 16 个库补齐 —— 但机型不同，ABI 风险
+C. 若确认原厂设备上也没有 → 说明 M2 引擎的绘图**完全在 GPU**，
+   软件路线不成立，必须回到建模 sugilite（与用户已否决的方向冲突）
+```
+
+## 本层净收益
+```
+✅ 用权威手段（LD_DEBUG=libs）推翻了上一轮的错误结论
+✅ 拿到 154 个实际加载库 / 118 成功 / 53 失败 的完整数据
+✅ 定位到 libgpe.so + gui.so 缺失是 GRMFILL=0 的直接原因
+❌ GRMFILL 仍为 0（但原因现在清楚了）
+```
+
+## 方法论（第 127 条）★★★★
+**"自己的钩子可能只覆盖冰山一角 —— 用系统自带的手段交叉验证"：
+```
+我的 dlopen 钩子看到 3 个，LD_DEBUG 看到 154 个，差 50 倍。
+原因：进程内部可能用 libdl 的私有路径、或 dlopen 被多次绑定。
+⇒ 判据：统计类问题（加载了多少、调用了多少次）优先用 LD_DEBUG / strace 等
+   **系统级**手段；自己的钩子只能证明"我看到了什么"，不能证明"总共发生了什么"。
+```
