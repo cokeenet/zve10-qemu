@@ -12364,3 +12364,88 @@ a7c2 的做法：在受控时机调用原九参数入口 0x1e78870，把 0x308 �
      然后模仿它调用"切到菜单"的版本
   C. 从 libObj 的 uxengine_init2（216 字节）往下追，确认它是否本应创建初始屏
 ```
+
+---
+
+# ★★★★★★★★ 2026-11-05 第一百二十九层：**Application_Start 第一件事就撞在无人消费的日志队列上**
+
+## ① ★★★ 完整读通 `appFwBoot.Application_System_Init`（284 字节）
+```asm
+1270: push {r4-r8,lr}; sub sp,#72
+1278: memset(buf, 0, 32)
+1286: snprintf(buf, 32, <fmt>, <GOT值>)      ← 拼消息
+1298: osal_valloc_msg_wait(0x8f013a, &msg, 0x34, ...)   ★ 从 ulog 队列分配！
+12b0: msg[0]=9; msg[1]=0x32; snprintf(msg+2, 0x83, ...)
+12d8: osal_snd_sync_msg(0x8f013a, msg)      ★ 同步发送到 ulog 队列
+12e0: osal_free_msg(0x8f013a, msg)
+12e4: cmp r8, #0  ; strcmp(arg, "AppFw")    ← 分支
+12f6/1308: dlopen("appFw.so" | "AdjChkConfig.so", 0x101)
+1318: dlsym(handle, "Application_Start" | "_ZN13app_adjchk_ui9main_loopEv")
+1330: 参数块：{fn, 4, GOT值, 0x1cf, 1, 0}   ← 九参数
+1344: osal_create_waitable_thread(&param)
+1348: osal_set_cpu(thread, 15)
+```
+**字面量池已解出全部字符串：**
+```
+0x1711 'AppConfig.so'   0x171e 'appFw.so'   0x1727 'Application_Start'
+0x1739 'AdjChkConfig.so'  0x1749 '_ZN13app_adjchk_ui9main_loopEv'
+0x1768 'AppFw'   0x176e '/usr/share/app/'   0x177e '/usr/share/app/area_check_data.dat'
+```
+
+## ② 运行时验证：这条链**确实走通了**
+```
+ARGTRACE dlopen path=appFwBoot.so flags=0x101 -> 0xb8f68
+INITSEQ resolve Application_System_Init
+ARGTRACE hooked Application_System_Init = 0xf0b6271
+ARGTRACE dlopen path=appFw.so flags=0x101 -> 0xb92c8       ← 走了 "AppFw" 分支
+ARGTRACE hooked Application_Start = 0x2e827581             ← dlsym 成功
+```
+**⇒ dlopen + dlsym + 建线程全部成功，`Application_Start` 真的在跑。**
+
+## ③ ★★★★ 真正的第一道墙：`0x8f0313` / `0x8f013a` 无人消费
+```
+Application_Start ENTER 之后立刻：
+  ULOG_DRAIN n=1 size=36 (queue full)
+  SSM tid=190 qid=0x8f0313 mod=/usr/lib/appFw.so off=0x2c2b003
+  （此后 696 次）
+```
+收发平衡（本次运行）：
+| 队列 | SSM 发送 | RCVC 接收 | REG 注册 |
+|---|---|---|---|
+| 0x8f0139 | 2 | **2** | 0 |
+| 0x8f013a | 302 | **0** | 0 |
+| **0x8f0313** | **696** | **0** | 0 |
+
+**⇒ `ulogio` 守护进程退出（`ULOGIO_EXIT=255`），这两个日志队列没有任何消费者。
+   `Application_Start` 一进去就发日志，队列满后 `valloc` 失败/发送阻塞，
+   于是它永远走不到后面的绘图请求 —— 这正是 `GRMFILL=0` 的直接原因。**
+
+## ④ ulogio 为什么退出（已查明依赖）
+```
+ulogio.elf 需要：/dev/mem、/proc/klog、/setting/ulogio.bin
+错误串： "failed to open /dev/mem" / "failed to map /dev/mem" /
+        "failed to get log address(%x)" / "failed to open %s"
+kikilog.ko 里**没有** /proc/klog 相关字符串 ⇒ 日志缓冲区地址由 ulogio.bin 提供
+```
+`/setting/ulogio.bin` 头部已解出结构（M2 版 3400 B）：
+```
+0000: 18 00 00 00  "LGNM"  "191H_Dsc-Diadem"
+0018: 0c 00 00 00  "RECO"  01 00 00 00
+0024: 10 00 00 00  "LOGB"  00 50 08 03  00 80 47 00   ← ★ 日志缓冲区地址/大小候选
+0034: 10 00 00 00  "PRTB"  00 d0 4f 03  00 80 00 00
+0040: 0c 00 00 00  "CHAN"  ...
+0048: 0c 00 00 00  "ISYS"  ...
+```
+**推测：`LOGB` 后 8 字节 = 日志缓冲区物理地址 `0x03085000` + 大小 `0x00478000`（约 4.5 MB）。**
+
+## ⑤ 下一步（三条，按成功概率）
+```
+A. ★ 让 ulogio 活下来：给它 /dev/mem（我们内核有 /dev/mem 吗？要确认）
+   + /proc/klog（由 kikilog 创建，或我们造一个 proc 节点）
+   + LOGB 指向真实 RAM 区域
+B. 若 ulogio 起不来：在 argtrace 里**接管 0x8f0313 和 0x8f013a 两个队列**——
+   注册接收回调 + 循环丢弃消息（给它们做"垃圾桶"消费者）。
+   这比让 ulogio 跑起来简单得多，且日志内容我们不需要。
+C. 只在必要时做：伪造 valloc 成功（已试过，队列会一直满，不可取）
+```
+**优先 B**：注册一个 consumer 把这些日志消息收走，`Application_Start` 就能继续往下走。
