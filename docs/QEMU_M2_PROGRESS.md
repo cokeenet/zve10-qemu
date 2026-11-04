@@ -13864,3 +13864,84 @@ B. 若修正后 drawFramebuffer 真的画了东西 ⇒ 检查 GPE 包 / 帧缓�
    · 符号值是偶数 ⇒ ARM 函数，地址必须 4 字节对齐
    同时应该查 FSR 编码表，而不是凭印象解释错误码。
 ```
+
+---
+
+# ★★★★★★★★ 2026-11-05 第一百五十层：**纠正上轮误判；drawFramebuffer 真的执行了业务逻辑并改写对象状态**
+
+## ① 上轮"self 指针越界"是**误判**，已纠正
+```
+上一层我说：self=0xa5dc044 超出 rw-p 段末尾 0xa5dc000 ⇒ 指针错误
+真相：libObj 的 .bss 是一段**独立匿名映射**，我的 MAPS_PROBE 按文件名
+     过滤，所以看不到它。
+本层改用全量 maps（不过滤文件名）：
+  FDMAPS 0a06b000-0a3a6000 r-xp 00000000  /usr/lib/libObj.so   ← 代码
+  FDMAPS 0a3a6000-0a3ad000 ---p 0033b000  /usr/lib/libObj.so   ← 保护页
+  FDMAPS 0a3ad000-0a433000 rw-p 0033a000  /usr/lib/libObj.so   ← 数据
+  FDMAPS **0a433000-0a443000 rw-p 00000000 00:00 0**           ← ★ .bss（匿名）
+  self = 0xa433044  ⇒ 落在 .bss 内 ✅ **指针完全有效**
+⇒ **GOT 偏移 0x357490 是对的**，之前两层的"偏移有误差"结论全部撤回。
+```
+
+## ② ★★★★★ drawFramebuffer 真的执行了（对象状态前后对比）
+```
+FORCE_DRAW slot=0xa3c2490 self=0xa433044
+FDOBJ before : 004e25d8 00000000 d1391f90 863f5760 00000000 00000000 004b82c0 00000000
+FDOBJ before2: 00000000 00000000 863f5760 00000000 00000000 00000000 00000000 00000000
+FORCE_DRAW fn=0xa15065b thumb-bit=1
+FORCE_DRAW returned normally
+FDOBJ after  : 004e25d8 00000000 d1391f90 863f5760 00000000 00000000 **049777fd** 00000000
+FDOBJ after2 : **044bf53d** 00000000 **863f5761** 00000000 00000000 00000000 00000000 00000000
+```
+**三处字段发生变化：**
+```
+o[6]  0x004b82c0 → 0x049777fd     （换了一个指针/句柄）
+o[8]  0x00000000 → 0x044bf53d     （从空变有）
+o[10] 0x863f5760 → 0x863f5761     （+1，计数器/状态位）
+```
+**⇒ `drawFramebuffer` 不是空转，它真的走了渲染逻辑并改写了引擎对象。**
+
+## ③ drawFramebuffer 内部调用链（证明走的是渲染路径）
+```
+e5668: bl 0x113e8c      ; 内部
+e566c: bl 0x10fe8c      ; 内部
+e5672: bl 0x1004f8      ; 内部
+e56d2: blx getFramebufferWidth@plt    ← ★ 读帧宽
+e56dc: blx getFramebufferHeight@plt   ← ★ 读帧高
+e56f4: bl 0x1022e4
+e5708/0xe570c/0xe5710: bl 内部
+⇒ 它确实在按 640×480 的帧缓冲做渲染。
+```
+
+## ④ 同时发现：GPE 硬件通路存在
+```
+日志：!!! GPE HW: bar remapped 0xf1000000->0xf1000000 size 4000
+⇒ 有 GPE 的 MMIO 映射（0xf1000000，4KB）
+⇒ 这是 a7c2 路线里"软件 GPE"要接管的那块
+```
+
+## ⑤ 但 GRMFILL 仍为 0
+```
+⇒ drawFramebuffer 没有走 GRM_gpermFillrect（我们挂钩的那条）
+⇒ 它内部用的是别的绘图原语（可能是 stella/alcor 的绘制层）
+⇒ 下一步应该挂 drawFramebuffer 内部的那些 bl 目标
+```
+
+## 本层净收益（本轮最大）
+```
+✅ **纠正上轮误判**：self 指针有效，GOT 偏移正确
+✅ **证明 drawFramebuffer 真的执行了**（对象三个字段发生变化）
+✅ 证明它走的是 640×480 渲染路径（调 getFramebufferWidth/Height）
+✅ 发现 GPE HW bar 已映射（0xf1000000）
+❌ 帧缓冲里还没有可抓的画面
+```
+
+## 方法论（第 139 条）★★★★
+**"匿名映射（.bss）会让按文件名过滤的 maps 探测漏掉整段内存"：
+```
+我按 `strstr(line, "libObj.so")` 过滤 maps，只看到 3 行（r-xp/---p/rw-p），
+于是判定 self 越界。实际 .bss 是 `rw-p 00000000 00:00 0`（无文件名）的匿名段，
+紧跟在数据段之后，self 正好落在里面。
+⇒ 判据：用 /proc/self/maps 定位对象时，**必须打印地址范围内的所有行**
+   （包括匿名段），不能只按文件名过滤。
+```
