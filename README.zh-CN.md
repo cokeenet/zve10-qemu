@@ -33,15 +33,18 @@
 
 ## 这是什么
 
-同一台相机上的三条独立工作线：
+**目标只有一件事：把新一代菜单 UI（ZV-1M2 / CXD90045_k8 代）移植到这台机身上。**
+这里的其它一切，要么是它的铺垫，要么是迭代它的工具，要么是让我们敢于试错的兜底。
 
-| | 工作线 | 产出 | 状态 |
-|---|---|---|---|
-| **A** | **真机救援 / 防砖** | BootROM 串口注入、USB fastboot、eMMC 裸读写、1 字节修复 | **已在真机闭环** |
-| **B** | **固件逆向 / 系统测绘** | 升级包解密解包、分区表、JIRITSU 通道、系统结构 | **主要结构已测绘** |
-| **C** | **QEMU 仿真** | 原厂固件启动并运行机身 App | **能启动；显示链路未完成** |
+| | 工作线 | 产出 | 定位 | 状态 |
+|---|---|---|---|---|
+| **N** | **新菜单移植** —— *目标本身* | ZV-1M2 菜单栈跑在 ZV-E10 上：混合 `/usr` 树、两层 UI 链（`appFwBoot` → `appFw` → `Application_Start`） | **目标** | **已启动到 `Application_Start`；尚无帧** |
+| **A** | **真机救援 / 防砖** | BootROM 串口注入、USB fastboot、eMMC 裸读写、1 字节修复 | 安全网 | **已在真机闭环** |
+| **B** | **固件逆向 / 系统测绘** | 升级包解密解包、分区表、JIRITSU 通道、系统结构、菜单资源格式 | 铺垫 | **主要结构已测绘** |
+| **C** | **QEMU 仿真** | 原厂固件启动并运行机身 App，带可插桩探针 | **服务于 N 的迭代工具** | **能启动；显示链路未完成** |
 
-三条线是互补而非串行的：系统起不来时 A 是唯一退路，B 解释系统由什么构成，C 让你不碰硬件也能迭代。
+依赖方向是自下而上的：**B** 解释系统由什么构成，**C** 让我们不碰硬件就能迭代 **N**，
+**A** 是搞砸之后唯一的退路 —— 但它们全都因为 **N** 而存在。
 
 ## 项目状态
 
@@ -62,7 +65,27 @@
 
 详见 [docs/FIRMWARE_REPORT.md](docs/FIRMWARE_REPORT.md) · [docs/GEN1_SYSTEM_STRUCTURE.md](docs/GEN1_SYSTEM_STRUCTURE.md) · [docs/JIRITSU_CHANNEL.md](docs/JIRITSU_CHANNEL.md)
 
-### C — QEMU 仿真 🟡
+### N — 新菜单移植 🟡 *（目标本身）*
+
+把 ZV-1M2 的菜单栈搬到 ZV-E10 上。这一代是**两层 UI**：`appFwBoot`（8 KB）解析并调用
+`Application_System_Init`，后者起一个线程跑 `appFw.so` 的 `Application_Start` ——
+与老一代单层引擎（`libObj.so` 自己导出 `Application_System_Init`）结构完全不同。
+
+**已通**：混合树能启动、解析 **66** 条初始化项、进入 `Application_Start`。
+**未通**：**从未抓到过一帧**。三条阻塞都已钉到具体接口（见下）。
+此前"已渲染出新菜单"的说法已撤回 —— 那一帧来自**另一个 QEMU 进程**。
+
+三条阻塞，每条都钉到接口而不是笼统的"卡住"：
+
+| # | 阻塞 | 证据 |
+|---|---|---|
+| 1 | backup 服务队列 `0x3e014d` **能分配消息但无接收者** —— 62 条注册记录里没有它。伪造回包会让启动卡在 `MWF_Init`。 | `backup.ko` 插入时必须 `file_load` 到合法的 `/setting/Backup.bin`，而固件包不自带。 |
+| 2 | 图形驱动在 **IRQ 76** 注册 `sugilite_interrupt`，在 `bar + 0x34` 读状态；等完成位的 ioctl 永不返回。强行放行会在约 2,070 行处 abort。 | 最小模拟设备能送中断、驱动也提交了约 19 个栅栏包，但从不完成。 |
+| 3 | `/dev/streamfb`（`format=1`）的像素格式**未确认** —— RGBA4444 和 RGB565 两种解释都得不到合理图像。 | 早期所有关于帧**内容**的判断均未经证实。 |
+
+详见 [docs/NEWMENU_STATUS.md](docs/NEWMENU_STATUS.md) · [docs/QEMU_M2_PROGRESS.md](docs/QEMU_M2_PROGRESS.md) · [docs/MASTER_HANDOVER_NEWMENU.md](docs/MASTER_HANDOVER_NEWMENU.md)
+
+### C — QEMU 仿真 🟡 *（服务于 N 的工具）*
 
 原厂固件能启动、加载平台模块、并让机身 App（`im.elf`）持续运行，无堆损坏、无 abort。
 
@@ -125,6 +148,7 @@ cd fastboot && make build
 
 | 文档 | 用途 |
 |---|---|
+| [docs/NEWMENU_STATUS.md](docs/NEWMENU_STATUS.md) | ★ **新菜单移植当前状态** —— 通到哪、卡在哪、哪些结论已撤回 |
 | [docs/README.md](docs/README.md) | 300+ 篇文档的主题索引 |
 | [docs/STATUS_20261023.md](docs/STATUS_20261023.md) | 状态快照 + 下次开工清单 |
 | [docs/FASTBOOT_OPERATIONS.md](docs/FASTBOOT_OPERATIONS.md) | Pico 注入、接线、stage2、读校验刷写的完整流程 |

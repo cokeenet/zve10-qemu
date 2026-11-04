@@ -33,16 +33,20 @@ hardware-level rescue, firmware reverse engineering, and running the stock firmw
 
 ## What this is
 
-Three independent workstreams, all on the same camera:
+**The goal is one thing: porting the newer menu UI (ZV-1M2 / CXD90045_k8 generation) onto this body.**
+Everything else here is either groundwork for it, a tool to iterate on it, or the safety net that lets
+us survive getting it wrong.
 
-| | Workstream | What it produces | Status |
-|---|---|---|---|
-| **A** | **Hardware rescue / anti-brick** | BootROM serial injection, USB fastboot, raw eMMC read/write, single-byte repair | **Closed loop on real hardware** |
-| **B** | **Firmware RE / system mapping** | Update-package decryption and unpacking, partition map, JIRITSU channel, system topology | **Main structures mapped** |
-| **C** | **QEMU emulation** | Stock firmware booting and running the body application under emulation | **Booting; display pipeline unfinished** |
+| | Workstream | What it produces | Role | Status |
+|---|---|---|---|---|
+| **N** | **New menu port** — *the objective* | ZV-1M2's menu stack running on ZV-E10: hybrid `/usr` tree, two-stage UI chain (`appFwBoot` → `appFw` → `Application_Start`) | **The goal** | **Boots to `Application_Start`; no frame yet** |
+| **A** | **Hardware rescue / anti-brick** | BootROM serial injection, USB fastboot, raw eMMC read/write, single-byte repair | Safety net | **Closed loop on real hardware** |
+| **B** | **Firmware RE / system mapping** | Update-package decryption and unpacking, partition map, JIRITSU channel, system topology, menu resource formats | Groundwork | **Main structures mapped** |
+| **C** | **QEMU emulation** | Stock firmware booting and running the body application under emulation, with instrumented probes | **Iteration tool for N** | **Booting; display pipeline unfinished** |
 
-They are complementary rather than sequential: A is the only path back when the system cannot boot,
-B explains what the system is made of, and C lets you iterate without touching hardware.
+The dependency runs downward: **B** explains what the system is made of, **C** lets us iterate on **N**
+without touching hardware, and **A** is the only way back when something bricks. But every one of them
+exists because of **N**.
 
 ## Project status
 
@@ -63,7 +67,29 @@ Full decryption and unpacking of the official update package, partition table re
 
 Details: [docs/FIRMWARE_REPORT.md](docs/FIRMWARE_REPORT.md) · [docs/GEN1_SYSTEM_STRUCTURE.md](docs/GEN1_SYSTEM_STRUCTURE.md) · [docs/JIRITSU_CHANNEL.md](docs/JIRITSU_CHANNEL.md)
 
-### C — QEMU emulation 🟡
+### N — New menu port 🟡 *(the objective)*
+
+Bringing the ZV-1M2 menu stack up on a ZV-E10. It is a two-stage UI in this generation: `appFwBoot`
+(8 KB) resolves and calls `Application_System_Init`, which starts a thread running `appFw.so`'s
+`Application_Start` — a completely different shape from the older single-layer engine where
+`libObj.so` exported `Application_System_Init` itself.
+
+Working today: the hybrid tree boots, resolves **66** initialisation entries, and reaches
+`Application_Start`. Not working: **no frame has ever been captured**. Three blockers are pinned down
+to specific interfaces (see below). Earlier claims that this had rendered were retracted — the frame
+came from a different emulator process.
+
+Three blockers, each pinned to an interface rather than a vague "it hangs":
+
+| # | Blocker | Evidence |
+|---|---|---|
+| 1 | Backup service queue `0x3e014d` accepts allocation but **has no receiver** — no entry among the 62 observed registrations. Faking the reply stops the boot at `MWF_Init`. | `backup.ko` must load a valid `/setting/Backup.bin` at insert; the firmware package ships none. |
+| 2 | Graphics driver registers `sugilite_interrupt` on **IRQ 76**, reads status at `bar + 0x34`; the ioctl waiting on the completion bit never returns. Forcing it open aborts at ~2,070 log lines. | Minimal emulated device delivers interrupts and the driver submits ~19 fence packets, but never completes. |
+| 3 | Pixel format of `/dev/streamfb` (`format=1`) **unconfirmed** — neither RGBA4444 nor RGB565 interpretation yields a sane image. | Frame *content* judgements from earlier rounds are unverified. |
+
+Details: [docs/NEWMENU_STATUS.md](docs/NEWMENU_STATUS.md) · [docs/QEMU_M2_PROGRESS.md](docs/QEMU_M2_PROGRESS.md) · [docs/MASTER_HANDOVER_NEWMENU.md](docs/MASTER_HANDOVER_NEWMENU.md)
+
+### C — QEMU emulation 🟡 *(tool for N)*
 
 The stock firmware boots, loads its platform modules, and runs the body application (`im.elf`) without heap corruption or aborts.
 
@@ -126,6 +152,7 @@ Start at the **[documentation map](docs/README.md)**. The pages most people need
 
 | Document | Why |
 |---|---|
+| [docs/NEWMENU_STATUS.md](docs/NEWMENU_STATUS.md) | ★ **Current state of the new-menu port** — what works, what blocks it, what was retracted |
 | [docs/README.md](docs/README.md) | Index of all 300+ documents, grouped by topic |
 | [docs/STATUS_20261023.md](docs/STATUS_20261023.md) | Status snapshot and next-session checklist |
 | [docs/FASTBOOT_OPERATIONS.md](docs/FASTBOOT_OPERATIONS.md) | Pico injection, wiring, stage2, verified read/write procedure |

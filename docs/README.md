@@ -7,6 +7,7 @@
 
 | 文件 | 作用 |
 |---|---|
+| `NEWMENU_STATUS.md` | ★ **新菜单移植的当前状态单页** —— 与 `QEMU_M2_PROGRESS.md` 配套，先读这个 |
 | `TOOLKIT_REFERENCE.md` | 外部参考项目 `dino2048/zv-e10-toolkit`（MIT）：引进了哪些工具、怎么分工、注意事项 |
 | `ROOT_TERMINAL_AND_SERVICE_MODE.md` | ★ Sony 服务模式（Senser）与 **root 终端**：相机能启动时一句话修 preload 的另一条路 |
 | `STATUS_20261023.md` | 收工存档 + 开工操作单 |
