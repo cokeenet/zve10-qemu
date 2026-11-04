@@ -13802,3 +13802,65 @@ B. 或接受当前状态，把结论整理成"软件替身路线在 M2 上的可
    仅仅读出来内容正确（甚至是正确序言）**不能证明它可执行**。
    读写权限与执行权限在 ARM MMU 里是分离的（AP vs XN）。
 ```
+
+---
+
+# ★★★★★★★★ 2026-11-05 第一百四十九层：**突破 —— 找出 prefetch abort 的真正原因（Thumb 位）；drawFramebuffer 成功执行**
+
+## ① ★★★★★ 根因：`drawFramebuffer` 是 **Thumb-2** 函数，我一直用 ARM 模式调
+```
+符号值： 0x000e565b   ← **奇数** ⇒ Thumb 函数
+我一直用：base + 0xe565a（偶数）⇒ CPU 进入 **ARM 状态**
+          而 0xa22065a 是 2 字节对齐 ⇒ ARM 要求 4 字节对齐 ⇒ **对齐错误**
+FSR=0x001 在 ARMv7 里就是 **Alignment fault**（我之前误判为 translation fault）
+```
+
+## ② 修正后：**drawFramebuffer 成功执行**
+```
+FORCE_DRAW base=0xa214000 self=0xa5dc044
+FORCE_DRAW fn=0xa2f965b (Thumb 位=1)
+READBACK   fn[0]=0441f0e9  ← 小端半字 e92d/41f0，从奇数地址读出后偏移 1 字节
+**FORCE_DRAW returned normally**   ← ★★★ 执行成功，无 crash
+```
+
+## ③ 但仍然 GRMFILL=0，且发现 this 指针有偏差
+```
+self = 0xa5dc044
+libObj 的 rw-p 段 = 0xa556000 .. 0xa5dc000
+⇒ self 恰好在 rw-p **末尾之外 0x44 字节**
+⇒ 而且 drawFramebuffer 里会读 [r4, #0x23a]，self+0x23a = 0xa5dc27e 也越界
+⇒ **this 指针是错的** ⇒ 函数走了提前返回的分支 ⇒ 没画任何东西
+
+⇒ 说明 **GOT 偏移 0x357490 算错了 ~0x44**
+  （我按 `add r3,pc` + `ldr r3,[r3,r2]` 推的，
+   但 Thumb 的 `add rX,pc` 用的是 (PC+4) & ~3，我可能少加了几字节）
+```
+
+## ④ 本层净收益（重大）
+```
+✅ **解决了困扰 3 轮的 prefetch abort**：根因是 Thumb/ARM 模式错误
+✅ **drawFramebuffer 成功执行并正常返回**（证明渲染函数本身可用）
+✅ 发现 GOT 偏移有 ~0x44 误差，导致 this 指针错误
+❌ GRMFILL=0（因为 this 错，走了提前返回）
+❌ 帧 = 0
+```
+
+## ⑤ 最后 2 轮的方向
+```
+A. ★ 修正 GOT 偏移：精确解析 Thumb 的 `add rX,pc` 语义
+   （Thumb-2 的 add rX,pc 实际是 (PC & ~3) + imm，PC = 当前指令地址 + 4）
+   目标：让 self 落在 rw-p 段内且 self+0x23a 不越界
+B. 若修正后 drawFramebuffer 真的画了东西 ⇒ 检查 GPE 包 / 帧缓冲
+```
+
+## 方法论（第 138 条）★★★★★ 本轮最重要
+**"FSR=0x001 在 ARMv7 是 Alignment fault，不是 Translation fault"：
+```
+我连续 3 轮把 FSR 0x001 判为"页表未映射"，据此怀疑 MMU、QEMU 模型、
+进程映射……全是错方向。
+真相：0x001 = Alignment fault ⇒ 2 字节对齐地址进了 ARM 状态。
+⇒ 判据：ARM 上 prefetch abort 先看**地址与模式是否匹配**：
+   · 符号值是奇数 ⇒ Thumb 函数，调用必须带 bit0
+   · 符号值是偶数 ⇒ ARM 函数，地址必须 4 字节对齐
+   同时应该查 FSR 编码表，而不是凭印象解释错误码。
+```
