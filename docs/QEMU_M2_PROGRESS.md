@@ -13660,3 +13660,69 @@ C. 若 A 能出帧 ⇒ 证明渲染路径可用，只需找到"该调用它的�
 ⇒ 判据：静态分析陷入"谁调用它"的死胡同时，改为**读运行时状态**
    （单例指针、标志位、返回值），能一跳越过整个调用链。
 ```
+
+---
+
+# ★★★★★★★ 2026-11-05 第一百四十七层：**发现 dladdr 在 glibc 2.11 上返回错误基址；强制调用仍失败**
+
+## ① ★★★★ 重大发现：`dladdr` 的 `dli_fbase` 不可靠
+```
+同一次运行的两组数据：
+  dladdr dli_fbase      = 0x09f2a000   ← 错
+  /proc/self/maps r-xp  = 0x0a0cd000   ← 对（实测，两次运行各不同但都差 ~0x1a3000）
+
+⇒ **glibc 2.11 的 dladdr 对多 LOAD 段的 .so 返回的 fbase 有系统偏移**
+⇒ **我们之前所有用 dladdr 算的地址（GE_PROBE 的 GOT 槽位等）都是错的**
+```
+
+## ② 修正后仍失败
+```
+改用 maps 的 r-xp 段起点作为基址：
+  GE_PROBE base=0x9f41000（与 maps 一致 ✅）
+  slot=0xa298490, value=0x0a309044（非零，但可能是从错误位置读的）
+  FORCE_DRAW fn = base + 0xe565a = 0xa02665a
+  该地址确实在 r-xp (0x9f41000..0xa27c000) 范围内
+  **但仍然 prefetch abort**
+```
+**⇒ 偏移 `0xe565a` 理论上正确（文件里那 8 字节确实是
+   `2d e9 f0 41 04 46 82 b0` = `stmdb sp!,{r4-r8,lr}; mov r4,r0; sub sp,#8`），
+   但 guest 里执行时仍不可执行。**
+
+## ③ 尚未排除的可能
+```
+A. guest 里的 libObj.so 与我们磁盘上的**不是同一份**
+   （md5 738a2331 是树里的；但 guest 加载的是 cpio 里那份，应该一致）
+B. r-xp 段的**权限位**在 guest 里不完全是可执行（QEMU 内存属性问题）
+C. FORCE_DRAW 的调用方式（函数指针）触发了 ARM/Thumb 状态错误
+   —— drawFramebuffer 是 ARM 模式（vaddr 0xe565a 是偶数），
+      但我用 `(void(*)(void*))` 强转后调用，编译器可能生成 `blx`（切 Thumb）
+   ⇒ **这是最可能的原因：ARM 函数必须用 `bx` 到偶数地址，
+      而 C 函数指针调用可能设置 Thumb 位**
+```
+
+## ④ 下一轮（最后一次技术尝试）
+```
+用内联汇编精确控制：
+  mov r0, self
+  mov lr, pc
+  bx  fn        ; ARM 模式跳转（fn 是偶数地址）
+而不是 C 函数指针调用。
+```
+
+## 本层净收益
+```
+✅ **发现 dladdr 在 glibc 2.11 上返回错误基址**（这是重要工具性发现）
+✅ 改用 /proc/self/maps 的 r-xp 段起点，基址计算正确
+✅ 确认 0xe565a 处确实是 stmdb（ARM 函数序言）
+❌ 强制调用仍 prefetch abort（怀疑 ARM/Thumb 状态问题）
+❌ 帧 = 0
+```
+
+## 方法论（第 136 条）★★★★
+**"dladdr 的 fbase 在老 glibc 上不可信"：
+```
+dladdr 返回 0x09f2a000，实际映射 0x0a0cd000，差 0x1a3000（约 1.6 MB）。
+基于它的所有地址计算全错，导致 prefetch abort。
+⇒ 判据：在嵌入式老 glibc 环境里算模块内地址，
+   **必须用 /proc/self/maps 的 r-xp 段起点**，不要用 dladdr 的 dli_fbase。
+```
