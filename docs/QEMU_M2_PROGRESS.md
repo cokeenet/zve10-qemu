@@ -12030,3 +12030,68 @@ tid=190 在 libObj.so+0x12a22b 高频 osal_snd_sync_msg(0x14c0424)
   N 次 ⇒ 问题在"绘图实现/参数解析"或"提交/消费"
 本轮因此省掉了整个"软件 GPE"的实现工作（在 GRMFILL=0 的情况下写了也没用）。
 ```
+
+---
+
+# ★★★★★★★ 2026-11-05 第一百二十四层：**ulog 队列耗尽已修；0x14c0424 是日志队列；GRM 仍为 0**
+
+## ① ★★★ 修掉一个真实缺陷：ulog 队列池耗尽
+```
+现象：Application_Start ENTER 之后进入死循环
+  VALLOCFAIL qid=0x8f013a size=36 ret=-1023   ← 694 次
+  SSM tid=190 qid=0x8f0313 mod=appFw off=0x2c2b003
+原因：`ulogio` 用户态守护进程在本环境退出（ULOGIO_EXIT=255，它要 /dev/mem 与 /proc/klog），
+      没人消费 0x8f013a ⇒ vpool 填满 ⇒ 之后所有 valloc 返回 -1023（vpool 无空闲块）
+修复：argtrace 里当 0x8f013a 返回 -1023 时，发一个带 osal 头的临时缓冲顶上
+      （这些日志消息没人读，内容无意义）；并在 osal_free_msg 里认这个队列
+结果：**VALLOCFAIL 694 → 0**（ULOG_DRAIN 只触发 3 次，说明队列随后自行恢复了）
+```
+**⇒ 这是一个真实的仿真环境缺陷，修掉是对的。**
+
+## ② 纠正上一层的误判：`0x14c0424` 不是阻塞点，是日志队列
+把消息内容 dump 出来（`Q14C n=1..6`），w[1..3] 是 ASCII 片段：
+```
+w=00000007 635f6c67 6f6d6d6f 2065006e  → "gl_c" / "ommo" / "n e "  ≈ "gl_common"
+                                       → 还有 "n == M" 断言串
+```
+**⇒ 这是 KikiLog/日志转发队列，承载字符串与断言信息。同步发送超时是**正常行为**，
+   不是阻塞。上一层把它当成"阻塞 Application_Start 的队列"是错的，特此撤回。**
+
+## ③ 同样纠正：`0x8f0313` 也不是阻塞
+```
+SSM 696 次，RCVC 0，REG 0
+被 libInfraRemote / libmpr / libInfraMtpServer / libObj / libInfraStreamingUsb …
+共 8+ 个库引用
+```
+**⇒ 通用日志/远程服务队列，同步发送超时本属正常。
+   反汇编 appFw+0x2c2afe0 也显示这是一个普通的"建消息→发送→释放"路径，不是重试循环。**
+
+## ④ 当前真实状态（无自欺）
+```
+8493 → 7800 行（修 ulog 后略短，因为不再刷 694 行失败日志）
+ENTER=1  INITSEQ=66  FAKETS=10
+**GRMFILL=0  GRMBLIT=0**  ← 引擎仍未请求任何绘制
+帧 = 0
+```
+
+## ⑤ 结论：问题不在"日志/服务队列"，在"菜单没被建立"
+把所有已排查的队列结论汇总：
+| 队列 | 结论 |
+|---|---|
+| 0x910042 | 时间戳，已伪造应答，正常 |
+| 0x3e014d | backup，**伪造有害**（我们的树本来就有应答者），禁用 |
+| 0x924127 | sensor，同上 |
+| 0x8f013a | ulog 日志队列，**耗尽已修**（VALLOCFAIL 694→0）|
+| 0x14c0424 | 日志转发，超时正常 |
+| 0x8f0313 | 通用服务日志，超时正常 |
+| **剩余真问题** | **没有任何东西创建菜单 controller ⇒ 引擎永远不请求绘制** |
+
+## ⑥ 下一步（收敛到唯一方向）
+```
+不再查队列。照 a7c2 第 3 步：**主动调用本代的菜单 controller 创建入口**。
+难点：我们 appFw 没有导出 controller/manager 符号（a7c2 有 0x1e78870 可调）。
+做法：
+  A. 从 appFw 的 Application_Start（0x54d580）往下反汇编，找创建 screen/controller 的调用链
+  B. 看 libObj 的 uxengine_init2 之后是否本应创建 0x308 启动屏（a7c2 说初始有 0x308/28 控件）
+  C. 若我们的树连 0x308 都没建，说明 uxengine_init2 的某个前置没完成
+```
