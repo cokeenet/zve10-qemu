@@ -12765,3 +12765,85 @@ GRMBLIT = 0
    而且任何"次数"结论，先在日志里带上序号（n=%d）并检查序号是否连续。
    本轮修复后立刻加了 `n=%d` 到 SSM 行，就是为了以后能自查。
 ```
+
+---
+
+# ★★★★★★★★ 2026-11-05 第一百三十五层：**绘图符号在树里找不到调用者 —— 可能缺库**
+
+## ① 用可信日志重看状态（修复计数器后）
+```
+im.elf: 64 线程，nrunning=1
+  24 在 osal_rcv_msg_tmo（正常收消息）
+  30 在 futex_wait_queue_me（正常等锁）
+   1 在 sugilite_ioctl（GPU，已知）
+[AS] 等待点 317 个，分布：
+   238 libRsrcHotshoe（88ms 轮询，正常）
+    26 libgps_rsrc / 26 libObj / 8 appFw / 4 dataflow …（全是正常服务线程）
+⇒ **没有死锁，全部是正常等待**
+```
+
+## ② ★★★★ 关键发现：GRM 绘图函数在整棵树里没有调用者
+```
+libObj.so 导出 21 个 GRM_ 符号，其中：
+  GRM_gpermFillrect   @0x117b4c  （唯一画矩形）
+  GRM_gpermRectblit   @0x117c86  （唯一位块传输）
+  
+检查结果：
+  · libObj 内部：调用 GRM_gpermFillrect 的位置 **0 处**
+  · 其它 .so 导入 GRM_gperm* 的：**0 个**
+  · appFw 只导入 5 个 GRM_，且都是 fbrm*/bitmap* 类：
+      GRM_fbrmSetScreenPreference
+      GRM_fbrmCheckUpdateFinished
+      GRM_fbrmRegisterTriggerFrameworkCb
+      GRM_bitmapCreateFromPhys
+      GRM_bitmapRelease
+  · 全树搜索 mpgpe / GpermFillRect / GpermBitBlit：**0 命中**
+    （a7c2 的绘图入口 `mpgpe::Gperm::FillRect` 在我们树里根本不存在）
+```
+
+## ③ libObj 规模对比（揭示结构差异）
+| | E10 libObj | M2 libObj |
+|---|---|---|
+| 文件大小 | 20.3 MB | 3.7 MB |
+| GRM_ 导出 | 17 | 21 |
+| **FUNC 总数** | **1904** | **558** |
+
+**⇒ M2 的 libObj 只有 E10 的 29% 函数量。**
+   这与"两层 UI"一致：真正的 UI 实现在 `appFw.so`（64 MB）里，
+   但 **appFw 里也没有 gperm/Fill/Blit 的实现符号**。
+
+## ④ 因此提出新假设（下一步验证）
+```
+H1：M2 的绘图实现通过**函数指针表**挂在某个初始化函数里，
+    不导出符号（这与我们之前发现的"appFw 大量用函数指针表"一致）。
+H2：我们的树**缺一个绘图库**（类似 a7c2 的 libgpe.so），
+    它应该在 IMDB 清单里但没被拷进来。
+H3：M2 的绘图被完全下沉到 GPU（sugilite），没有软件路径 ——
+    若成立，a7c2 那条"软件 GPE"路线对 M2 **不适用**，必须建模 GPU。
+```
+
+## ⑤ 下一步（先验证 H2，最省事且最可能）
+```
+① 读 libIMDB.so 的模块清单，找出所有"应该被加载但不在树里"的库名
+② 特别找名字里含 gpe/gfx/grm/draw 的
+③ 若找到缺失的绘图库 → 从 ZV-1M2 固件里补进来
+④ 若清单里根本没有这样的库 → 转 H3，接受"必须建模 GPU"
+```
+
+## 本层净收益
+```
+✅ 用可信日志确认：没有死锁，317 个等待点全是正常服务线程
+✅ 发现 GRM 绘图函数**全树无调用者**（硬证据）
+✅ 量化了 E10 vs M2 的 libObj 差异（558 vs 1904 函数）
+✅ 提出 H1/H2/H3 三个可验证假设
+❌ GRMFILL 仍为 0
+```
+
+## 方法论（第 124 条）★★★
+**"符号存在 ≠ 代码用它"：
+```
+我一直以为 GRM_gpermFillrect 是绘图入口，还给它挂钩子。
+但它**根本没有调用者** —— 挂钩子当然永远是 0 次。
+⇒ 判据：挂钩前先做"谁导入/谁调用"的静态检查（readelf UND + xref），
+   确认这个符号真的在活跃路径上，否则白费力气。
+```
