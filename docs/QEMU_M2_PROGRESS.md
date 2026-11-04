@@ -13433,3 +13433,83 @@ C. 看这 10 个调用点分别属于哪个函数（用 objdump 上下文找函�
 方法有效 ⇒ "0 处"这个结论可信。
 ⇒ 判据：任何"没找到/0 次"的结论，必须先用一个**已知存在**的目标跑同一套方法做阳性对照。
 ```
+
+---
+
+# ★★★★★★★ 2026-11-05 第一百四十四层：**找到 UI 引擎真正的初始化入口 uxengine_init2（640×480 参数就在开头）**
+
+## ① `GRM_fbrmSetScreenPreference` 只是查表，不是入口
+```asm
+1155ac <GRM_fbrmSetScreenPreference>:
+  1155ae: subs r1, r0, #1
+  1155b8: cmp  r1, #3
+  1155ba: bhi  1155d0          ; 超出 1..4 走默认
+  1155bc: tbb  [pc, r1]        ; 跳表
+  1155e2: mov.w r0, #0xe800    ; 返回显示 ID
+  1155c4: movw r0, #0xe802
+  1155ca: movw r0, #0xe803
+⇒ **纯"偏好→显示ID"映射函数，与 screen 创建无关。**
+```
+
+## ② ★★★★ 真正的初始化入口：`uxengine_init2`（libObj @0xe2814，216 字节）
+```asm
+e2814: push {r4,r5,r7,lr}; sub sp,#24
+e2818: ldr  r0, [pc,#188]        ; 某个名字/路径
+e281a: mov.w r1, #640   ; 0x280   ← ★ 宽
+e2822: mov.w r2, #480   ; 0x1e0   ← ★ 高
+e2826: mov.w r3, #0x80000000     ; 格式/标志（RGBA? 高位）
+e282a: str  r3, [sp,#4]
+e2830: str  r5, [sp,#0]          ; 0
+e2832: str  r5, [sp,#8]          ; 0
+e2834: bl   0x101574             ; ★ 用 (name, 640, 480, flags, 0, 0) 初始化
+e2838: bl   0xe27a4              ; 后续初始化
+```
+**⇒ 这就是 UI 引擎创建 640×480 渲染目标的入口。**
+
+## ③ 两个易混淆的符号（关键区分）
+```
+uxengine_init    @0xe280c  **6 字节空桩**：
+   push {r7,lr}; add r7,sp,#0; pop {r7,pc}
+   ⇒ IMDB 解析到的是这个，什么都不做
+
+uxengine_init2   @0xe2814  216 字节真实现
+   ⇒ 由 **appFwBoot.so 在 0x14de 处调用**（blx uxengine_init2@plt）
+```
+
+## ④ 我们的钩子为什么没拦到它
+```
+钩子机制：拦截 dlsym("uxengine_init2") 并返回 our stub
+但 appFwBoot 用的是 **PLT 静态绑定**（blx uxengine_init2@plt），
+不经过 dlsym ⇒ 钩子完全没生效
+⇒ 日志里只有 "INITSEQ resolve uxengine_init"（IMDB 的空桩），
+   没有我们的 ">>> uxengine_init2 ENTER"
+```
+
+## ⑤ 下一步（明确）
+```
+A. ★ 用 GOT 补丁方式挂 uxengine_init2（改 appFwBoot 的 PLT 桩目标，
+   或直接改 libObj 里 uxengine_init2 的头几条指令跳到我们的桩）
+B. 在钩子里记录：它返回什么、640×480 是否被接受、
+   初始化后 GraphicsEngine 单例是否有效
+C. 若它返回失败 ⇒ 查为什么（可能是 sugilite 未就绪 / 资源缺失）
+```
+
+## 本层净收益
+```
+✅ 排除了 GRM_fbrmSetScreenPreference（只是查表）
+✅ 找到真正的 UI 初始化入口 uxengine_init2，且它的参数就是 640×480
+✅ 区分了 uxengine_init（6字节空桩，IMDB 用的）与 uxengine_init2（真实现）
+✅ 查明钩子为什么没生效（PLT 静态绑定 vs dlsym）
+❌ 帧 = 0
+```
+
+## 方法论（第 133 条）★★★
+**"同名近似的两个符号可能一个是空桩、一个是真实现"：
+```
+uxengine_init  (6 字节)  ← IMDB 解析并"成功"，什么都不做
+uxengine_init2 (216 字节) ← 真实现，appFwBoot 调用
+我一直在看日志里的 "INITSEQ resolve uxengine_init" 以为初始化成功了，
+其实那是空桩。
+⇒ 判据：看到 ABI 里存在 Foo 和 Foo2 之类的近似符号时，**必须分别反汇编**
+   确认哪个有实体，不要根据日志里的名字判断。
+```
