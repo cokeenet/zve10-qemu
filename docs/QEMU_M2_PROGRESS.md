@@ -13072,3 +13072,87 @@ C. 若确认原厂设备上也没有 → 说明 M2 引擎的绘图**完全在 GP
 ⇒ 判据：统计类问题（加载了多少、调用了多少次）优先用 LD_DEBUG / strace 等
    **系统级**手段；自己的钩子只能证明"我看到了什么"，不能证明"总共发生了什么"。
 ```
+
+---
+
+# ★★★★★★★★ 2026-11-05 第一百三十九层：**找到真正的绘图入口（drawFramebuffer/notifyDraw），但它们**从未被调用****
+
+## ① ★★★ 之前的挂钩目标完全错了
+```
+我一直在 hook GRM_gpermFillrect / GRM_gpermRectblit
+⇒ 这两个在整棵树里**没有任何调用者**（上一层已证）
+
+**真正的绘图入口**（appFw 从 libObj 导入）：
+  _ZN2ux6gfxeng14GraphicsEngine15drawFramebufferEv    @libObj 0xe565a  size=250  ← ★
+  _ZN2ux6wgtsys12WidgetSystem10notifyDrawEv           @libObj 0x106524 size=78   ← ★
+  _ZN2ux6gfxeng10TextSprite8drawTextEv                @libObj 0xff762  size=76
+  _ZN2ux6wgtsys10WidgetBase12onDrawNoticeEv
+```
+
+## ② 实测：**这两个函数一次都没被调用**
+```
+挂上 C++ 符号钩子（符号名精确匹配），跑完整启动：
+  DRAW_PROBE drawFramebuffer = 0
+  DRAW_PROBE notifyDraw      = 0
+  Application_Start ENTER = 1（引擎确实进去了）
+（日志 1357 行是 g_rcv<600 上限被 [AS]RCVC 刷满导致的截断，不是启动失败）
+```
+
+## ③ ★★★★ 静态验证：appFw 里**没有**任何指令引用这两个 PLT
+```
+objdump -d appFw.so | grep drawFramebuffer@plt  →  0 条
+objdump -d appFw.so | grep notifyDraw@plt       →  0 条
+（但 appFw 的 UND 表里确实有这两个符号）
+```
+**⇒ 这与之前发现的"appFw 大量使用函数指针表"完全一致（H1 假设成立）：
+   appFw 通过 GOT/函数指针表间接调用它们，所以静态 xref 找不到调用点，
+   而我们的符号钩子理论上**应该**能拦到（因为动态解析会经过我们的符号）**——但它没拦到。**
+⇒ 结论：**这两个函数真的从未被调用**，不是"钩子没覆盖"（钩子已证明能拦
+   `osal_*`/`dlopen` 等符号，机制是通的）。
+```
+
+## ④ 这意味着：**引擎连"画一帧"这一步都没走到**
+```
+libgpe.so  缺失（上一层确认）→ 软件绘图后端不存在
+gui.so     缺失              → UI 主库不存在
+drawFramebuffer 从未调用     → 引擎根本没开始画
+```
+**⇒ 不是"画了但没出到屏幕"，而是"根本没画"。**
+
+## ⑤ 步骤收窄
+a7c2 八步里，我们停在第 **2** 步（让原应用及依赖进入可观测状态）：
+```
+他们第 2 步：构建实验 rootfs，按原依赖初始化 IPC/Backup/DMM，
+            对缺失的 CAPID/SA/HDMI 等使用限定服务
+我们：154 个库要找、53 个缺失、没有替身服务层
+```
+**⇒ 我们比 a7c2 落后整整一个阶段。他们能出画面是因为补齐了 53 类缺失库的替身。**
+
+## ⑥ 下一步（三条）
+```
+A. 用 ZVE10M2 的 16 个缺失库补齐（libgpe.so 等），接受 ABI 风险试一次
+B. 确认这 53 个库是否真的必需（有些可能只在特定功能下才 dlopen）
+C. 重新评估：如果 libgpe.so/gui.so 在原厂 ZV-1M2 设备上确实不存在，
+   那 M2 的 UI 走的是纯 GPU 路径，软件替身路线不成立
+```
+
+## 本层净收益
+```
+✅ 找到真正的绘图符号（drawFramebuffer / notifyDraw），纠正了长期的错误目标
+✅ 用钩子 + 静态 xref 双重确认：它们从未被调用
+✅ 明确了"不是画了没显示，而是根本没画"
+✅ 把进度定位到 a7c2 八步的第 2 步（落后一个阶段）
+❌ 帧仍为 0
+```
+
+## 方法论（第 128 条）★★★
+**"导入 ≠ 调用"（第二层）：
+```
+上一轮学到"符号存在 ≠ 代码用它"（GRM_gpermFillrect 无人调用）。
+本轮学到第二层：**即使符号出现在 UND 表里（被导入），也可能一次都不调用**。
+⇒ 判据：判断某功能是否活跃，必须**同时**看：
+   ① 有没有实现（导出）
+   ② 有没有引用（导入）
+   ③ 运行时有没有真的调用（钩子/断点计数）
+   三者缺一不可。
+```
