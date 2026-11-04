@@ -13513,3 +13513,65 @@ uxengine_init2 (216 字节) ← 真实现，appFwBoot 调用
 ⇒ 判据：看到 ABI 里存在 Foo 和 Foo2 之类的近似符号时，**必须分别反汇编**
    确认哪个有实体，不要根据日志里的名字判断。
 ```
+
+---
+
+# ★★★★★★★ 2026-11-05 第一百四十五层：**uxengine_init2 是必经步骤且成功执行（640×480 已建立）**
+
+## ① `uxengine_init2` 的调用链已完全确认
+```asm
+000014d8 <Main>:                    ; appFwBoot.so
+  14d8: push {r4,r5,r7,lr}
+  14dc: mov  r4, r0
+  14de: blx  uxengine_init2@plt     ; ★ 调用
+  14e2: blx  initializeArena@plt
+  ...
+```
+**⇒ 链：`Application_System_Init` → `osal_create_waitable_thread(Main)` → `Main()`
+   → `uxengine_init2(640, 480, 0x80000000, 0, 0)` → `initializeArena()` → …**
+
+## ② ★★★★ 实测：跳过 `uxengine_init2` ⇒ **Application_Start 不再被进入**
+```
+patch libObj.so @0xe2814: b5b0 b086 → 0020 7047  (movs r0,#0; bx lr)
+结果：
+  行数 994（正常 7800+）
+  **Application_Start ENTER = 0**   ← 关键！
+```
+**⇒ `uxengine_init2` 是 `Application_Start` 的**前提**，不可跳过。
+   ⇒ 正常运行时它**成功了**（否则 Application_Start 进不去）。
+   ⇒ **640×480 渲染目标确实已经建立。**
+
+## ③ 已恢复原版
+```
+libObj.so md5 = 738a2331（固件原版）
+```
+
+## ④ 那么剩下的唯一问题：drawFramebuffer 为什么没被调用？
+```
+查 GraphicsEngine::sys_getInstance 的调用者：
+  libObj 内:  0 处
+  appFw 内:   0 处（PLT 引用也是 0）
+⇒ GraphicsEngine 的实例不是通过 sys_getInstance 获取的，
+  而是某个**全局单例指针**，被直接读 GOT/内存。
+⇒ 下一步：找 libObj 里存 GraphicsEngine 实例指针的全局变量，
+   以及谁读它。（drawFramebuffer 是成员函数，需要 this 指针）
+```
+
+## ⑤ 本层净收益
+```
+✅ 完整确认调用链：Application_System_Init → Main → uxengine_init2 → ...
+✅ **用 patch 实验证明 uxengine_init2 是成功执行的**（跳过它则 Application_Start 进不去）
+✅ 确认 640×480 渲染目标已建立
+✅ 明确剩余问题：drawFramebuffer 的 this 实例指针从哪来
+❌ 帧 = 0
+```
+
+## 方法论（第 134 条）★★★
+**"'跳过某步骤看是否更快' 是判断它是否成功的实验手段"：
+```
+我无法直接读 uxengine_init2 的返回值（PLT 静态绑定，钩子拦不到）。
+改用反向实验：把它 patch 成立即返回 0。
+  若启动变好 ⇒ 它原来是失败的
+  若启动变差（本例 ENTER 从 1 变 0）⇒ 它原来**是成功的且必需**
+⇒ 判据：无法直接观测返回值时，用"跳过/替换"做对照实验反推其原状态。
+```
