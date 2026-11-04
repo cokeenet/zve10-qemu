@@ -13219,3 +13219,77 @@ H-B: 这两个库在设备的**只读分区**里，固件包不包含
 ⇒ 判据：任何跨版本借用二进制之前，先 `readelf -V` 比最高 GLIBC 版本；
    版本不够就立即关闭这条路，不必再查其它符号。
 ```
+
+---
+
+# ★★★★★★★★ 2026-11-05 第一百四十一层：**ZV-1M2 全固件确认无 libgpe/gui；但绘图实现在 libObj 内部**
+
+## ① H-B 排除：ZV-1M2 的**所有分区**里都没有 libgpe.so / gui.so
+```
+检查范围：
+  · COMPARE/extracted/ZV1M2 全树（rootfs + system + usr）
+  · firmware.tar_unpacked 的 4 个分区镜像：
+      nflasha15 (530MB, /usr)   ← 180 个 .so，我们树只有 160
+      nflasha3  (29MB,  /system) ← 0 个 .so（只有 av-cam.bin / vmlinux.bin 等）
+      nflasha5  (42MB,  WBI)     ← 挂载失败（非标准 fs）
+      nflasha7  (5MB,   rootfs)
+结果：53 个缺失库里，nflasha15 只找到 **1** 个（libAK8975.so）
+      **libgpe.so / gui.so 全固件 0 命中**
+```
+
+## ② ★★★ 但更关键的发现：**绘图实现在 libObj.so 内部，不需要 libgpe**
+```
+libObj.so 导出：
+  ux::gfxeng::GraphicsEngine::drawFramebuffer()   @0xe565a  **250 字节完整实现**
+  ux::wgtsys::WidgetSystem::notifyDraw()          @0x106524 78 字节
+
+drawFramebuffer 的 ARM 反汇编（前 20 条）显示它是**真实现**：
+  e565a: stmdb sp!, {r4-r8,lr}
+  e5662: add   r5, r4, #0x74
+  e5668: bl    0x113e8c            ← 内部渲染调用
+  e566c: bl    0x10fe8c
+  e5672: bl    0x1004f8
+  e5676: ldrb  r3, [r4,#0x23a]     ← 条件判断
+  e567a: cbnz  r3, e5698
+  e5684/0xe5694: bl …              ← 更多渲染路径
+⇒ **完整的软件渲染实现就在 libObj 里**，
+   不需要 libgpe.so（那是 a7c2 那一代的外置库）。
+```
+
+## ③ 因此真正的问题回到：**为什么 drawFramebuffer 一次都没被调用？**
+```
+已知：
+  · 符号存在且是完整实现 ✅
+  · appFw 导入了它 ✅
+  · 运行时调用次数 = 0 ❌
+  · appFw 里没有直接调用它的指令（函数指针表）✅ 已证
+
+⇒ 只剩一个方向：**调用它的那个函数指针表项从未被赋上/从未被触发**
+```
+
+## ④ 下一步（终于聚焦到一个具体问题）
+```
+找 appFw 里存放 drawFramebuffer 指针的表：
+  ① 从 appFw 的 GOT 里找 drawFramebuffer 的槽位
+     （readelf -r appFw.so | grep drawFramebuffer）
+  ② 找谁往那个槽位写值 / 谁读它并 blx
+  ③ 看它的触发条件（大概率需要一个"渲染请求"事件）
+```
+
+## ⑤ 总账更新
+```
+✅ H-B 排除：全固件无 libgpe/gui
+✅ 绘图实现确认在 libObj 内部（不需要外置库）
+✅ 问题精确化为：drawFramebuffer 的**函数指针表项从未被触发**
+❌ 帧 = 0
+```
+
+## 方法论（第 130 条）★★★
+**"缺库的焦虑可能掩盖了真正的问题"：
+```
+我花了 3 轮追"53 个库缺失"，以为补上就能画。
+但 drawFramebuffer 的实现**本来就在 libObj 里**（250 字节完整代码），
+缺的 libgpe 是上一代的外置库，这一代已经内联了。
+⇒ 判据：怀疑"缺库"之前，先确认**目标功能是否已经有实现**
+   （看 libObj/appFw 的导出里有没有对应函数体），有就不必补库。
+```
