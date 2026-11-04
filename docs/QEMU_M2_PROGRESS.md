@@ -12504,3 +12504,54 @@ libosal_uipc.so 里有成对的实现：
 ✅ 明确了"钩导出符号覆盖面不足"这个方法论问题
 ❌ 仍未推进到 GRMFILL
 ```
+
+---
+
+# ★★★★★★★ 2026-11-05 第一百三十一层：**osal 有三级跳板；0x8f0313 走的是 osal_snd_sync_direct 而非 snd_sync_msg**
+
+## ① libosal_uipc 的真实分层（已测绘）
+```
+osal_snd_sync_msg       @0x3ec9  size=16    ← 纯跳板，只转发
+  └─ 尾部 b.w __osal_snd_sync_msg@plt
+__osal_snd_sync_msg     @0x3db1  size=278   ← 真实现（同 .so 内部符号）
+  └─ 检查 bit15：tst.w r0,#0x8000
+     · bit15==0（我们所有队列都是）→ b.w u_osal_snd_sync_msg@plt
+     · bit15!=0 → 走内核态路径
+u_osal_snd_sync_msg     @0x2605  size=164   ← 用户态实现
+```
+**⇒ 三级跳板：`osal_snd_sync_msg` → `__osal_snd_sync_msg` → `u_osal_snd_sync_msg`。**
+
+## ② ★★★ 实测：`LOG_DROP` 只命中 `0x8f013a`，从未命中 `0x8f0313`
+```
+LOG_DROP qid=0x8f013a n=1..5    ← 两轮，共 10 次
+（0x8f0313 一次都没有）
+```
+但日志里明明有 655 条 `SSM ... qid=0x8f0313`。
+
+**⇒ 矛盾。说明这 655 条 `SSM` 日志**不是**由 `osal_snd_sync_msg` 产生的。**
+   最可能的解释：`0x8f0313` 走的是 **`osal_snd_sync_direct`**（另一个导出），
+   而我在那个函数里的日志格式恰好也叫 "SSM"（历史遗留，两者格式被我写混了）。
+
+## ③ 待确认（下一轮第一件事）
+```
+检查 snd_sync_direct 里是否也有 logline("SSM ...")
+若有 ⇒ 那 655 条就是它 ⇒ 真正的发送入口是 osal_snd_sync_direct
+   ⇒ 要在那个函数里对 0x8f0313 做 LOG_DROP
+```
+
+## ④ 本轮其他确证
+```
+✅ osal 三级跳板结构完全清楚
+✅ __osal_snd_sync_msg 的 bit15 分支语义清楚（bit15=0 → 用户态）
+✅ 所有已见队列 bit15 均为 0（含 0x8f0313/0x8f013a/0x3e014d/0x924127/0x910042/0x14c0424）
+✅ u_osal 层挂钩生效（U_SYNC 24 次，覆盖 0x3e014d/0x924127/0x94016a）
+❌ GRMFILL 仍为 0
+```
+
+## ⑤ 教训（方法论第 120 条）★
+**"日志格式相同 ≠ 来自同一个函数"：
+```
+我在两个不同函数里都用了 "SSM ..." 前缀（历史遗留），
+导致我误判那 655 条来自 snd_sync_msg。
+⇒ 判据：每个钩子的日志必须用**唯一**前缀，否则会污染自己的推理。
+```
