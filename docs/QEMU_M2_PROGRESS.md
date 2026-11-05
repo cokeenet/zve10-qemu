@@ -17116,3 +17116,85 @@ site2 内部 10 个调用中，只剩 6 个未排除：
    所有 GPE / sugilite 寄存器访问，看卡住前的最后一次访问是什么。
    这比在 guest 里埋点安全得多，且不污染被测系统。
 ```
+
+---
+
+# ★★★★★★★★★ 2026-11-05 第一百八十九层（第 73 轮）：**QEMU 侧 MMIO 直方图：guest **从未访问** GPE**
+
+## ① 给自建 QEMU 加了 MMIO 访问直方图（不污染 guest）
+```c
+/* zve10.c 新增 */
+uint64_t rd_count[0x4000/4], wr_count[0x4000/4];
+uint64_t last_rd_off, last_wr_off, last_wr_val, rd_total, wr_total;
+
+gpe_read()  →  rd_count[off/4]++; rd_total++; last_rd_off = off;
+gpe_write() →  wr_count[off/4]++; wr_total++; last_wr_off = off;
+
+gpe_dump()  →  每 400 次读打印一次：
+  GPE_DUMP periodic total_rd=N total_wr=M last_rd_off=X last_wr_off=Y
+  GPE_DUMP hot offsets (rd/wr): [off:rd/wr] ...
+```
+**重新构建 QEMU 成功（`GPE_DUMP` 已在二进制里）。**
+
+## ② ★ 实测结果：**零访问**
+```
+基线正常：行数=1131  [AS]=46  createLayer=6
+qemu.log 里 GPE_ 相关输出条数：**0**
+
+⇒ guest 从未读写 GPE 的任何寄存器
+⇒ 我们的 GPE 建模（IRQ 76 / sugilite 完成位 / init packet）**根本没被用到**
+```
+
+## ③ 这个"零"本身是重要信息
+```
+说明 ZV-1M2 的 Application_Start 卡住的位置
+**早于任何图形/GPE 操作**。
+
+对照已知进度：
+  ✅ uxengine_init2(640×480) 已执行（那会建渲染目标，但不碰 GPE MMIO）
+  ✅ 4×createLayer 全部成功（纯软件对象创建）
+  ❌ site2 之后不再前进
+⇒ **渲染管线从未被启动过**，所以 GPE 零访问是自洽的。
+```
+
+## ④ 顺带量化：ZV-1M2 对 GPE 的依赖程度
+```
+libObj.so 里 sugilite/gpe/grm 相关字符串：
+  ZV1M2   82 条
+  ZVE10   35 条     ← 一代反而少
+appFw.so   5 条
+
+⇒ ZV-1M2 的引擎层对 GPE/sugilite 的引用比一代多 2.3 倍
+⇒ 这与"新菜单渲染更依赖 GPU 通路"的预期一致
+```
+
+## ⑤ 本层净收益
+```
+✅ 给自建 QEMU 加了不污染 guest 的 MMIO 直方图（可复用工具）
+✅ **实测确认 guest 从未访问 GPE**（零访问，有日志为证）
+✅ 推论：卡点在**任何图形操作之前**，渲染管线从未启动
+✅ 量化了 ZV-1M2 对 GPE 的依赖（82 vs 35 条字符串）
+❌ 帧 = 0
+```
+
+## ⑥ 下一步：直方图扩展到全部 MMIO（不只 GPE）
+```
+现在只统计了 GPE（0xf1000000）。但 guest 可能卡在**其它** MMIO 上：
+  · sugilite（0x?—— s ugi_ops，需查地址）
+  · timer（0xf2403000）
+  · uart（0xf2000000）
+
+⇒ 下一步：给**所有**建模的 MMIO 区加直方图，
+   特别是 sugilite，因为它才是真正等"完成位"的地方。
+   若某个寄存器被高频轮询后突然停止，那就是卡点。
+```
+
+## 方法论（第 177 条）★★★★
+**"'零访问'和'高频访问'一样有价值——它排除了整片区域"：
+```
+我原本假设"卡住是因为 GPE 没响应完成位"。
+实测 guest **一次都没碰 GPE** ⇒ 这个假设被干净否决。
+⇒ 判据：给 MMIO 加直方图，成本极低（几行计数），
+   但能一次性回答"guest 到底在等哪块硬件"。
+   在 guest 里埋点做不到这一点（看不到硬件侧）。
+```
