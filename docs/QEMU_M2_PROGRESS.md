@@ -27093,3 +27093,112 @@ processEvent 的语义通常是："处理了一个事件返回 true，没有事�
 ⇒ 共同点：**都是"一次性做完全量分析"，而不是"逐步试探"。**
    本会话的瓶颈不在于"难"，而在于"没有系统地做全量分析"。
 ```
+
+---
+
+# ★★★★★★★★ 2026-11-06 第二百九十四章（第 178 轮）：**主循环的完整结构（两条分支）+ 钩子失效原因**
+
+## ① ★★★★★ 主循环的完整结构（代码注释里已有）
+```
+appFw+0x54f888 附近：
+
+  54f88e: blx  0x9245a8              ; 某个准备调用，返回存 r5
+  54f892: mov  r5, r0
+  54f894: blx  UXEngine::wgtsys@plt
+  54f898: blx  WidgetSystem::processEvent@plt
+  54f89c: cmp  r0, #0
+  54f89e: bne.n 54f894               ; ★ processEvent 非 0 ⇒ 循环
+  54f8a0: cbz  r5, 54f8a8            ; processEvent 返回 0 ⇒ 看 r5
+
+★ 而 appFw+0x54fb38 是**另一条分支**：
+  r0 != 0  →  while (wgtsys()->processEvent()) {}   (0x54f894)
+  r0 == 0  →  gfxeng()->processSystemMessage()      (0x54fb3e/0x54fb42)
+             然后函数 **返回** (0x54fb5c)
+```
+
+## ② 钩子失效的确切原因
+```c
+int _ZN2ux6wgtsys12WidgetSystem12processEventEv(void *self)
+{
+    if (!g_real_process_event)
+        g_real_process_event = dlsym(**RTLD_NEXT**, sym);   // ★ 问题在这
+    int r = g_real_process_event ? g_real_process_event(self) : 0;
+    ...
+}
+```
+
+```
+RTLD_NEXT 的含义：从"调用者之后"的库中搜索符号
+但 libObj.so 是通过 dlopen 动态加载的，不在默认搜索链里
+⇒ **dlsym(RTLD_NEXT, sym) 返回 NULL**
+⇒ g_real_process_event = NULL
+⇒ 函数永远返回 0
+⇒ UXLOOP 计数器 —— 但若钩子被调用，计数器会 +1
+⇒ **UXLOOP = 0 说明钩子从未被调用**
+
+★ 所以问题不是"返回值错"，而是"钩子根本没拦到"
+```
+
+## ③ 为什么拦不到？
+```
+appFw 通过 PLT 桩 0x52a0d0 调用 processEvent：
+  52a0d0: add  ip, pc, #0x3200000
+  52a0d4: add  ip, ip, #0x51000
+  52a0d8: ldr  pc, [ip, #604]!        ; 从 GOT 读真实地址
+
+⇒ 这是标准的 PLT 间接跳转
+⇒ 要让钩子生效，必须**在 libObj 加载后 patch 它的导出地址**
+   或 patch appFw 的 GOT 槽
+
+★ LD_PRELOAD 只能替换"先加载的那个版本"，
+  而 libObj 是后来 dlopen 的，LD_PRELOAD 的同名符号不会被用上。
+```
+
+## ④ 本层净收益
+```
+✅ **完整解析主循环的两条分支（processEvent 循环 / processSystemMessage + 返回）**
+✅ **确认钩子失效原因：RTLD_NEXT 对 dlopen 加载的 libObj 无效**
+✅ **确认 UXLOOP=0 是"钩子没拦到"，不是"函数没被调用"**
+✅ 基线完好
+❌ 帧 = 0
+```
+
+## ⑤ 下一步（正确的 patch 方式）
+```
+方法 A：dlopen 后手动 patch libObj 的 GOT/PLT
+  1. dlopen("libObj.so") 拿到句柄
+  2. 遍历重定位表，找到 processEvent 的槽
+  3. 写入我们的钩子地址
+
+方法 B：patch appFw 的 PLT 桩（0x52a0d0）
+  但这需要写 appFw 的 .text（可能违反只读）
+
+方法 C：**hook dlopen 本身**（已有），在 libObj 加载后
+  用 dlsym(handle, sym) 拿到真实地址，
+  再 patch appFw 的 GOT 槽指向我们的钩子
+  ⇒ 这是我们已有的框架能做的
+```
+
+## 方法论（第 282 条）★★★★★★★ 本会话最重要的方法论
+**"`dlsym(RTLD_NEXT)` 只能拦到"先加载"的符号，dlopen 加载的库拦不到"：
+```
+我一直以为钩子在生效，只是"没观察到"。
+实际上：libObj 是 dlopen 加载的，RTLD_NEXT 搜不到它，
+所以钩子函数**从未被调用**（UXLOOP=0）。
+
+⇒ 判据：**用 LD_PRELOAD 拦截某个库的符号前，先确认三件事**：
+   ① 那件事库是**启动时加载**还是**运行时 dlopen**？
+   ② 若 dlopen，`dlsym(RTLD_NEXT)` 会失败
+   ③ 必须改用：hook dlopen + 拿到 handle 后 patch 目标库的 GOT
+
+   ★ 本会话第 288 层也遇到过类似的"寻址方式"问题。
+     "假定 LD_PRELOAD 万能"是本会话的第 3 个此类错误。
+```
+
+## ⑥ 附：本会话"钩子失效"的历次排查
+```
+第 200 层：`continue` 让 wchan 成死代码        → 修复
+第 253 层：子串匹配错库                        → 修复
+第 282 层：qid 判错                            → 修正
+第 294 层：RTLD_NEXT 对 dlopen 库无效          → 待修（本轮）
+```
