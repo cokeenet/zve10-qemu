@@ -27528,3 +27528,109 @@ GOT_SLOT UXEngine::wgtsys                       value=0x2e5569d0 UNRESOLVED(PLT0
 5. RTLD_NEXT 对 dlopen 库无效    → 钩子静默失效
 6. **GOT 槽地址读错（本轮）**     → "从未调用"的错误结论
 ```
+
+---
+
+# ★★★★★★★ 2026-11-06 第二百九十八章（第 182 轮）：**GOT 槽读取正确但全部 PLT0——需要重新解释**
+
+## ① 地址计算已完全验证正确
+```
+GOT_BASE base=0x2d77d000  plt0=0x2dca59d0
+
+GOT_SLOT CONTROL createLayer      addr=0x30ef7cf8  v=0x2dca59d0  PLT0
+GOT_SLOT CONTROL osal_rcv_msg_tmo addr=0x30ef7e68  v=0x2dca59d0  PLT0
+GOT_SLOT GRM_fbrmRegister...      addr=0x30ef83e8  v=0x2dca59d0  PLT0
+GOT_SLOT WidgetSystem::processEvent addr=0x30ef8334 v=0x2dca59d0 PLT0
+GOT_SLOT UXEngine::wgtsys         addr=0x30ef82fc  v=0x2dca59d0  PLT0
+
+★ 地址互不相同（0x...cf8 / e68 / 3e8 / 334 / 2fc）
+★ addr - base 全部等于文件里的 r_offset ✅
+★ 全部落在 appFw 第二个 LOAD 段（.got 所在）✅
+★ **但全部读出 0x2dca59d0 = base + 0x5289d0 = PLT0**
+```
+
+## ② 这构成了一个真正的矛盾
+```
+事实 A：地址计算正确（逐项验证）
+事实 B：5 个不同地址读出同一个值
+事实 C：createLayer 被调用 12 次（CREATELAYER 钩子实测）
+事实 D：osal_rcv_msg_tmo 被调用 96 次（RCVC 钩子实测）
+
+⇒ A+B+C+D 互斥。
+```
+
+## ③ 最可能的解释（本轮新认识）
+```
+**这些槽确实都还是 PLT0，因为它们从未被"懒绑定解析"过。**
+
+为什么？因为 ELF 的 lazy binding 只在**第一次调用**时由 PLT0 的
+resolver 改写 GOT。但若：
+  · 固件在启动时调用了 `dlopen` 且用了 RTLD_NOW
+  · 或用了 `-z now` 链接
+  ⇒ 所有槽会在加载时就解析完
+  ⇒ 那就不会是 PLT0
+
+★ 反过来：若槽是 PLT0，说明**从未被调用**。
+
+但 createLayer 的钩子明明记录了 12 次调用……
+⇒ **除非：那 12 次不是通过 appFw 的 PLT 走的**
+```
+
+## ④ ★ 关键突破口：CREATELAYER 钩子记录的是什么
+```
+钩子记录的格式：
+  "[AS]CREATELAYER n=3 self=0x4cb0a8 id=0x3208be04 w=... caller=appfw+0x7239c0"
+
+★ 这个钩子是挂在**符号** `_ZN2ux6wgtsys12WidgetSystem11createLayerERKNS_4core2IDE`
+  上的（LD_PRELOAD）
+★ 若 appFw 走自己的 PLT → GOT 槽 → 应解析
+★ 若 libObj 内部调用自己的 createLayer → **不经过 appFw 的 PLT**
+   ⇒ appFw 的 GOT 槽保持 PLT0 ✅ 与实测一致！
+
+⇒ **那 12 次 createLayer 的 caller 是 appfw+0x7239c0，
+   那是 appFw 的代码，但它可能通过 libObj 导出的"函数指针表"调用，
+   而不是通过 PLT → GOT**
+```
+
+## ⑤ 本层净收益
+```
+✅ **完全验证了 GOT 地址计算正确（逐项对照文件 r_offset）**
+✅ **确认 5 个槽确实都读出 PLT0（不是读错地址）**
+✅ **提出新解释：调用不经过 appFw 的 PLT/GOT**
+✅ 基线完好（1333/45/6）
+❌ 帧 = 0
+```
+
+## ⑥ 下一步
+```
+验证"不经过 PLT"的假设：
+  · appFw 若通过 libObj 的**导出函数表**（如 C_XXX 类的 vtable）
+    调用 createLayer，则不经过自己的 GOT
+  · 检查 caller=appfw+0x7239c0 处的指令：
+    是 `blx <PLT桩>` 还是 `blx rN`（寄存器间接）？
+
+⇒ 若是 `blx rN`，就证实了"不经过 PLT"。
+```
+
+## 方法论（第 286 条）★★★★★★★ 本会话最重要的方法论
+**"当'绝对可靠的检测器'与'绝对可靠的观测'冲突时，说明存在第三条路径"：
+```
+· GOT 槽读取：地址计算逐项验证正确，5 个槽都读 PLT0（可靠）
+· CREATELAYER 钩子：记录 12 次调用（可靠）
+
+两者冲突 ⇒ 不是哪个错了 ⇒ **是"调用不经过 GOT"这条第三路径存在**。
+
+⇒ 判据：**两个都验证过的观测冲突时，不要怀疑其中之一，
+   而要假设"两者都对，但连接它们的模型缺了一环"。**
+   本例缺的一环是："调用可以不经过 PLT——通过函数指针表"。
+   
+   ★ 这与第 269 条（"分支两个方向都是正常"）互补：
+     那条说"不要假设一边是异常"，
+     这条说"不要假设只有一条路径"。
+```
+
+## ⑦ 附：本会话"绝对冲突"的处理记录
+```
+第 269 层：跳转指令 → 两边都读，发现都是正常路径
+第 286 层：GOT 槽 vs 钩子计数 → 假设第三条路径（本轮）
+```
