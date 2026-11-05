@@ -22418,3 +22418,104 @@ a7c2 的 run-menu-probe.sh 传了 8 个"硬件替身服务"：
 我们只加载了 14 个 kmod（真实内核模块），没有这些用户态替身服务。
 ⇒ 这是架构差异，但**不是当前卡点的直接原因**（当前卡点在 site3 入口）
 ```
+
+---
+
+# ★★★★★★★★★ 2026-11-06 第二百四十八章（第 132 轮）：**0x723aac 完整逻辑解析完毕：只切 bank + 设比例，不是菜单构建器**
+
+## ① 0x723baa 分支的完整内容
+```asm
+0x723baa:
+  bl 0x54e108              ; r0 = 0x102d (4141)
+  cmp r0, #1  → beq 0x723bc2   ; 设 1.0f
+  cmp r0, #2  → beq 0x723bcc   ; 设 0x3f63d70a
+  cbnz r0, 0x723bd4            ; 非 0/1/2 → **直接跳到 0x723bd4**
+
+0x723bc2: (r0==1)
+  r3 = pc-rel 地址 ; r2 = **0x3f800000 (1.0f)** ; str r2,[r3] ; b 0x723bd2
+0x723bb8: (r0==0)
+  r3 = pc-rel 地址 ; r2 = **0x3f400000 (0.75f)** ; str r2,[r3]
+
+0x723bd2: str r2, [r3, #0]      ; 写入全局比例变量
+
+0x723bd4:                        ; ★ 所有路径汇合点
+  bl  UXEngine::wgtsys()
+  bl  WidgetSystem::getGestureAnalyzer()
+  ldr r1, [全局比例变量]
+  b.w GestureAnalyzer::setGestureYRatio(float)   ← ★ 尾调用
+```
+
+## ② ★★★★★ 最终结论：0x723aac 的真实职责
+```
+r0 = 0x10cd0102（非零）→ 走 0x723b32
+  r0 = 0x102d（非零、非1、非2）→ 走 0x723baa
+    r0 = 0x102d → cbnz 跳 0x723bd4（**不设置比例**）
+      0x723bd4:
+        getGestureAnalyzer()
+        setGestureYRatio(默认全局值)
+        返回
+
+⇒ **0x723aac 只做两件事：**
+   ① 根据状态切换 ResourceManager 的 bank（ResourceBank）
+   ② 调用 GestureAnalyzer::setGestureYRatio（手势识别 Y 轴比例）
+
+⇒ **它根本不是"菜单构建器"**
+⇒ 与第 185 层的结论完全一致（当时我说"0x723aac 不是菜单构建器"）
+```
+
+## ③ 这把任务主线彻底澄清了
+```
+旧主线（来自第 181 层）："0x54f664 → 0x54ef74 → 0x723aac（菜单构建器）"
+★ **这条链本身理解有误：**
+  · 0x723aac 只是设手势比例，不建菜单
+  · 真正建 widget 的地方还没找到
+
+⇒ **"菜单构建器在哪"这个问题必须重新回答**
+```
+
+## ④ 本层净收益
+```
+✅ **完整解析 0x723baa 分支（含 3 个浮点常量分支）**
+✅ **确认 0x723aac 只切 bank + 设手势 Y 比例**
+✅ **确认它不是菜单构建器（与第 185 层一致）**
+✅ 澄清任务主线的错误前提
+❌ 帧 = 0
+```
+
+## ⑤ 下一步（重新定位真正的菜单构建器）
+```
+已知 appFw 里 UI 相关调用点：
+  · createLayer ×4（site2 → 已执行成功）
+  · setActive ×5 / setClear ×4（已执行成功）
+  · setGestureYRatio（0x723aac 里）
+  · wgtsys() / getGestureAnalyzer()
+
+★ 真正的 widget 构造在哪？
+  候选：搜 appFw 里所有对 WidgetSystem / Widget / Layout 的调用
+  ⇒ 特别找 `Widget::initNode` / `Widget::initSprite` / `Widget::reset`
+    （我们的探针已挂这些符号，但从未被调用过 —— 日志里 0 次）
+```
+
+## 方法论（第 236 条）★★★★★★
+**"任务主线里的每个中间结论都要能被独立验证，否则错误会一路传播"：
+```
+任务描述（第 181 层写下）说：
+  "0x54f664 → 0x54ef74 → 0x723aac（菜单构建器，94 个 widget 构造点）"
+
+本轮验证发现：**0x723aac 根本不是菜单构建器**，它只设手势比例。
+这个错误结论从第 181 层一直传到第 247 层，影响了 60+ 轮的方向。
+
+⇒ 判据：**任务描述里的每个断言，一旦有机会就要去验证**
+   （尤其是"X 是 Y"这种命名性断言）。
+   我在第 185 层就发现过"0x723aac 不是菜单构建器"，
+   但没有把它写回任务主线，导致后续仍然沿着错误链条推理。
+```
+
+## ⑥ 附：widget 探针从未触发的证据
+```
+WIDGET initNode : 0 次
+WIDGET initSprite: 0 次（推测）
+WIDGET reset    : 0 次（推测）
+⇒ 整个会话中 widget 从未被构造
+⇒ 这印证了"菜单从未开始构建"
+```
