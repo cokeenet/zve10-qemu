@@ -27299,3 +27299,135 @@ arm-linux-readelf -rW appFw.so | grep processEvent：
 第 294 层：RTLD_NEXT 对 dlopen 库无效          → 发现
 第 295 层：找到 GOT 槽，知道该 patch 哪里      → 本轮
 ```
+
+---
+
+# ★★★★★★★★★★★★ 2026-11-06 第二百九十六章（第 180 轮）：**决定性证据：processEvent 从未被调用 —— 主循环从未执行**
+
+## ① GOT patch 的验证机制反而给出了答案
+```
+GOT_PATCH base=0x2dcff000 slot=0x3147a334
+          before=**0x2e2279d0**  expect=**0x040cc110**
+GOT_PATCH mismatch, not patched
+```
+
+**解析：**
+```
+0x2e2279d0 - 0x2dcff000 = **0x5289d0**
+```
+```asm
+005289d0 <_ZN4sidb9GetRemainEjNS_11ContentTypeEPj@plt-0x14>:   ← PLT0
+  5289d0: push {lr}
+  5289d4: ldr  lr, [pc, #4]
+  5289d8: add  lr, pc, lr
+  5289dc: ldr  pc, [lr, #8]!
+```
+**⇒ `0x5289d0` 就是 PLT0（`_dl_runtime_resolve` 入口）**
+
+## ② ★★★★★ 这意味着什么
+```
+ELF 的 lazy binding 机制：
+  · GOT 槽**未解析**时 → 指向 PLT0（resolver）
+  · 第一次调用 → resolver 解析真实地址并**改写 GOT 槽**
+  · 之后 → GOT 槽直接指向真实函数
+
+实测 GOT 槽仍是 PLT0
+⇒ **processEvent 从未被调用过一次**
+⇒ **主循环 0x54f894..0x54f89e 从未执行**
+```
+
+## ③ ★ 这推翻了第 293 层的结论
+```
+第 293 层我根据 `bne.n 54f894` 推断：
+  "processEvent 恒真 ⇒ 主循环永不退出"
+
+★ 实际：**主循环根本没进入**（GOT 槽证明）
+
+⇒ 第 293 层的"单一事实解释全部 7 个观测"是错的。
+  正确的解释是：**site3 在 0x54f664..0x54f894 之间就停住了**（0x230 字节内）。
+```
+
+## ④ 而 0x54f664..0x54f894 之间的调用（已知）
+```
+54f674: bl  0x54ef74        ← ★ site3 的第一件事
+54f6be: blx memset@plt
+54f70a: blx memset@plt
+54f75c: blx __aeabi_uldivmod@plt
+54f894: blx UXEngine::wgtsys@plt    ← 主循环入口（从未到达）
+```
+
+**⇒ 若停在 54f674 → 0x54ef74 内部**
+**⇒ 而 0x54ef74 的关键点是 0x54ef8c 的虚函数 `blx r3`（第 257 层发现）**
+
+## ⑤ ★ 完整一致的解释（本会话最可靠的版本）
+```
+Application_Start
+  → site2: 4×createLayer + setActive + setClear  ✅（实测 12/10/8 次）
+  → site2 返回（调用树零外部调用，必然返回）
+  → 0x54d5ac: bl site3 (0x54f664)
+  → site3 进入
+  → **0x54f674: bl 0x54ef74**
+  → 0x54ef80: ldr r0, [r0, #16]     ; frame[16]
+  → 0x54ef86: ldr r3, [r0, #0]      ; vtable
+  → 0x54ef8a: ldr r3, [r3, #0]      ; vtable[0]
+  → **0x54ef8c: blx r3**            ; ← 停在这里（或它内部）
+  → 永远到不了 0x54f894 的主循环
+  ⇒ 所以 processEvent 的 GOT 槽从未被解析  ✅ 与实测一致
+  ⇒ 所以 SetCallback = 0                  ✅ 一致
+  ⇒ 所以无 widget / 无绘制 / FB 全零      ✅ 一致
+```
+
+## ⑥ 本层净收益（本会话最重要的纠正）
+```
+✅ **用 GOT 槽状态证明了 processEvent 从未被调用（lazy binding 未触发）**
+✅ **推翻第 293 层的"主循环恒真"假设**
+✅ **把停止点精确收敛到 0x54f664..0x54f894 之间**
+✅ **收敛到 0x54ef74 的 0x54ef8c 虚函数调用**
+✅ 基线完好（1317/44/6）
+❌ 帧 = 0
+```
+
+## ⑦ 下一步
+```
+0x54ef8c 的 blx r3 跳到哪里、那里做了什么？
+  · vtable[0] = *(*(frame+2204))
+  · frame+2204 由 site1 用 GOT 槽 0x37d95b6 构造
+  ⇒ 需要读 vtable[0] 的运行时值（会崩，第 244 层验证过）
+
+★ 但有一个**零风险**的办法：
+   0x54ef8c 是 blx r3，若 r3 指向 libObj 内部的某个函数，
+   那个函数的第一条指令会在 GOT 解析后留下痕迹。
+   
+   ⇒ 或者：**检查所有 libObj 导出函数的 GOT 槽状态**
+      （如果某个槽也还是 PLT0 且我们预期它该被调用，说明没到）
+
+⇒ 最直接：**钩住 0x54ef74 内部会调用的所有外部函数**
+   （0x54ef74 里若有 blx @plt，那些槽会暴露）
+```
+
+## 方法论（第 284 条）★★★★★★★ 本会话最重要的方法论
+**"ELF lazy binding 的 GOT 槽状态，是一个免费的'函数是否被调用过'检测器"：
+```
+我一直在找"怎么知道某函数是否被调用"（加钩子、加探针）。
+但 ELF 自己就记录了：**未解析的 GOT 槽指向 PLT0**。
+
+⇒ 判据：**判断"某个外部函数是否被调用过"，读它的 GOT 槽即可**：
+   · 值是 PLT0（resolver） → **从未调用**
+   · 值是真实地址           → **调用过**
+   零成本、零干扰、绝对可靠。
+
+★ 这比任何钩子都可靠（钩子可能失效，GOT 槽不会说谎）。
+
+  本会话我为了知道"processEvent 是否被调用"，
+  加了 UXLOOP 钩子、改了 RTLD_NEXT、做了 GOT patch，
+  最后却是 patch 的**验证失败信息**给出了答案。
+```
+
+## ⑧ 附：本会话"钩子"路线的完整历程
+```
+第 200 层：加 UXLOOP 钩子
+第 294 层：发现 RTLD_NEXT 对 dlopen 库无效
+第 295 层：找到 GOT 槽 0x377b334
+第 296 层：patch 时验证发现槽仍是 PLT0 ⇒ **函数从未被调用**（本轮）
+⇒ **最终答案不是"钩子生效了"，而是"钩子的验证失败告诉了我们真相"**
+```
