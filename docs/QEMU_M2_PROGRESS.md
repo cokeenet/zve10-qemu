@@ -25423,3 +25423,103 @@ InfraInput::SendEventInitData  0x2088b8
    没有注意到 0x7a804c/0x7a0020 来自 **libObj**（UI 引擎），
    而 UI 引擎才是我们真正关心的。
 ```
+
+---
+
+# ★★★★★★★★★★ 2026-11-06 第二百七十八章（第 162 轮）：**事件注入成功执行，但消费者未收到**
+
+## ① 注入器实现完成，且成功执行
+```c
+static void inject_input_event(unsigned qid, unsigned frame, unsigned code,
+                               unsigned sub, unsigned param)
+{
+    /* dlvsym 查 GLIBC_2.4 失败 → 改用 dlsym(RTLD_DEFAULT) 后成功 */
+    g_valloc_msg = dlsym(RTLD_DEFAULT, "osal_valloc_msg_wait");
+    g_snd_msg    = dlsym(RTLD_DEFAULT, "osal_snd_msg");
+    g_set_msg_src= dlsym(RTLD_DEFAULT, "osal_set_msg_src");
+
+    osal_valloc_msg_wait(qid, &msg, 48, 1);
+    /* 填 48 字节：frame/code/sub/param 按 a7c2 布局 */
+    osal_set_msg_src(msg, 0x2003);
+    osal_snd_msg(qid, msg);      /* 返回 0 = 成功 */
+}
+```
+
+**实测输出：**
+```
+INJECT_INPUT begin
+INJECT_INPUT n=1 qid=0x7a804c frame=0x2003 code=0x8201 sub=3 param=0x1 **send=0**  ✅
+INJECT_INPUT n=2 qid=0x7a0020 frame=0x2003 code=0x8201 sub=3 param=0x1 **send=0**  ✅
+INJECT_INPUT done
+```
+
+## ② ★★★ 但注入后消费者仍在无限等待
+```
+注入在第 1106 行。之后：
+  [AS]RCVC n=77 qid=**0x7a804c** tmo=-1 mod=libObj.so off=0x209c91
+  [AS]RCVC n=78 qid=**0x7a0020** tmo=-1 mod=libObj.so off=0x20a5c1
+
+⇒ **消息 send=0（成功投递），但消费者仍然在 tmo=-1 处无限等待**
+⇒ 说明：**消息进了队列，但等待者没有收到通知**
+   或者：等待的不是这两个队列的"这个格式"
+```
+
+## ③ 但注入过程本身是成功的、安全的
+```
+基线：行数=1303 [AS]=49 createLayer=6  ✅ 完好
+绘制探针：仍全 0
+FB nonzero 最大 = 1
+
+⇒ **注入没有破坏基线**（这是重要成果：证明 osal_snd_msg 可安全调用）
+```
+
+## ④ 排查方向
+```
+可能原因（按可能性排序）：
+  A. **队列 id 不对**：0x7a804c/0x7a0020 可能是"接收句柄"而非"队列 id"
+     （osal 的 qid 可能有编码：低 16 位是索引，高 16 位是 generation）
+  B. **消息格式不对**：48 字节布局是 a7c2 的 CP 事件格式，
+     而 InfraInput 可能期望不同格式
+  C. **osal_snd_msg 的第一个参数语义**：
+     我们传的是 RCVC 里的 qid，但发送可能需要不同的 handle
+
+★ 关键线索：qid 值 0x7a804c 和 0x7a0020 看起来有结构：
+  0x7a804c: 高 16 位 0x7a80，低 16 位 0x004c
+  0x7a0020: 高 16 位 0x7a00，低 16 位 0x0020
+  ⇒ **高 16 位可能是"队列组/模块 id"，低 16 位是"队列索引"**
+  ⇒ 而 osal_stat_msgq 的签名检查 `r0 & 0x8000`（第 252 层）
+     ⇒ **0x7a804c 的 bit15 = 0，0x7a0020 的 bit15 = 0**
+     ⇒ 两者都走"直接转发"路径
+```
+
+## ⑤ 本层净收益（重要成果）
+```
+✅ **实现并成功执行事件注入器（send=0 成功）**
+✅ **证明 osal_snd_msg / osal_valloc_msg_wait 可安全调用（基线完好）**
+✅ **发现 GLIBC_2.4 版本化 dlvsym 对 osal 符号无效，改用 RTLD_DEFAULT**
+✅ **确认消费者未收到消息（注入后仍在 tmo=-1 等待）**
+✅ 基线完好（1303/49/6）
+❌ 帧 = 0
+```
+
+## ⑥ 下一步
+```
+1. 反汇编 InfraInput 的消息解析代码（off=0x209c91 附近）
+   看它如何解码收到的消息
+2. 确认 osal_snd_msg 的 qid 语义（是否需要不同的 handle）
+3. 尝试用 osal_snd_sync_msg（同步发送）而非 osal_snd_msg
+```
+
+## 方法论（第 266 条）★★★★★
+**"'发送成功'不等于'对方收到'——消息系统的返回值只代表入队"：
+```
+osal_snd_msg 返回 0，我一度以为注入成功了。
+但注入后消费者仍在 tmo=-1 等待 ⇒ 消息没有被消费。
+
+⇒ 判据：**任何"发送/投递"类 API 的返回值，只代表"调用成功"，
+   不代表"对方收到了"。** 验证必须在**接收端**做：
+   · 接收端是否被唤醒？
+   · 接收端是否消费了队列？
+   · 接收端的行为是否改变？
+   本会话前面也有类似教训（第 244 层"探针无输出 ≠ 事件未发生"）。
+```
