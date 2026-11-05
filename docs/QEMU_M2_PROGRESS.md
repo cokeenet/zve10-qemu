@@ -25925,3 +25925,111 @@ RmCallback / RmEventKeyList
 第 276 层：从"固件卡住"改为"缺输入设备"
 第 282 层：从"消息注入"改为"伪造查询结果"（本轮）
 ```
+
+---
+
+# ★★★★★★★★★★ 2026-11-06 第二百八十三章（第 167 轮）：**完整解析输入路径：同步请求-应答模式；发现已有的传感器应答服务**
+
+## ① 完整解析 0x2074c8（GetPhyKeyStatus 的实际数据源）
+```asm
+002074c8:
+  2074d2: ldr  r0, [pc, #88]        ; lit@0x20752c = **0x924127**（请求队列）
+  2074d4: adds r1, r7, #4           ; &msg
+  2074d6: movs r2, #40              ; 40 字节
+  2074d8: movs r3, #1
+  2074da: blx  osal_valloc_msg_wait ; 分配消息
+  2074e2: ldr  r1, [r7, #4]
+  2074e4: ldr  r3, [pc, #72]        ; lit@0x207530 = **0x920111**（请求码）
+  2074e6: ldr  r0, [pc, #68]        ; 0x924127（qid）
+  2074e8: str  r3, [r1, #0]         ; msg[0] = 0x920111
+  2074ea: blx  osal_snd_sync_msg    ; ★ 同步发送（等应答）
+  2074f8: ldr.w ip, [r7, #4]
+  207500: ldmia.w lr!, {r0,r1,r2,r3} ; 拷贝应答到输出
+  207504: stmia r6!, {r0,r1,r2,r3}
+```
+
+**⇒ 输入是「同步请求-应答」模式：**
+```
+libObj → 向 qid=0x924127 发请求 0x920111 → 等待应答 → 拷贝 40 字节
+```
+
+## ② ★★★★ 我们已经实现了这个应答！（但默认关闭）
+```c
+/* 第 503 行 */
+if(g_svc_sensor() && q == 0x0924127u && m){
+    static unsigned sn_n;
+    unsigned n = __atomic_fetch_add(&sn_n, 1, __ATOMIC_RELAXED);
+    for(unsigned i = 4; i < 40 && i < 64; ++i) ((unsigned char *)m)[i] = 0;
+    if(n < 5 || (n % 2000) == 0)
+        logline("SENSOR_REPLY qid=0x924127 n=%u\n", n+1);
+    return 0;
+}
+
+/* 开关 */
+static int g_svc_sensor(void){ static int v=-1;
+    if(v<0) v = getenv("SVC_SENSOR") ? 1 : 0; return v; }
+```
+
+**⇒ 已经有 0x924127 的应答实现，但需要 `SVC_SENSOR=1` 环境变量！**
+
+## ③ 但这只应答"状态查询"，不是"按键事件"
+```
+注释说明（第 500-502 行）：
+  "CInfraIndctr lazy-init leaves its sub-object dangling and the next
+   indicator log SEGVs. Reply all-zero: status 0, no inhibit flags."
+  "Mirrors chocotan/a7c2-re menu-observe.c, queue written there as 0x80924127."
+
+⇒ 这个队列是 **CInfraIndctr（指示灯/状态）**，不是按键
+⇒ 应答全零 = "状态正常"
+⇒ **不会产生按键事件**
+```
+
+## ④ 本层净收益（重要结构发现）
+```
+✅ **完整解析输入的数据源：同步请求-应答到 qid=0x924127，请求码 0x920111**
+✅ **发现我们已实现该队列的应答（SENSOR_REPLY），但默认关闭**
+✅ **确认那是 CInfraIndctr（指示灯状态），不是按键**
+✅ **列出 InfraInput 的 14 个查询 API**
+✅ 基线完好（1303/49/6）
+❌ 帧 = 0
+```
+
+## ⑤ 下一步（两个方向）
+```
+方向 A：启用 SVC_SENSOR=1，看是否改变行为
+   ⇒ 成本低，可以先试（但预期只是让指示灯状态正常，不产生绘制）
+
+方向 B：查找真正的"触摸输入"来源
+   ⇒ 触摸屏通常通过 evdev（/dev/input/eventX）或 i2c 触摸控制器
+   ⇒ 而我们的内核有 CONFIG_INPUT_EVDEV=y
+   ⇒ 但 QEMU 模型没有 evdev 设备
+   
+   ★ 关键：这个固件的触摸输入从哪来？
+     可能在 libObj 里有触摸专用 API（不叫 InfraInput）
+```
+
+## 方法论（第 271 条）★★★★★★
+**"'输入'可能有多条通道——键盘/触摸/状态是分开的"：
+```
+我一直在找"输入事件队列"，但实际发现：
+  · qid=0x7a804c → 内部通知（计数器）        ← 第 282 层
+  · qid=0x924127 → 状态查询（指示灯）        ← 本轮
+  · 两个都不是"按键/触摸"
+
+⇒ 判据：**"输入"在嵌入式系统里通常是分立的多条通道**：
+   · 物理按键（GPIO/矩阵键盘）
+   · 触摸屏（i2c/spi 控制器 → evdev）
+   · 状态/指示灯（轮询式）
+   每条通道的取数方式不同，不能混为一谈。
+   
+   ⇒ 正确做法：**先列出所有可能的输入通道，再逐个确认哪条是"菜单需要的"**，
+     而不是找到一个"看起来像队列"的对象就假定它是输入。
+```
+
+## ⑥ 附：本会话"队列"相关判断的演进
+```
+第 277 层：认为 0x7a804c 是输入队列    → 错（是内部计数）
+第 282 层：纠正，改为查询式 API        → 部分对
+第 283 层：发现查询走 0x924127 同步请求 → 是状态查询，不是按键
+⇒ 仍在找"按键/触摸"的真正来源
+```
