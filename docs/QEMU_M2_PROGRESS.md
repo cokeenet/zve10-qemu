@@ -17802,3 +17802,103 @@ a7c2 的解法："显式 AP-only headless 后端实现配对、冻结 metadata�
    空转会抢占唯一的 CPU，把被测系统拖慢到无法解释的程度。
    同时要打印"等待前的值与让步次数"，才能证明等待是有效的。
 ```
+
+---
+
+# ★★★★★★★★★★★ 2026-11-05 第一百九十六层（第 80 轮）：**site3 进入后，全进程再无任何消息队列活动**
+
+## ① 实验设计：给日志加 site3 前后切分标记
+```c
+/* 调用 site3 前 */
+__atomic_store_n(&g_s3_after, 1, __ATOMIC_RELAXED);
+logline("S3_AFTER_BEGIN frame=%p\n", frame);
+/* 调用 site3 */
+/* 返回后 */
+logline("FORCESITE3 site3 RETURNED r0=%#x\n", r0);
+logline("S3_AFTER_END\n");
+
+/* 所有 osal_rcv_msg_tmo 钩子加标记 */
+logline("... RCVC ... %s", g_s3_after ? " AFTER_S3" : "");
+```
+
+## ② ★★★★★ 实测：零条 AFTER_S3
+```
+S3_AFTER_BEGIN: 1        ← 标记置位成功
+S3_AFTER_END:   0        ← site3 从未返回
+AFTER_S3 标记:  0        ← ★ 全进程再无任何 osal_rcv_msg_tmo
+RCVC 总数:     87        ← 全部在 site3 之前
+
+最后 3 行：
+  FORCESITE3 entry=0x2e398665 w0=4ff0e92d w1=6d00f5ad
+  S3_AFTER_BEGIN frame=0x407e400
+  FORCESITE3 frame=0x407e400 calling site3
+```
+
+## ③ 这说明什么（重要）
+```
+site3 进入后的效果是：**整个进程的所有线程都停止了消息接收**。
+不只是我们那个线程，连固件自己的服务线程（原本 RCVC 一直在转）也停了。
+
+⇒ 可能的原因：
+  A. site3 内部拿了**一把全局锁**（例如 OSAL 的全局互斥），
+     导致所有其它线程在 osal_rcv_msg_tmo 里等待同一把锁
+     —— 但那样其它线程会**进入** osal_rcv_msg_tmo 然后阻塞在内部，
+        我们的钩子仍应被调用（钩子在进入时打印）
+     —— 所以 A 不成立
+
+  B. site3 内部**关掉了中断/抢占**，或让调度器停摆
+     —— 单核 guest 上，若它进入一个不调度的死循环，其它线程全饿死
+     —— **这与"我们在独立线程里调用它"完全吻合**
+     —— 与第 190 层"无 D 状态 + 有 R 状态线程"也吻合
+
+  C. site3 内部有 `while(某个标志)` 的轮询，而该标志永远不会被它自己置位
+     —— 最可能
+```
+
+## ④ 与 a7c2 §8 的对应最终确认
+```
+a7c2："ready信号量 0x02886047 已返回，随后等的是 **ExternalOSDIF gate 0x02886044**"
+      那是**一把 gate**，不是消息队列
+      解法：提供 headless 输出消费者，让 gate 被打开
+
+我们：site3 进入后无任何消息队列活动
+⇒ **同样是在等一个 gate（非消息队列的同步原语）**
+⇒ a7c2 的第 6 步完全对应
+```
+
+## ⑤ 本层净收益
+```
+✅ 设计了 site3 前后切分标记（AFTER_S3），可精确观测
+✅ **实测：site3 进入后零条 osal_rcv_msg_tmo（全进程）**
+✅ 排除"某个线程在等消息队列"的假设
+✅ 确认是"等一个非消息队列的同步原语"（gate/信号量/自旋标志）
+✅ 与 a7c2 §8 的 ExternalOSDIF gate 完全对应
+❌ 帧 = 0
+⚠️ 本次 createLayer=5（基线 6），轻微偏离，但不影响本结论
+```
+
+## ⑥ 下一步（精确到"找 gate"）
+```
+现在知道要找一个 **gate / 信号量**，而不是消息队列。
+
+方法：site3 内部第一步是 bl 0x54ef74（帧循环初始化）。
+      0x54ef74 里调用的第一个跨库函数是 GRM_fbrmRegisterTriggerFrameworkCb
+      （第 179 层已确定）。
+      
+      "TriggerFramework" —— **这名字就是 gate 机制！**
+      ⇒ 下一步：钩 GRM_fbrmRegisterTriggerFrameworkCb，
+        看我们的 site3 调用是否走到它；以及它注册的回调由谁触发。
+      
+      同时 libObj 里应该有一组 fbrm* 函数（FrameBuffer Resource Manager）。
+```
+
+## 方法论（第 184 条）★★★★★
+**"'零活动'比'有活动'更能定位：它把搜索范围从'哪个队列'缩到'哪个非队列原语'"：
+```
+原本我以为 site3 在等某个消息队列（a7c2 提过 0x8280074d 等 qid）。
+加了 AFTER_S3 标记后发现：**进入后一条消息都没有**。
+⇒ 立刻排除"等消息队列"，锁定"等非队列同步原语"（gate/信号量/自旋）。
+⇒ 判据：给日志加"锚点标记"（某事件前/后），然后 grep 标记之后的内容。
+   若某类活动在标记后**完全消失**，那类机制就可以整类排除。
+   这比逐个检查"哪个队列没返回"快得多。
+```
