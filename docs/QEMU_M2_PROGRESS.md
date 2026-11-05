@@ -15873,3 +15873,95 @@ getWidget      = 0    ← 按 ID 取 widget
 本层三指标全部吻合 ⇒ 可以放心下结论。
 对比第 165~172 层：8 轮里三指标全部异常（1011/0/2），却继续推理。
 ```
+
+---
+
+# ★★★★★★★★ 2026-11-05 第一百七十五层（第 54 轮）：**确认无任何 widget 被创建；libObj 不导出 widget 构造器**
+
+## ① 关键结构发现：widget 构造器不在 libObj 里
+```
+libObj 导出的 wgtsys 符号里：
+  ✅ Widget 基类的**方法**：calcWorldPos / getParent / getHeight / reset /
+     initSprite / initNode / setFilterColor / calcWorldClipArea …
+  ❌ **没有 Widget 的构造器**（无 `_ZN2ux6wgtsys6WidgetC1/C2`）
+⇒ widget 的构造发生在 **appFw 内部的派生类**里（64 MB 的自有代码）。
+⇒ 想在外部"主动创建一个 widget"，没有现成导出接口可用。
+```
+
+## ② 用 Widget 生命周期的 3 个必经方法做判据（干净数据）
+```
+钩子：Widget::initNode(Node&) / Widget::initSprite(Sprite&,t) / Widget::reset(bool)
+  这三个是**每个 widget 出现在屏幕上必经的**基类方法。
+
+基线校验（本轮）：
+  行数 = 1401   ✅（基线 ~1400）
+  [AS] = 345    ✅（基线 ~350）
+  INITSEQ = 66  ✅
+  createLayer = 6 ✅
+  ⇒ 数据可信。
+
+实测：
+  initNode   = 0
+  initSprite = 0
+  reset      = 0
+⇒ **没有任何 widget 被实例化和初始化。**
+```
+
+## ③ 与已有事实合并，得到完整的引擎状态
+```
+✅ 已建立：
+   · UxEngine 初始化（640×480 渲染目标）
+   · WidgetSystem 单例 0x4e3818
+   · 4 个 UI layer（createLayer ×4，返回递增句柄）
+   · 每个 layer setActive(true) —— 已激活
+   · 每个 layer setClear(false) —— 清屏策略已设
+✅ 已排除：
+   · 任何 widget 的实例化（initNode/initSprite/reset = 0）
+   · 任何 widget 查询（getWidget = 0）
+   · 任何帧更新（updateFrame = 0）
+   · 任何事件泵（processEvent = 0）
+   · 任何绘制通知（notifyDraw = 0）
+   · 任何绘制调用（drawText / drawFramebuffer = 0）
+⇒ **引擎把"画布"（4 个 layer）建好并激活了，但从未往上面放任何 widget，
+   因此主循环和绘制全部不会触发。**
+```
+
+## ④ 这精确对应 a7c2 的哪一步
+```
+a7c2 八步：
+  ① backup 队列          → 我们已解决（原有 hook）
+  ② 让原应用+依赖进入可观测状态 → ✅ 已达成（Application_Start 正常跑）
+  ③ **用原框架建立菜单（创建 screen/widget）** → ❌ **卡在这里**
+  ④ AP-only 软件消费端    → 未开始
+  ⑤ ramfb                 → 未开始
+⇒ 我们已过 ①②，正卡在 ③ 的"创建 widget"环节。
+```
+
+## ⑤ 本层净收益
+```
+✅ 基线完好（1401/345/66/6），数据可信
+✅ **用 Widget 3 个必经方法证明：无任何 widget 被创建**（initNode/initSprite/reset 全 0）
+✅ 查明 libObj 不导出 widget 构造器 ⇒ 无法从外部直接创建
+✅ 把进度精确定位到 a7c2 第 ③ 步的"创建 widget"环节
+❌ 帧 = 0
+```
+
+## ⑥ 下一步（两条可行路径）
+```
+A. ★ 在 appFw 里找 widget 构造的具体位置：
+   静态扫 appFw 里 bl 到 Widget::reset / initNode / initSprite 的调用点，
+   反推"本该创建 widget 的那个函数"，看它为何未被执行。
+B. 主动构造：用 libObj 现有接口组合出一个最小 widget
+   （createLayer 已有 Layer，再找 Layer::addChild —— 但前面查过没有导出；
+    需再确认 Layer 类有哪些导出方法）
+```
+
+## 方法论（第 164 条）★★★
+**"判断'某类对象是否存在'，用它的必经生命周期方法做探针，比找构造器更可靠"：
+```
+libObj 没有导出 Widget 构造器，无法直接钩"创建"。
+但每个 widget 要出现在屏幕上，必经 initNode / initSprite / reset。
+钩这三个 ⇒ 任一非零即证明有 widget 被创建；全 0 则证明一个都没有。
+⇒ 判据：找不到构造入口时，改钩**该类对象必用的方法**，
+   用"必经路径是否被走到"代替"构造是否被调用"。
+```
