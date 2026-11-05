@@ -21191,3 +21191,81 @@ thunk @ 0x52abec（std::mutex::lock 的内联实现）：
    · 静态给出候选集（避免遗漏）
    · 运行时给出实例（避免臆测）
    只做静态会无法收敛，只做运行时（如前面 3 轮读 PC）会被内联/优化击穿。
+
+---
+
+# ★★★★★★★ 2026-11-06 第二百三十四层（第 118 轮）：**帧链回溯拿到候选值，但帧布局与预期不符**
+
+## ① 手工帧链的实现
+```c
+unsigned *guess = __builtin_frame_address(0);
+for (int lvl = 1; lvl <= 3 && guess; lvl++) {
+    unsigned nfp = guess[0], ret_a = guess[-1], ret_b = guess[1];
+    logline("ENTRY_FRAME lvl=%d fp=%p next=%#x ra[-1]=%#x ra[+1]=%#x\n", ...);
+    ...
+}
+```
+
+## ② 实测结果
+```
+ENTRY_LOCK  n=1 mutex=0x3630d080 caller=appFw+0x52abfe
+ENTRY_FRAME lvl=1 fp=0x36dc12bc next=**0x2e4fabff** ra[-1]=0 ra[+1]=0x1
+ENTRY_LOCK  n=2 mutex=0x3630d080 caller=appFw+0x52abfe
+ENTRY_FRAME lvl=1 fp=0x36dc07b4 next=0x2e4fabff ra[-1]=0 ra[+1]=0x3630d2f4
+ENTRY_LOCK  n=3 mutex=0x359f4c08 caller=appFw+0x52abfe
+ENTRY_FRAME lvl=1 fp=0x36dc0bc4 next=0x2e4fabff ra[-1]=0 ra[+1]=0
+```
+
+## ③ 分析 next=0x2e4fabff
+```
+· 落在 appFw 的 .text 内（0x2e275b00..0x2e4fabff 区间）
+· 相对 base(0x2dd4b000) 的偏移 = **0x7afbff**
+· 反汇编 0x7afbf8: push {r7,lr}; movs r0,#1; pop {r7,pc}
+  ⇒ 只是一个"返回 1"的小 stub
+· ra[-1]=0（不可用）
+⇒ **这个值不是有效的返回地址**（三次运行都是同一个值且指向 stub）
+```
+
+## ④ 结论：这个工具的帧布局与我的假设不符
+```
+我的假设：fp[0]=上一帧 fp，fp[-1]=返回地址
+实测：fp[0] = 0x2e4fabff（固定值，指向 stub），fp[-1] = 0
+⇒ 该 .so 是 -O2 编译，__builtin_frame_address(0) 的语义不可靠
+```
+
+## ⑤ 本层净收益
+```
+✅ 实现了手工帧链回溯
+✅ 拿到 next/ra 三个值（三次运行一致）
+✅ **验证 0x2e4fabff 落在 appFw .text 内（偏移 0x7afbff）**
+✅ 确认该值指向一个 stub 而非真实返回地址
+✅ 基线完好（1110/38/6）
+❌ 未拿到有效的业务调用者
+❌ 帧 = 0
+```
+
+## ⑥ 诚实评估：运行时手段再次受阻
+```
+这已经是第 **4 次** 尝试从运行时上下文定位调用者：
+  113: __builtin_return_address(1) → 内联失效
+  114: pt_regs 读取 → 字段偏移不对
+  115: 完整 18 寄存器 → pc 落在 heap
+  118: 手工帧链 → fp 语义不可靠
+
+⇒ 运行时手段在 -O2 优化 + ARM EABI 的组合下反复失效。
+⇒ **应该放弃这条线**，转回静态分析（第 116-117 轮证明有效）。
+```
+
+## 方法论（第 222 条）★★★★★
+**"同一条技术路线失败 4 次，说明它在这个环境下根本不可行"：
+```
+运行时回溯调用栈在 x86/调试版本上很可靠，但在这个环境里：
+  · -O2 优化把中间帧全部内联
+  · ARM EABI 的帧指针约定与 GCC 的 -fomit-frame-pointer 默认冲突
+  · pt_regs 在 syscall 睡眠点上保存的 PC 不在用户态代码区
+⇒ **这不是"调参能解决"的问题，是该手段在此环境下不可用。**
+
+⇒ 判据：技术手段连续失败 4 次且失败原因**各不相同但都指向环境限制**时，
+   应判定"该手段在此环境不可用"，转向正交手段。
+   我在前 3 次失败后仍在微调（改偏移、改寄存器），
+   第 4 次才确认是环境限制 —— 本应在第 2 次就警觉。
