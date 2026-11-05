@@ -21269,3 +21269,91 @@ ENTRY_FRAME lvl=1 fp=0x36dc0bc4 next=0x2e4fabff ra[-1]=0 ra[+1]=0
    应判定"该手段在此环境不可用"，转向正交手段。
    我在前 3 次失败后仍在微调（改偏移、改寄存器），
    第 4 次才确认是环境限制 —— 本应在第 2 次就警觉。
+
+---
+
+# ★★★★★★★★★★★ 2026-11-06 第二百三十五层（第 119 轮）：**精确时序：site2 完全成功后，第 3 次加锁卡住**
+
+## ① ★★★★★ 完整时序（本轮最关键的证据）
+```
+第 8  行: ENTRY_LOCK n=1 mutex=0x3630d080    ← site2 内部，建 layer 前
+第 40 行: CREATELAYER n=3  caller=appfw+0x7239c0   ← 第 1 个 UI layer
+第 42 行: CREATELAYER n=3 ret=5159544
+第 43 行: [AS]LAYERVT setActive n=2 on=1
+第 45 行: [AS]LAYERVT setClear  n=1 caller=appfw+0x7239d8
+第 48 行: CREATELAYER n=4  caller=appfw+0x7239ee
+第 50 行: setActive n=3 on=1
+第 52 行: setClear  n=2
+第 55 行: CREATELAYER n=5  caller=appfw+0x723a1e
+第 57 行: setActive n=4 on=1
+第 59 行: setClear  n=3
+第 62 行: CREATELAYER n=6  caller=appfw+0x723a4c
+第 73 行: setActive n=5 on=1
+第 75 行: **setClear n=4** caller=appfw+0x723a64    ← ★ site2 最后一个操作
+第 76 行: setClear n=4 ret=0                        ← ★ site2 完全成功
+第 77 行: **ENTRY_LOCK n=2** mutex=0x3630d080       ← 紧接着加锁
+第 80 行: **ENTRY_LOCK n=3** mutex=0x359f4c08       ← ★ 卡在这里
+```
+
+## ② ★★★★ 由此得出的确定结论
+```
+· site2 的 4 个 UI layer **全部创建成功**（n=3,4,5,6）
+· 每个 layer 的 setActive(true) + setClear(false) **全部成功**
+· site2 的最后一个操作（setClear n=4）**正常返回**
+· **紧接着连续两次加锁（n=2、n=3），第 3 次卡住**
+
+⇒ **卡点精确位置：site2 全部完成之后、site3 之前的两次加锁**
+⇒ 与第 181 层"site3 从未执行"完全一致
+```
+
+## ③ 两把锁的对比（第 228 层的恒定偏移再次确认）
+```
+n=2: mutex=0x3630d080  （与前一次 n=1 相同 → 同一把锁）
+n=3: mutex=0x359f4c08  （与 n=1/n=2 相差 **0x918478**）
+⇒ 第 228 层的"偏移恒定 0x918478"再次复现
+⇒ 两把锁在同一个对象里
+```
+
+## ④ 本层净收益（重要的时序确认）
+```
+✅ **拿到完整逐行时序（从 Application_Start ENTER 到卡住）**
+✅ **确认 site2 的 4 个 layer 全部成功（含 setActive/setClear）**
+✅ **确认 site2 最后一个操作正常返回**
+✅ **卡点精确定位：site2 完成后连续两次加锁，第 3 次不返回**
+✅ 恒定偏移 0x918478 再次复现（第 228 层结论加强）
+✅ 基线完好（1110/38/6）
+❌ 帧 = 0
+```
+
+## ⑤ 下一步
+```
+现在可以确定：Application_Start 在 site2 返回**之后**，
+自己又加了两次锁（n=2, n=3），卡在第二次。
+
+⇒ 这两次加锁**不是 site2 做的**（site2 已返回）
+⇒ 是 Application_Start 主体代码做的
+⇒ 应该重新看 Application_Start 的六连调：
+     site0  site1  site2  **site3**  site4  site5
+   site2 返回后，下一个就是 site3（0x54f664）
+   ⇒ **但 site3 内部第一件事是 bl 0x54ef74**
+   ⇒ 而 0x54ef74 里会调用 0x723aac（切 bank）
+   ⇒ 中间是否有加锁？
+   
+★ 更可能：这两次加锁发生在 **site3 的入口处或 0x54ef74 内部**，
+   而第 181 层"SITE3PROBE=0"是因为探针挂在 0x54efe8，
+   在两次加锁**之后**。
+```
+
+## 方法论（第 223 条）★★★★★
+**"把日志按'关键事件'排序，比按'时间'排序更有信息量"：
+```
+我一直知道有 ENTRY_LOCK 和 setClear，但从未把它们放在**同一条时间线**上对比。
+本轮对齐行号后立刻看到：
+  setClear n=4 ret=0（site2 完成）
+  → ENTRY_LOCK n=2
+  → ENTRY_LOCK n=3（卡住）
+⇒ 一句话就确定了"卡点在 site2 完成之后"。
+
+⇒ 判据：多个探针各自输出时，**必须把它们的日志按行号/时间对齐**，
+   才能看出"A 完成后多久发生 B"。分开看每个探针的日志，
+   只能看到"有 A"和"有 B"，看不到它们的因果关系。
