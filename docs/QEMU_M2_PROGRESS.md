@@ -19503,3 +19503,90 @@ dump_thread_state 里 `logline(state); continue;` 导致后面的 wchan 读取
    是否变成死代码**。最便宜的验证：让探针打印一个它必然产生的字段，
    看是否真的出现。
 ```
+
+---
+
+# ★★★★★★★★ 2026-11-06 第二百一十三层（第 97 轮）：**Application_Start 线程 tid=195 不在 TSTATE 表里**
+
+## ① 新增观测：记录 Application_Start 自己的 tid
+```c
+unsigned int tid = (unsigned int)syscall(SYS_gettid);
+logline("MY_TID Application_Start tid=%u\n", tid);
+```
+
+**实测：**
+```
+1022: MY_TID Application_Start tid=**195**
+1023: ARGTRACE >>> Application_Start ENTER
+...
+1099: TSTATE stuck ---
+      TSTATE tid=115 state=S wchan=osal_rcv_msg_tmo
+      TSTATE tid=116 state=S wchan=hrtimer_nanosleep
+      TSTATE tid=117 state=R wchan=0
+      TSTATE tid=118..120 state=S wchan=__k_4u_wait_cb
+      TSTATE tid=122 state=S wchan=osal_rcv_msg_tmo
+      TSTATE tid=123 state=S wchan=__k_4u_wait_cb
+      TSTATE tid=124 state=S wchan=osal_rcv_msg_tmo
+      TSTATE tid=125 state=R wchan=0
+      TSTATE tid=126/127 state=S wchan=futex_wait_queue_me
+```
+
+## ② ★★★ 关键矛盾
+```
+Application_Start 的 tid = **195**
+但 TSTATE 表（在 MY_TID 之后 77 行才打印）里**完全没有 195**
+表里只有 115..127（13 个线程）
+
+⇒ 两种可能：
+   A. tid=195 的线程在 TSTATE 采样时**已经退出**
+   B. TSTATE 读的是**另一个进程**的 task 表
+```
+
+## ③ 检查 B：/proc/self/task 是"当前进程"
+```
+我们的钩子通过 LD_PRELOAD 注入。
+日志显示两个进程都在用同一套钩子：
+  · bootin.elf  (pid=?  TS 显示 pid=105)
+  · im.elf      (tid=115 出现在 SSM 日志里)
+
+TSTATE 的 "TS pid=105 comm=bootin.elf nthread=5"
+⇒ **TSTATE 由 bootin.elf 的线程打印，读的是 bootin.elf 的 task 表**
+⇒ 而 Application_Start 在 **im.elf 的线程（tid=195）** 里跑
+⇒ **两者不在同一个进程，所以表里看不到 195**
+```
+
+## ④ 本层净收益
+```
+✅ **新增 MY_TID 探针，拿到 Application_Start 的真实 tid=195**
+✅ **发现 TSTATE 表的 pid 是 105（bootin.elf），而 Application_Start 在 im.elf**
+✅ 定位观测盲区：我们一直在看错进程的线程表
+✅ 基线完好（行数=1169 [AS]=46 createLayer=6）
+❌ 帧 = 0
+```
+
+## ⑤ 下一步（重要修正）
+```
+TSTATE 探针必须改为**跨进程**读取：
+  /proc/<im.elf的pid>/task/<tid>/stat
+  /proc/<im.elf的pid>/task/<tid>/wchan
+
+而不是 /proc/self/task（那只覆盖当前进程）。
+
+实现：
+  1. 在 Application_Start 里记录 getpid()
+  2. 在 dump_thread_state 里读 /proc/<那个pid>/task/*
+  3. 或者更简单：直接在 im.elf 的进程里，用 /proc/self/task 读
+     （前提是 dump_thread_state 由 im.elf 的线程调用，而不是 bootin）
+```
+
+## 方法论（第 201 条）★★★★★ 本层最重要
+**"`/proc/self/task` 只覆盖当前进程 —— 多进程注入时必须显式指定 pid"：
+```
+我用 LD_PRELOAD 注入同一套探针到 bootin.elf 和 im.elf 两个进程。
+dump_thread_state 用 `/proc/self/task`，读到的是**调用它的那个进程**的线程表。
+而 Application_Start 跑在 im.elf 里，探针却由 bootin.elf 的线程触发
+⇒ **一直在看错进程**，13 轮的 TSTATE 数据都没覆盖到目标线程。
+
+⇒ 判据：多进程环境里用 /proc/self/* 前，**必须先确认"self"是谁**。
+   务实做法：探针里同时打印 getpid() 和目标 pid，两者一致才可信。
+```
