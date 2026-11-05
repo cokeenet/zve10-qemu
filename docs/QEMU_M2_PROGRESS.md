@@ -18000,3 +18000,110 @@ a7c2："ready信号量 0x02886047 已返回，随后等的是 **ExternalOSDIF ga
    一并算进来**（传递闭包），并对**被解引用的指针字段**格外小心 ——
    指针为 0 会立即崩溃，不像普通字段那样只是值不对。
 ```
+
+---
+
+# ★★★★★★★★★★★ 2026-11-05 第一百九十八层（第 82 轮）：**修复帧+16 后 site3 不再崩溃，进程继续运行！**
+
+## ① 根因确认（承接第 197 层）
+```
+Application_Start 的调用顺序：
+  54d594-54d59a: bl 0x54d154          ← **site1(帧+2204)** 先构造对象
+  54d59e: r1 = 帧+2204
+  54d5a6: bl 0x54d2b0                 ← site2(帧, 帧+2204)
+                                        site2 把 帧+2204 存进 帧+16
+  54d5ac: bl 0x54f664                 ← site3(帧)
+                                        0x54ef74 从 帧+16 取指针并解引用 vtable
+
+site1 (0x54d154) 做的事：
+  54d15a: mov  r5, r0              ; r5 = 帧+2204
+  54d15c: bl   0x54d138            ; 构造基类
+  54d166: ldr  r3, [r4, r3]        ; 全局 vtable 基址
+  54d168: adds r3, #8              ; vtable + 8
+  54d16a: str  r3, [r5, #0]        ; ★ *(帧+2204) = vtable+8
+```
+
+## ② 修复：按固件原顺序先调 site1，再设 帧+16，再调 site3
+```c
+/* 1) site1(帧+2204) 建对象 */
+unsigned o = (unsigned)frame + 2204;
+r12 = ((char*)base + 0x54d154u) | 1;
+r0  = o;  asm("mov lr,pc; bx r12");
+/* 2) 复现 site2 的写入 */
+frame[16/4] = (unsigned)frame + 2204;
+/* 3) 调 site3 */
+```
+
+## ③ ★★★★★ 实测结果：不再崩溃！
+```
+基线完好：行数=1178  [AS]=49  createLayer=**6** ✅
+
+1053: FORCESITE3 thread started, waiting for the layer creations
+1078: FORCESITE3 createLayer=6 after 15 yields
+1083: FORCESITE3 entry=0x2e29a665 w0=4ff0e92d w1=6d00f5ad
+1084: FORCESITE3 calling site1(0x4121c9c) to build the object at frame+2204
+1085: FORCESITE3 site1 returned, *(frame+16)=0 *(frame+2204)=**0x31287518**   ← ★ 有效 vtable
+1086: FORCESITE3 frame+16 := 0x4121c9c
+1087: S3_AFTER_BEGIN frame=0x4121400
+1088: FORCESITE3 frame=0x4121400 calling site3
+```
+
+## ④ ★★★ 与上一轮的对比（决定性差异）
+```
+上一轮（第 197 层，零帧）：
+  AFTER_S3 = **0**      ← 全进程再无消息活动（崩溃）
+  still-inside = 0      ← 心跳也停了
+  STK = 8               ← 走了 _exit
+
+本轮（修复 帧+16）：
+  AFTER_S3 = **13**     ← ★ 有消息活动了！
+  still-inside = 2      ← ★ 心跳恢复
+  STK = 16
+
+⇒ **修复生效：进程不再崩溃，继续运行。**
+⇒ site3 进入了、执行了一段、但还没走到建 widget。
+```
+
+## ⑤ 修复后的实际活动（AFTER_S3 那 13 条）
+```
+[AS]LAYERVT setClear n=4 self=0x50b620 on=0 caller=appfw+0x723a64   ← 固件自己完成最后一层
+[AS]RCVC n=84 qid=0xa1e006 tmo=1000 mod=libObj.so off=0x1dba07 AFTER_S3
+[AS]RCVC n=85 qid=0x108e007 tmo=1000 mod=libgps_rsrc.so off=0x2299 AFTER_S3
+APPSTART still-inside t=5s                                          ← 心跳
+TSTATE tid=117 state=R                                              ← 有线程在跑
+[AS]RCVC n=86..88 ... AFTER_S3
+⇒ **系统在正常运转，只是 widget 还没建出来。**
+```
+
+## ⑥ 本层净收益（重大突破）
+```
+✅ **确认根因：帧+16 必须是 site1 构造的对象指针**
+✅ **修复后 site3 不再崩溃**（AFTER_S3 从 0 → 13，心跳恢复）
+✅ 基线完好（createLayer=6），数据可信
+✅ 明确了固件真实调用顺序：site1 → site2 → site3（三者共享同一帧）
+✅ 现在的状态：site3 能进入执行，但还没走到建 widget
+❌ 帧 = 0
+```
+
+## ⑦ 下一步
+```
+site3 现在能跑到某处但没建 widget。
+它内部还有很长的流程（0x54f664..0x54fa00，约 900 字节）。
+
+需要知道它卡在哪一步。可用手段：
+  · site3 内部的 0x54ef74 会调 GRM_fbrmRegisterTriggerFrameworkCb
+    ⇒ 钩它，看这次是否被调用（上一轮是 0，因为崩在前面）
+  · 若 FBRM 被调用，说明走进去了，再看后面哪个函数没被调用
+```
+
+## 方法论（第 186 条）★★★★★
+**"复现固件的初始化顺序，比补齐单个字段更可靠"：
+```
+第 193 层我试图"只补 帧+16 一个字段"，但根因是那个字段指向的对象
+**必须由 site1 构造**（写入 vtable）。
+单纯把 帧+16 改成指向帧内某个地址，而那里是零 ⇒ 仍然崩。
+
+⇒ 判据：当一个结构需要"分阶段构造"时，
+   **不要试图只补最后一步需要的字段**，而要**按原顺序跑完每个阶段**。
+   site1 建对象 → site2 填指针 → site3 使用，缺一不可。
+```
