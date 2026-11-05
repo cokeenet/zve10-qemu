@@ -23369,3 +23369,94 @@ site2 在 0x54d318 建完 layer 后还有 15 条指令才返回。
 ⇒ 判据：**当需要判断"是否到达某点"时，优先在该点设断点**，
    而不是追踪到达该点所需的每一步。
    gdbstub 可以在不修改 guest 内存的情况下做到这一点。
+
+---
+
+# ★★★★★★★ 2026-11-06 第二百五十八章（第 142 轮）：**建立"调试窗口 + 相对地址"方案；断点未命中但方法已就绪**
+
+## ① 发现：appFw 基址每次运行都不同（ASLR）
+```
+第 141 轮：Application_Start = 0x2e3d6581  → 基址 0x2de89001
+第 142 轮：Application_Start = 0x2df80581  → 基址 0x2da33001
+本次    ：Application_Start = 0x2e18d581  → 基址 0x2e134001
+
+⇒ **基址每次不同，无法预置绝对地址断点**
+```
+
+## ② ★★★★ 但发现：相对 real_start 的偏移是固定的
+```
+site2_ENTRY  = real_start **- 0x2d0**   (0x54d2b0 - 0x54d580)
+site2_RETURN = real_start **- 0x222**   (0x54d35e - 0x54d580)
+site3_ENTRY  = real_start **+ 0x20e4**  (0x54f664 - 0x54d580)
+Application_Start = real_start + 0
+⇒ **只要知道 real_start，就能算出任何代码点的绝对地址**
+```
+
+## ③ 新增：BP_WINDOW 调试窗口
+```c
+/* 在 my_start 里，调用 real_start 之前 */
+logline("BP_WINDOW real_start=%#lx site2ret=%#lx site3=%#lx\n",
+        real_start, real_start - 0x222, real_start + 0x20e4);
+/* 忙等 8 秒（sleep 不工作，用 CLOCK_MONOTONIC 轮询） */
+struct timespec t0,t1; syscall(SYS_clock_gettime,1,&t0);
+do { syscall(SYS_sched_yield); syscall(SYS_clock_gettime,1,&t1); }
+while ((t1.tv_sec - t0.tv_sec) < 8);
+logline("BP_WINDOW closed, calling real_start\n");
+```
+
+## ④ 实测：窗口机制工作正常
+```
+BP_WINDOW real_start=0x2e18d581 site2ret=0x2e18d35f site3=0x2e18f665
+BP_WINDOW closed, calling real_start
+
+⇒ 窗口正确打印了三个绝对地址
+⇒ **方法可用**
+```
+
+## ⑤ 但断点未命中（0 次）
+```
+原因分析：
+  · gdb 连上时目标在 0xffff0008（内核态）
+  · 从日志轮询发现 BP_WINDOW 到实际下断点，耗时约 270 秒
+    （我用了 3 秒轮询 × 90 次的上限，但实际第一次命中在第 270 秒）
+  · 8 秒窗口太短，来不及
+
+⇒ **改进：把窗口从 8 秒延长到 60 秒，并缩短轮询间隔**
+```
+
+## ⑥ 本层净收益
+```
+✅ **发现基址随机化（ASLR），确认必须用相对地址**
+✅ **建立完整公式：site2_ENTRY/-0x2d0、site2_RETURN/-0x222、site3_ENTRY/+0x20e4**
+✅ **实现 BP_WINDOW 调试窗口，实测打印正确**
+✅ 基线完好（1297/44/6）
+❌ 断点未命中（窗口太短）
+❌ 帧 = 0
+```
+
+## ⑦ 下一步（改进后的方案）
+```
+1. 把 BP_WINDOW 延长到 60 秒
+2. 缩短日志轮询间隔到 0.5 秒
+3. gdb 连上后立刻下三个断点
+4. 观察：
+   · site2_RETURN 命中 ⇒ site2 正常返回，问题在 site3
+   · site3_ENTRY 命中 ⇒ site3 进入了
+   · 两者都不命中 ⇒ 卡在 site2 内部
+```
+
+## 方法论（第 246 条）★★★★★
+**"目标有随机化时，观测点的绝对地址必须从目标内部获取"：
+```
+我一开始想"预先下断点"，但 ASLR 让基址每次不同。
+绕了一圈才发现：**最可靠的做法是让目标自己报告地址**
+（在 my_start 里打印 real_start），再据此算断点。
+
+⇒ 判据：**当被观测的地址不确定时，让被测程序主动报告它**，
+   而不是在外部猜测/枚举。
+   这比"关掉 ASLR"更可靠（QEMU 的 ASLR 我也无法保证能关）。
+
+★ 但这个方法有一个必须解决的配套问题：
+   报告和响应之间要有足够的时间窗。
+   本轮窗口只有 8 秒，而我的轮询发现机制太慢（270 秒才看到）。
+   ⇒ 窗口和时间同步是这类方案的成败关键。
