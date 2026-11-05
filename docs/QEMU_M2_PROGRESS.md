@@ -15710,3 +15710,88 @@ UDF 探针从第 165 层开始接管 my_start，让 Application_Start 停在原�
    而不是继续在异常状态下做新观测。
    我在第 165→172 层（8 轮）都没做这件事。
 ```
+
+---
+
+# ★★★★★★★★★★ 2026-11-05 第一百七十三层（第 52 轮）：**UI layer 创建 + 激活 + 清屏设置全部成功（干净数据）**
+
+## ① 基线完好，数据可信
+```
+行数      = 1403
+[AS] 行数 = 342      ← 与上一层的 321 同量级（多出的来自新钩子）
+INITSEQ   = 66
+createLayer = 6      ← 与上一层一致
+⇒ 本次数据没有探针污染。
+```
+
+## ② ★★★★★ 完整成功链（首次拿到）
+```
+CREATELAYER n=1 ret=5238216  caller_off=0xdc85a96e   ← libObj 内部
+CREATELAYER n=2 ret=5099496  caller_off=0xdc85a978   ← libObj 内部
+LAYERVT setActive n=1 self=0x4dcfe8 on=0             ← libObj 内部（on=0）
+
+--- 以下是 appFw UI 初始化的 4 个 layer ---
+CREATELAYER n=3 ret=5148736  caller=appfw+0x7239c0
+  [AS]LAYERVT setActive n=2 self=0x4e9040 **on=1**   ← ★ 激活
+  [AS]LAYERVT setClear  n=1 self=0x4e9040 on=0  caller=appfw+0x7239d8  ← ★ 清屏
+
+CREATELAYER n=4 ret=5149400  caller=appfw+0x7239ee
+  [AS]LAYERVT setActive n=3 self=0x4e92d8 **on=1**
+  [AS]LAYERVT setClear  n=2 self=0x4e92d8 on=0  caller=appfw+0x723a08
+
+CREATELAYER n=5 ret=5150064  caller=appfw+0x723a1e
+  [AS]LAYERVT setActive n=4 self=0x4e9570 **on=1**
+  [AS]LAYERVT setClear  n=3 self=0x4e9570 on=0  caller=appfw+0x723a36
+
+CREATELAYER n=6 ret=5150728  caller=appfw+0x723a4c
+  [AS]LAYERVT setActive n=5 self=0x4e9808 **on=1**
+  [AS]LAYERVT setClear  n=4 self=0x4e9808 on=0  caller=appfw+0x723a64
+```
+
+## ③ 这推翻了之前多层的判断
+```
+❌ "Layer::setActive(true) 未执行"（第 169 层）→ **执行了，共 4 次**
+❌ "0x7238c0 建完 4 个 layer 后没走完"（第 169 层）→ **走完了**
+❌ "site3（0x54f664）未被调用"（第 167 层）→ 需用干净数据重新验证
+❌ "栈深度 2416 < 4296 证明 site3 未执行"（第 167 层）→ 数据受 UDF 污染，**作废**
+```
+**根因：第 165~172 层的所有数据都被 `my_start` 里的 UDF 探针污染。
+本层是第 165 层之后第一次拿到干净数据。**
+
+## ④ 干净数据下的新事实
+```
+✅ WidgetSystem 单例 `0x4e3818` 在 [AS] 内被取用 10 次（WGTSYS n=1..10）
+✅ 4 个 UI layer：`0x4e9040` / `0x4e92d8` / `0x4e9570` / `0x4e9808`（各差 0x298）
+✅ 每个 layer 都：createLayer → setActive(true) → setClear(false)
+✅ 全部返回非零、caller 偏移有效（0x7239c0 / 0x7239ee / 0x723a1e / 0x723a4c）
+⇒ **UI 骨架 + 激活 + 清屏策略全部建立成功。**
+```
+
+## ⑤ 本层净收益（本会话最重要的正向进展）
+```
+✅ 基线完好（[AS]=342, createLayer=6）
+✅ **首次拿到 UI layer 完整成功链**：4×createLayer + 4×setActive(true) + 4×setClear
+✅ 撤回第 167/169 层的错误结论（那些数据受 UDF 污染）
+✅ 拿到 4 个 layer 的地址（差 0x298，证明是同一类对象）
+❌ 帧 = 0（但 UI 骨架已完整）
+```
+
+## ⑥ 下一步
+```
+1. 加回 updateFrame / processEvent / getLayer / getWidget 钩子
+   （每次验证 [AS]=342、createLayer=6 不变）
+2. 用干净数据回答：4 个 layer 建好后，引擎是否进入主循环
+3. 若主循环仍未进入，再查 site3 是否被调用（这次用干净数据）
+```
+
+## 方法论（第 162 条）★★★★★
+**"每个新钩子都必须验证基线不变，否则数据不可信"：
+```
+本层的做法：
+  · 加回 4 个钩子（wgtsys/setActive/setClear/createLayer）
+  · 跑完后立刻对比基线三指标：行数、[AS] 行数、createLayer 次数
+  · 全部吻合（1403 / 342 / 6）⇒ 数据可信，才用它做结论
+对比第 165~172 层：那 8 轮从未做这个校验，导致全部数据被 UDF 污染而不自知。
+⇒ 判据：**每加一个探针，先跑一次基线对比**；三指标任何一项异常，
+   立即停用该探针，而不是继续解释异常。
+```
