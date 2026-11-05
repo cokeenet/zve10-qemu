@@ -14560,3 +14560,75 @@ memset 是 libc 最底层、最高频的函数：
 ⇒ 判据：怀疑"某函数被谁调用"时，**不要靠静态反汇编穷举调用点**，
    直接在钩子里打 return address —— 一次运行给出全部答案。
 ```
+
+---
+
+# ★★★★★★★ 2026-11-05 第一百五十九层（第 38 轮）：**定位到 UI 初始化函数里的 13 个 wgtsys 调用点；usleep 分支未进入**
+
+## ① 前一层的"8 个调用点"漏了 —— 实际在 0x723xxx 区还有 13 个
+```
+之前扫全文件只找到 8 个 blx wgtsys（0x54db76 … 0x54f894），
+实测 12 次调用全部来自 appFw+0x723xxx ⇒ 说明扫描漏了。
+补扫 0x723000..0x726000：
+  723924 723936 723948 723958 723968 72397a 72398a 72399a
+  7239b6 7239e4 723a14 723a42 723bd4
+  ⇒ 13 个（其中 4 个紧跟 createLayer: 0x7239b6/0x7239e4/0x723a14/0x723a42）
+```
+**⇒ UI 初始化函数（0x723xxx）自身的结构已经清楚：
+  先 8 次手势配置（setConfig），再 4 次 createLayer，最后 0x723bd4 又一次。**
+
+## ② `usleep` 探针：0 次
+```
+WAITLOOP usleep caller=appfw+0x723xxx(caller 过滤) = 0
+⇒ 0x723c92 的 `cmp.w r3, #0xa00000` 没有进入 usleep 分支，
+   或者该分支的 usleep 调用者不在 0x723000..0x725000 内。
+⇒ 这不是当前阻塞点，可以放下。
+```
+
+## ③ 目前的完整事实链（本会话累计）
+```
+✅ Application_System_Init  → dlopen appFw.so → dlsym Application_Start → 建线程
+✅ uxengine_init2(640,480)   → 成功（跳过则 AS 进不去）
+✅ Application_Start ENTER=1
+✅ UI 初始化函数 0x723xxx 执行：
+     · ResourceManager::switchBankEth ×N
+     · GestureAnalyzer::setConfig ×8（2/800, 3/400, 4/50 …）
+     · WidgetSystem::createLayer ×4 **全部成功，返回递增句柄**
+✅ GraphicsEngine / WidgetSystem 单例均非零
+❌ processEvent（事件泵）0 次
+❌ processSystemMessage 0 次
+❌ drawText 0 次
+❌ drawFramebuffer 0 次
+❌ 帧 = 0
+```
+
+## ④ 当前最有可能的解释
+```
+UI 的 4 个 layer 建好了，但：
+  · 没有任何 widget 被加进去（还没看到 createWidget/addChild）
+  · 主循环的进入条件（0x54f882 的 r0）为 0，所以走 0x54fb38 分支
+  · 而 0x54fb38 分支里的 processSystemMessage 也是 0 次
+⇒ 说明 0x54f882 之后的代码**整体未到达**，
+   即 Application_Start 在 site0..site3 中某处**之后**就没有再往下走
+  （与 UI 初始化函数 0x723xxx 的成功执行并不矛盾 ——
+    0x723xxx 很可能是 site0（blx 0x92559c）间接调到的）
+```
+
+## ⑤ 本层净收益
+```
+✅ 补全了 0x723xxx 区的 13 个 wgtsys 调用点（之前漏扫）
+✅ 确认 UI 初始化函数的调用序列：8×setConfig → 4×createLayer → 1×更多
+✅ 排除 usleep 等待循环（0 次）
+❌ 帧 = 0
+```
+
+## 方法论（第 148 条）★★★
+**"objdump 全文件 grep 会漏掉跨输出块的行"：
+```
+我在第 157 层报告"appFw 里 wgtsys 只有 8 个调用点"，
+本层用 caller 地址证明至少有 13 个在 0x723xxx 区被我漏掉了。
+原因：objdump 输出很长，管道 grep 时可能因缓冲/截断漏行。
+⇒ 判据：用 grep 统计"调用点数量"这类结论时，
+   必须**分段扫描**（按地址区间）并核对总数，
+   或改用 Python 直接解析 ELF 找 BL 指令，不要依赖 objdump 的长输出。
+```
