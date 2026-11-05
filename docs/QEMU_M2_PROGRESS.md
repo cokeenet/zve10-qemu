@@ -23181,3 +23181,97 @@ libObj.so 导出：
    不要凭"名字看起来更像真的"来选择。
    方法：看 INITSEQ/RELOC/字符串里的实际符号名。
 ```
+
+---
+
+# ★★★★★★★★ 2026-11-06 第二百五十六章（第 140 轮）：**三个生命周期入口从未被解析；Application_System_Init 只是模块加载器**
+
+## ① UXLIFE 探针：三个入口全 0
+```
+新增钩子：uxengine_app_fw_init / uxengine_res / uxengine_sus
+实测：
+  UXLIFE 日志 = **0 条**
+  uxengine 相关 dlsym 解析 = **只有 "INITSEQ resolve uxengine_init" 一条**
+
+⇒ **固件从未通过 dlsym 解析这三个符号**
+⇒ 它们要么通过静态链接直接调用（探针拦不到），
+   要么根本不被调用
+```
+
+## ② ★★★★ 但意外发现 Application_System_Init 的真实身份
+```
+钩子输出：
+  ARGTRACE hooked Application_System_Init = 0xf087271
+  **ARGTRACE init enter arg=0x401a601 str="AppConfig.so"**
+  **ARGTRACE init return 0x0**
+
+⇒ **Application_System_Init 只被调用 1 次，参数是字符串 "AppConfig.so"**
+⇒ 它是**通用的模块加载器**（加载 .so 并调其 init），
+   **不是 UI 初始化函数**
+
+★ 这修正了任务描述里的一个说法：
+   "Application_System_Init" 听起来像"系统初始化"，
+   实际是"加载 AppConfig.so 这个模块"。
+```
+
+## ③ 完整因果链（修正后）
+```
+bootin.elf
+  → im.elf
+  → Application_System_Init("AppConfig.so")   ← 只加载配置模块
+  → INITSEQ 逐个 resolve 61 个 *_init 符号（含 uxengine_init 空壳）
+  → dlopen appFw.so
+  → dlsym Application_Start = 0x2e3d6581
+  → my_start → real_start
+  → Application_Start ENTER (tid=195)
+  → site0 / site1 / site2 执行
+  → site2: 4×createLayer + setActive + setClear ✅
+  → site2 返回
+  → **site3 从未进入**
+  → 无 widget、无绘制、帧 = 0
+```
+
+## ④ 本层净收益
+```
+✅ **确认 uxengine_app_fw_init / res / sus 从未被 dlsym 解析**
+✅ **发现 Application_System_Init 的真实身份：模块加载器（加载 AppConfig.so）**
+✅ **修正任务描述里的说法**
+✅ 基线完好（1301/45/6）
+❌ 帧 = 0
+```
+
+## ⑤ 下一步（关键：site3 为什么没进入）
+```
+现在所有"生命周期钩子"都试过了，都没有提供新线索。
+
+⇒ **回到最直接的问题：Application_Start 的 site3（0x54d5ac）为什么没执行？**
+
+已知：
+  · Application_Start 只进入 1 次，从未返回
+  · 干净配置下 ENTRY_LOCK/UNLOCK = 40/40（活跃工作，无死锁）
+  · site2 的 4 个 layer 全部创建成功
+  · site3 的第一条 bl（0x54f674 → 0x54ef74）从未执行
+
+★ 关键矛盾：
+   "40 次加解锁说明在活跃工作" + "site3 没执行"
+   ⇒ 那 40 次加解锁发生在**哪里**？
+   ⇒ 若在 site2 内部，说明 site2 比想象中长得多
+   ⇒ 若在别处（其他线程），说明 Application_Start 本身停了
+```
+
+## 方法论（第 244 条）★★★★★
+**"函数名不代表功能——必须看实际参数和行为"：
+```
+`Application_System_Init` 这个名字强烈暗示"系统初始化"，
+任务描述里也把它当成启动链的关键一环。
+
+实测发现：它只被调用 1 次，参数是 `"AppConfig.so"`，
+是**通用的模块加载器**。
+
+⇒ 判据：**不要用符号名推断功能**，尤其：
+   · 带 System / Init / Manager / Engine 这类词的符号
+   · 名字越"通用"，实际职责可能越窄
+   验证方法：看它的实际参数（本层抓到 "AppConfig.so"）、
+   返回值、调用次数。一个参数是文件名的 init，
+   十有八九是"加载那个文件"。
+```
