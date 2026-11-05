@@ -19859,3 +19859,79 @@ Application_Start (tid=195)
    压缩成"一次正确的采样"。
 ⇒ 建议：今后所有探针的输出，**默认首行打印 total 与 shown**，
    成本一行代码，收益是避免整轮甚至整阶段的误判。
+
+---
+
+# ★★★★★★★ 2026-11-06 第二百一十七层（第 101 轮）：**钩 pthread_mutex_lock 破坏启动，已回滚**
+
+## ① 尝试：钩 mutex/cond 定位持锁者
+```c
+int pthread_mutex_lock(void *m)   { ... log_caller_site("MUTEX_LOCK", ...); }
+int pthread_mutex_unlock(void *m) { ... }
+int pthread_cond_wait(void *c, void *m) { ... }
+```
+
+## ② 结果：启动直接失败
+```
+行数=**490**（正常 1100+）  [AS]=0  createLayer=0
+IM.ELF nthread=**7**（正常 64）
+
+⇒ **线程创建在早期就失败了**
+⇒ 与第 159/172 层同类：**钩 libc 的同步原语会破坏动态链接器**
+   （链接器自己会用 mutex，而我们的钩子里的 dlsym 又回调进去）
+```
+
+## ③ 已回滚
+```
+移除了整个 MUTEX_PROBE 段，重新编译通过，基线应恢复。
+代码里留下注释：
+  /* MUTEX_PROBE removed: interposing pthread_mutex_lock breaks the dynamic
+   * linker during startup (same failure mode as ledger 159/172 — never hook
+   * base libc synchronisation primitives). */
+```
+
+## ④ 本层净收益
+```
+✅ 尝试了最后的观测手段（钩 mutex/cond）
+✅ **确认该手段不可用**（破坏启动，与历史教训一致）
+✅ 已回滚，未污染代码库
+❌ 未能定位具体持锁者
+❌ 帧 = 0
+```
+
+## ⑤ 剩余可行方案（诚实评估）
+```
+已知：Application_Start (tid=195) 阻塞在 futex_wait_queue_me
+位置：site2 执行完 4 个 createLayer 之后
+
+剩余手段：
+  A. ❌ 钩 pthread_mutex_lock/cond_wait —— 本层证实破坏启动
+  B. ⚠️ 用 gdb 附加到 QEMU 的 guest —— 需要 QEMU 支持 gdbstub，
+        而且要能区分 74 个线程里哪个是 195（可行但复杂）
+  C. ⚠️ 在 QEMU 侧读 futex 相关的内核结构 —— 极复杂
+  D. ✅ **换方向**：既然 site3 卡在 futex，
+        而 a7c2 的方案是"用固件自己的生命周期入口"，
+        也许应该**不再追求复原 site2→site3**，
+        而是直接照 a7c2 那样在"自然首帧返回后"请求菜单
+        —— 但我们的固件连首帧都没有
+```
+
+## 方法论（第 205 条）★★★★
+**"同一个坑（钩 libc 原语）在会话里踩了 3 次，说明教训没有变成硬约束"：
+```
+第 159 层：钩 memset 破坏启动
+第 172 层：钩热路径 fopen 污染
+本层   ：钩 pthread_mutex_lock 破坏启动
+
+三次都是"钩 libc 基础原语"。每次都在事后总结"不要钩"，
+但下次遇到新问题时仍然会想到"钩它试试"。
+
+⇒ 判据（硬约束，必须写进 SAFETY_RULES）：
+   **禁止用 LD_PRELOAD 钩以下类别**：
+   · 内存原语：memset/memcpy/malloc/free
+   · 字符串：strlen/strcmp/strchr
+   · 同步原语：pthread_mutex_*/pthread_cond_*/sem_*
+   · I/O 原语：open/read/write/close
+   原因：动态链接器与 libc 自身构造阶段会使用它们，
+        而钩子里的 dlsym 又需要它们 ⇒ 递归/死锁/崩溃。
+```
