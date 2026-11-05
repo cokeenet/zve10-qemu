@@ -14955,3 +14955,107 @@ site2 (0x54d2b0)：        push + sub sp,#8        =   40 字节
 ⇒ 判据：无法用符号定位时，**用栈深度做"路径指纹"**，
    成本几乎为零，且完全不需要改固件代码。
 ```
+
+---
+
+# ★★★★★★★★★★ 2026-11-05 第一百六十四层（第 43 轮）：**铁证——site3（0x54f664）根本没被调用；site2 提前返回**
+
+## ① `0x54f664` 的前缀是纯直线代码，无任何分支
+```
+0x54f664: stmdb sp!, {r4-r9,sl,fp,lr}
+0x54f668: sub.w sp, sp, #2048
+0x54f66c: sub   sp, #28
+0x54f674: bl    0x54ef74
+0x54f68a: bl    0x54833c
+0x54f6e2: bl    0x54e8f0
+0x54f6fe: b.n   0x54fb3e        ← 唯一出口，无条件
+（0x54f664..0x54f6fe 之间 **没有任何 beq/bne/cbz/pop**）
+```
+
+## ② `0x54fb3e` 的第一条指令就是 `blx gfxeng`
+```
+0x54fb3e: blx UXEngine::gfxeng()@plt     ← ★
+0x54fb42: blx GraphicsEngine::processSystemMessage()@plt
+0x54fb46: cmp r0, #0
+0x54fb48: bne.w 0x54f700
+```
+
+## ③ ★★★★★ 实测：`gfxeng` 在 `Application_Start` 内 **0 次**
+```
+（把日志上限从 n<5 提到 n<30 后重测）
+GFXLOOP gfxeng n=1 .. n=5   →  全部**无 [AS] 前缀**
+gfxeng 总数 = 5，其中 [AS] 内 = 0
+processSystemMessage = 0
+```
+
+## ④ 两个铁一般的事实相互矛盾 → 得出唯一结论
+```
+事实 1：0x54f664 一旦进入，无分支 ⇒ 必然走到 0x54f6fe ⇒ 必然到 0x54fb3e
+事实 2：0x54fb3e 的第一条就是 blx gfxeng，而 [AS] 内 gfxeng = 0
+
+⇒ **0x54f664（site3）根本没有被调用！**
+```
+
+## ⑤ 而 site2 是纯直线代码，`0x54d35e` 是它唯一的返回点
+```
+0x54d2b0  stmdb sp!, {...}
+0x54d2b4..0x54d314  纯直线
+0x54d318  bl 0x54d120   ← UI 初始化（实测成功，createLayer ×4）
+0x54d31c..0x54d356  直线
+0x54d35a  mov r0, r4
+0x54d35e  ldmia.w sp!, {...,pc}   ← 唯一返回点
+```
+**⇒ site2 必定走到 0x54d35e 返回。**
+**⇒ `Application_Start` 在 0x54d5a6 调用 site2 后，下一条 0x54d5ac 就该调 site3。**
+
+**⇒ 但 site3 没被调用 ⇒ 唯一可能：**
+
+## ⑥ ★★★ 最终结论：`Application_Start` 在 site2 **返回后**就没有继续
+```
+这不是"site2 内部提前返回"，而是：
+  Application_Start 调用 site2 → site2 正常返回 →
+  **但 Application_Start 没有执行 0x54d5ac 那条 bl 0x54f664**
+⇒ 说明 Application_Start 的执行在 site2 返回后被**中断或跳走**
+⇒ 最可能：某个异常/长跳转/线程调度导致它没继续
+   或者 site2 内部的 0x54d120 调用了不返回的东西（longjmp/异常展开）
+
+注意：栈深度实测 wgtsys depth=2360（2208+40+40+72），
+     说明 createLayer 时**仍在 Application_Start 的栈帧内**
+     ⇒ 所以 AS 确实执行到了 site2 深处
+     ⇒ 但之后没到 site3
+```
+
+## ⑦ 下一步（非常具体、可验证）
+```
+候选 A：0x54d120 / 0x7238c0 内部有 longjmp / C++ 异常展开，
+        把栈直接弹回到 Application_Start 之外
+候选 B：0x54d318 之后的 memset@plt（0x54d322）出错
+候选 C：0x54d328 bl 0x54d27c 或 0x54d32e bl 0x79df64 抛异常
+
+验证（零风险）：在 0x54d35e 之后（即 Application_Start 的 0x54d5ac）
+用栈深度采样确认 —— 但那需要能在那条指令上打点，
+而 0x54d5ac 是 Application_Start 内部，无法用符号钩子。
+
+替代验证：钩 __cxa_throw / longjmp / abort（都是真正的导出符号），
+看 site2 期间内有没有被调用。这是本轮就能做的下一步。
+```
+
+## 本层净收益
+```
+✅ 用"无分支前缀 + gfxeng 实测 0 次"两个铁证，**证明 site3 未被调用**
+✅ 排除了"site2 内部提前返回"（它是纯直线）
+✅ 把矛盾精确定位到"site2 返回后，Application_Start 没有继续"
+✅ 提出 3 个可验证候选（异常/longjmp/memset）
+❌ 帧 = 0
+```
+
+## 方法论（第 153 条）★★★★★
+**"'无分支代码 + 其后的可观测点=0' 能证明'前面根本没执行'"：
+```
+0x54f664 前缀无分支 ⇒ 进入必到 0x54f6fe ⇒ 必到 gfxeng
+而 [AS] 内 gfxeng = 0 ⇒ 它没被进入。
+这是**反证法**：用"若有则必然后果" + "后果不存在" 推断"前提不成立"。
+⇒ 判据：当直接观测不到某个函数是否被调用时，
+   找一个它**必然产生**的可观测副作用，观测那个副作用。
+   副作用不存在 ⇒ 函数未被调用。比在函数内部打点更可靠。
+```
