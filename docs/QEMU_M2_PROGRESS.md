@@ -20276,3 +20276,70 @@ state=0 说"运行中"，on_rq=0 说"不在队列"，on_cpu=0 说"不在 CPU"。
      exit_state!=0    → 已退出
      全部为 0 且 flags 无 PF_EXITING → **在睡眠**（state 值不可信）
 ```
+
+---
+
+# ★★★★★★★ 2026-11-06 第二百二十二层（第 106 轮）：**定位 sys_futex 地址；断点未命中（时机问题）**
+
+## ① 找到 futex 系统调用入口
+```
+arm-linux-nm vmlinux | grep futex:
+  **60189520 T sys_futex**          ← ARM EABI 入口
+  6017a064 W compat_sys_futex
+
+ARM EABI 参数约定（sys_futex）：
+  r0 = uaddr    （★ futex 地址）
+  r1 = op       （操作类型：WAIT=0, WAKE=1, ...）
+  r2 = val      （期望值）
+  r3 = timeout
+source: kernel/futex.c:3006
+```
+
+## ② gdb 断点已成功设置
+```
+Breakpoint 1 at 0x60189520: file .../kernel/futex.c, line 3006.
+```
+**但 30 秒内未命中**
+
+## ③ 原因：系统已稳定，不再调用 futex
+```
+启动 85 秒后才连 gdb 下断点。
+此时 Application_Start 早已阻塞在 futex 上（在 sleep 里等），
+它**不会再发起新的 futex 调用**（已经睡下去了）。
+⇒ 断点自然不命中。
+
+⇒ 正确做法：**在启动早期（<30 秒）就下好断点**，
+   捕获它阻塞前的那次 futex(WAIT) 调用。
+```
+
+## ④ 本层净收益
+```
+✅ **定位 sys_futex @ 0x60189520**（含源码行号 kernel/futex.c:3006）
+✅ 确认 ARM EABI 参数约定（r0=uaddr）
+✅ 断点设置成功（语法正确）
+✅ 诊断出未命中的原因（时机太晚）
+❌ 未捕获到 futex 地址
+❌ 帧 = 0
+```
+
+## ⑤ 下一步（时机修正）
+```
+在 QEMU 启动后 **立刻**（<5 秒）就附加 gdb 并下断点，
+而不是等系统稳定。
+
+实现：并行启动 QEMU 和一个 gdb 脚本，
+     gdb 里先 `target remote` 再 `break *0x60189520`，
+     然后 continue，让它在启动全程捕获所有 futex 调用。
+     用条件过滤：只打印 uaddr 落在 appFw 数据段范围的。
+```
+
+## 方法论（第 210 条）★★★★
+**"断点必须下在事件发生之前——等待系统'稳定'再下断点，会错过它稳定的原因"：
+```
+我想捕获 Application_Start 阻塞时用的 futex，
+却等系统稳定 85 秒后才下断点 —— 那时它早已睡下，
+不会再有新的 futex 调用。断点形同虚设。
+
+⇒ 判据：要捕获"导致某个状态的那次系统调用/函数调用"，
+   **必须在状态形成之前就布好观测点**。
+   等待系统到达目标状态再观测，只能看到状态本身，看不到形成过程。
