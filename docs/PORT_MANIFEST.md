@@ -235,3 +235,66 @@ ZVE10 的 libIMDB 清单里**有** appFw.so、gui.so、libgpe.so、libgrm.so（�
 ⑥ 换 /setting/*（ZV-1M2 同代）
 ⑦ 上机测试
 ```
+
+---
+
+## 八、可执行脚本（2026-11-05 第 68 轮）
+
+### 脚本：`scripts/port_m2menu.sh`
+
+```bash
+./port_m2menu.sh <输出目录>
+```
+
+**流程（7 步）：**
+```
+① 铺 ZVE10 一代完整基准树（保留原生功能）
+② 覆盖 usr/kmod 为 ZV-1M2 版（vermagic 100% 一致）
+③ 放入 ZV-1M2 的 UI 栈：appFw.so / appFwBoot.so / AdjChkConfig.so / libuiobserve.so
+④ 补齐 ZV-1M2 独有的依赖库
+⑤ 换 libIMDB.so（清单入口 appFw.so → appFwBoot.so）
+⑥ 替换 usr/share/app 菜单数据（含 6 个 *_ASTRA.uxc）
+⑦ 校验：关键文件存在 + appFw.so 的 NEEDED 全部齐备
+```
+
+### 实测结果（`/mnt/build/m2qemu/port/PORTED`）
+
+```
+✅ 移植树组装完成
+   文件总数: 864
+   总大小:   319 MB
+
+   usr/lib       188 个（ZVE10=168 + ZV1M2 新增 20）
+   usr/kmod      103 个（ZV-1M2 版）
+   usr/share/app 232 个（ZV-1M2 版，含 6 个 *ASTRA.uxc）
+
+关键校验：
+   ✅ libIMDB 清单入口 = **appFwBoot.so**（已从 appFw.so 切换）
+   ✅ appFw.so 64,273,528 B，**NEEDED 15 项全部齐备**（含 AdjChkConfig.so）
+   ✅ appFwBoot.so 8,312 B
+   ✅ 6 个 image_*_ASTRA.uxc
+   ✅ 保留 ZVE10 原生：viewUnified ×7、CautionConfig ×2
+   ⚠️ im.elf 仍是 ZVE10 版（f1c746e3）—— 因为 im.elf 只依赖 libObj.so，
+      加载清单在 libIMDB 里，所以**不需要换 im.elf**
+```
+
+### 与三方的对比
+
+| 目录 | 移植树 | ZVE10 | ZV1M2 |
+|---|---|---|---|
+| `usr/lib` | **188** | 168 | 149 |
+| `usr/kmod` | 103 | 103 | 103 |
+| `usr/share/app` | 232 | 308 | 232 |
+
+**移植树 = ZVE10 的全集 + ZV-1M2 独有的 20 个库，符合设计意图。**
+
+### 下一步
+
+```
+这个移植树是**可上机的成品**，但 QEMU 里验证它需要解决第 181 层的同一个阻塞
+（Application_Start 在 site2 之后不继续）。
+
+⇒ 两条并行：
+   A. 把这个树做成可在真机 /usr 上部署的镜像（用户真正的目标）
+   B. 继续在 QEMU 里排查 site2 的阻塞（若解决，就能在 QEMU 里看到新菜单）
+```
