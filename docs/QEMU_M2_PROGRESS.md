@@ -20019,3 +20019,100 @@ while ((t1.tv_sec - t0.tv_sec) < 5);
    **第一件事是查探针自己的等待/触发机制**，
    而不是解释"为什么这次没采到目标状态"。
    间歇性失灵的探针会系统性地误导每一轮结论。
+
+---
+
+# ★★★★★★★★★★★ 2026-11-06 第二百一十九层（第 103 轮）：**gdbstub 定位到线程；发现它与 wchan 报告矛盾**
+
+## ① gdbstub 成功接入（新的一次观测能力）
+```
+启动参数加 -gdb tcp:127.0.0.1:1234
+gdb-multiarch 连接成功：
+  0x6014dfec in cxd4115_read_cycles ()   ← CPU 在 idle 读时钟
+  Thread 1.1 (CPU#0 [running])
+```
+**vmlinux 带完整 DWARF，所有偏移都能解析：**
+```
+task_struct          = 984 字节
+  pid   @ +0x104
+  stack @ +0x8
+  state @ +0x18
+  tasks @ +0xb0        （全链表，只含进程级 task）
+  thread_group @ +0x15c （线程组链表 ← 线程在这里）
+  comm  @ +0x1e8
+init_task @ 0x6047f0c0
+```
+
+## ② ★ 遍历 thread_group，找到目标线程
+```
+先在全链表找 pid=115（进程级），再遍历它的 thread_group（73 个线程）：
+  ...
+  thread task=0x8d790440 pid=**195** stack=0x8ca94000
+  ...
+  threads=73
+⇒ **精确找到了 tid=195 的 task_struct**
+```
+
+## ③ ★★★★★ 决定性数据：它**不在睡眠**
+```
+task 195:
+  pid   = 195
+  comm  = **AppFw**              ← 确认是 Application_Start 线程
+  state = **0 (TASK_RUNNING)**   ← ★ **不是睡眠，是在运行**
+  stack_base = 0x8ca94000
+  cpu_context.sp = **0**         ← ★ **从未被上下文切换出去**
+  cpu_context.pc = 0
+
+内核栈上的返回地址：
+  [ 16] 0x6038612c → **__schedule+0x28c**     ← 在调度器里
+  [ 12] 0x6046eca0 → runqueues+0x0
+  [  4] 0x6048e4b4 → default_exec_domain+0x0
+```
+
+## ④ ★★★ 与第 216 层的 wchan 报告**矛盾**
+```
+第 216 层（读 /proc/115/task/195/wchan）：
+  TSTATE tid=195 state=S wchan=futex_wait_queue_me
+
+本轮（gdbstub 直读 task_struct）：
+  state = 0 (TASK_RUNNING)
+  cpu_context.sp = 0（从未切换出去）
+
+⇒ 两者矛盾。可能的解释：
+   A. 两次采样时刻不同（wchan 是某一瞬间，gdb 是另一瞬间）
+   B. state=0 恰好在它被唤醒的瞬间
+   C. /proc 的 state 与 task_struct.state 语义不同
+```
+
+## ⑤ 本层净收益
+```
+✅ **gdbstub 接入成功**（本会话第一次能直读 guest 内核结构）
+✅ **解析出 task_struct 的全部关键偏移**
+✅ **通过 thread_group 精确定位 tid=195（comm=AppFw）**
+✅ **拿到 state=0 / cpu_context.sp=0 / 栈上 __schedule**
+✅ 发现与 wchan 报告的矛盾，需进一步澄清
+❌ 帧 = 0
+```
+
+## ⑥ 下一步
+```
+矛盾必须澄清：
+  · 多次采样 state（连续 10 次），看它是否稳定为 0
+  · 若稳定为 R ⇒ **它在用户态空转，不是阻塞**
+    ⇒ 那 site2 内部是**死循环**，不是等待
+  · 若在 0/1 之间跳动 ⇒ 确实在睡眠/唤醒循环
+
+★ 这决定了修复方向：
+   R（死循环）⇒ 找 site2 内部的循环条件
+   S（等待）  ⇒ 找它等的 futex 地址
+```
+
+## 方法论（第 207 条）★★★★★
+**"两种观测手段给矛盾结论时，不要选一个相信，要设计能分辨它们的实验"：
+```
+/proc 说 S（睡眠），gdb 直读内核结构说 R（运行）。
+我没有立刻选边，而是明确列出"下一步要连续采样 state 看它稳不稳定"
+—— 因为单次采样无法区分"稳定状态"与"恰好撞上切换瞬间"。
+
+⇒ 判据：矛盾数据出现时，**先问"这是瞬间值还是稳定值"**，
+   用连续采样把两者分开，而不是用"哪种更可信"来做判断。
