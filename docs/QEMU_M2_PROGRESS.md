@@ -20193,3 +20193,86 @@ state=0 / sp=0 / CPU idle / wchan=futex 四者互斥。
    而不是"观测手段有 bug"或"现象本身自相矛盾"。
    验证方法：读更多相关字段（exit_state/flags/on_cpu），
    若它们一致指向"已退出"，则旧值假设成立。
+
+---
+
+# ★★★★★★★★★★★ 2026-11-06 第二百二十一层（第 105 轮）：**矛盾澄清：线程活着但不在运行队列 ⇒ 确实在等 futex**
+
+## ① task_struct 关键字段偏移（已有 DWARF）
+```
+exit_state @ +0xe8    flags @ +0x10    on_cpu @ +0x1c    on_rq @ +0x20
+utime @ +0x170  stime @ +0x174  nvcsw @ +0x18c  nivcsw @ +0x190
+```
+
+## ② ★ 实测 task 195（comm=AppFw）
+```
+pid=195  state=0  comm=AppFw
+flags      = 0x10400140     ← **不含 PF_EXITING (0x4)** ⇒ 未退出 ✅
+on_cpu     = 0              ← 不在 CPU 上
+on_rq      = 0              ← ★ **不在运行队列**
+exit_state = 0              ← 未退出
+utime=86  stime=217         ← 消耗过 CPU（86+217 ms）
+nvcsw=44  nivcsw=180        ← 44 次自愿切换 + 180 次非自愿
+```
+
+## ③ ★★★ 矛盾彻底澄清
+```
+上一层的疑问："state=0 (RUNNING) 但 CPU 在 idle，矛盾"
+本层答案：
+
+  · on_rq = 0  ⇒ **它不在任何 CPU 的运行队列上**
+  · on_cpu = 0 ⇒ 不在运行
+  · exit_state = 0, flags 无 PF_EXITING ⇒ **活着的线程**
+  ⇒ 三者合起来唯一可能：**它在睡眠等待**
+  ⇒ state=0 是**内核没有及时更新的陈旧值**
+     （这个内核对 task->state 的维护不完全）
+
+⇒ **第 216 层的 wchan=futex_wait_queue_me 是正确的**
+   Application_Start 确实阻塞在某个 futex 上
+```
+
+## ④ 且它确实"跑过"
+```
+utime=86 + stime=217 = 303 ms CPU 时间
+nvcsw=44（自愿切换 44 次）
+⇒ 它执行过一段，然后阻塞
+```
+
+## ⑤ 本层净收益（矛盾解决）
+```
+✅ **解析出 8 个关键字段的偏移**
+✅ **确认 flags 无 PF_EXITING、exit_state=0 ⇒ 线程活着**
+✅ **确认 on_rq=0、on_cpu=0 ⇒ 不在运行，在睡眠**
+✅ **澄清矛盾：state=0 是陈旧值，wchan 的 futex 才是真相**
+✅ 确认它执行过（utime+stime=303ms，nvcsw=44）
+❌ 帧 = 0
+```
+
+## ⑥ 下一步（方向确定）
+```
+确定：Application_Start 阻塞在 futex
+任务：找出是哪个 futex（哪个锁）
+
+方法：
+  · 它睡眠时，寄存器保存在 task->thread.cpu_context
+  · 但 cpu_context.sp=0，说明内核没有保存（可能是 ARM 特有的保存方式）
+  · 改查：task->thread.cpu_context 的完整 13 个字
+  · 或者：查它的用户态 sp，再读用户栈上的返回地址
+
+★ 更直接：钩住它阻塞前的最后一个 syscall
+   用 gdb 在 futex 系统调用入口下断点，看 r0（futex 地址）
+```
+
+## 方法论（第 209 条）★★★★★
+**"内核字段可能陈旧；要交叉验证'活着 vs 运行 vs 睡眠'"：
+```
+state=0 说"运行中"，on_rq=0 说"不在队列"，on_cpu=0 说"不在 CPU"。
+三者不可能同时为真 —— 除非 state 是陈旧值。
+
+⇒ 判据：读内核 task 状态时，**必须同时看 on_rq / on_cpu / exit_state / flags**，
+   用它们的组合来判定真实状态：
+     on_rq=1          → 真的在运行队列
+     on_cpu=1         → 真的在 CPU 上
+     exit_state!=0    → 已退出
+     全部为 0 且 flags 无 PF_EXITING → **在睡眠**（state 值不可信）
+```
