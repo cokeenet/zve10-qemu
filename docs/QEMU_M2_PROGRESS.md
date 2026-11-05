@@ -19590,3 +19590,101 @@ dump_thread_state 用 `/proc/self/task`，读到的是**调用它的那个进程
 ⇒ 判据：多进程环境里用 /proc/self/* 前，**必须先确认"self"是谁**。
    务实做法：探针里同时打印 getpid() 和目标 pid，两者一致才可信。
 ```
+
+---
+
+# ★★★★★★★★ 2026-11-06 第二百一十四层（第 98 轮）：**跨进程 TSTATE 修好了，但 tid=195 仍不在表里**
+
+## ① 修复：TSTATE 改为跨进程读取
+```c
+/* Application_Start 里记录 pid */
+logline("MY_TID Application_Start pid=%u tid=%u\n", getpid(), gettid());
+__atomic_store_n(&g_as_pid, getpid(), ...);
+
+/* dump_thread_state 里用记录的 pid，而不是 self */
+if (want > 0) snprintf(base, sizeof base, "/proc/%d/task", want);
+else          snprintf(base, sizeof base, "/proc/self/task");
+logline("TSTATE %s scanning %s (our pid=%u)\n", why, base, getpid());
+```
+
+## ② 实测：确认扫描的是正确进程，但仍看不到 195
+```
+MY_TID Application_Start **pid=115 tid=195**
+TSTATE stuck scanning **/proc/115/task** (our pid=115)      ← 进程对了
+TSTATE tid=115 state=S wchan=osal_rcv_msg_tmo
+TSTATE tid=116 state=S wchan=hrtimer_nanosleep
+TSTATE tid=117 state=R wchan=0
+TSTATE tid=118..120 state=S wchan=__k_4u_wait_cb
+TSTATE tid=122 state=S wchan=osal_rcv_msg_tmo
+TSTATE tid=123 state=S wchan=__k_4u_wait_cb
+TSTATE tid=124 state=S wchan=osal_rcv_msg_tmo
+TSTATE tid=125 state=R wchan=0
+TSTATE tid=126/127 state=S wchan=futex_wait_queue_me
+
+⇒ **扫描的进程对了（115），但 tid=195 依然不在表里**
+```
+
+## ③ 因此唯一解释：tid=195 线程已不存在
+```
+已知：
+  · Application_Start ENTER 打印了（说明进入了）
+  · Application_Start RETURN **没打印**
+  · tid=195 不在 /proc/115/task 里
+  · _exit 钩子的 STK 全在 MY_TID 之前（启动早期），之后没有
+
+⇒ **线程 195 消失了，但不是通过 exit/_exit（否则会有 STK）**
+⇒ 可能：
+   A. pthread_exit 被调用（我们的 _exit 钩子不拦 pthread_exit）
+   B. 线程被内核杀掉（但无信号日志）
+   C. **线程 id 被复用/回收**（Linux tid 会复用）
+```
+
+## ④ ★ 最可能：tid 复用
+```
+Linux 的 tid 是递增分配的。115~127 是 im.elf 早期线程，
+195 是后来创建的（Application_Start 线程）。
+若 195 号线程结束后，新线程可能复用更小的号 —— 但不会复用 195 本身。
+⇒ 更可能：**195 号线程确实结束了**，而 task 表里看到的是存活线程。
+
+★ 关键：Application_Start 是主线程吗？
+  从 log 看 tid=115 是 im.elf 的主线程（SSM/SEM 日志都是它）
+  tid=195 是**后来创建的** —— 对应 osal_create_waitable_thread(Main)
+  ⇒ **Application_Start 在 tid=195 这个新线程里跑**
+  ⇒ 它 ENTER 了，然后消失了
+```
+
+## ⑤ 本层净收益
+```
+✅ **修复 TSTATE 跨进程读取**（第 213 层盲区已解决）
+✅ 确认扫描的是正确进程 /proc/115/task
+✅ **确认 tid=195（Application_Start 线程）已不存在**
+✅ 排除 _exit（MY_TID 之后无 STK）
+⚠️ 基线 1104/37/6（略低于 1400/350，但在合理波动内）
+❌ 帧 = 0
+```
+
+## ⑥ 下一步
+```
+要确认 tid=195 是"正常退出"还是"异常终止"：
+  1. 钩 pthread_exit（glibc 符号，可钩！）
+  2. 在钩子里打印调用者
+  ⇒ 若 pthread_exit 被调用，就知道是谁让它退出的
+
+★ 但更重要的问题：
+   Application_Start 是"固件的主 UI 线程"，
+   它退出意味着固件认为"启动完成"或"启动失败"。
+   ⇒ 应该检查：退出前有没有打印错误/日志？
+   从 serial 看，Application_Start ENTER 之后是否还有 appFw 的日志？
+```
+
+## 方法论（第 202 条）★★★★
+**"线程消失有两种：退出与被复用，必须先区分"：
+```
+tid=195 不在 task 表里，可能是：
+  · 线程真的退出了
+  · tid 被系统回收后复用给了别的线程（Linux 的 tid 是小整数复用）
+⇒ 判据：发现"某个 tid 不在了"时，**先确认它是否曾经存在过**
+   （在同一进程的 task 表里，连续采样看它的出现/消失时刻），
+   而不是直接断言"线程退出了"。
+   本例：tid=195 只在 MY_TID 那一行出现过 1 次，
+   此后所有 TSTATE 都没有它 —— 高度可疑，但也可能是采样时机问题。
