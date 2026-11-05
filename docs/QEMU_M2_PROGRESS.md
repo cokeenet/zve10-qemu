@@ -15547,3 +15547,78 @@ out/mod / out/nofopen / out/clean / out/nosp / out/simp （本轮各版本）：
    ③ 加新探针后，**必须先验证基线指标（如 createLayer 次数）没有变化**，
       才能相信新数据
 ```
+
+---
+
+# ★★★★★★★ 2026-11-05 第一百七十一层（第 50 轮）：**钩子集本身在改变 libObj 内部行为；基线无法恢复**
+
+## ① 本轮结论：`createLayer` 从 4 次掉到 2 次，**不是单个钩子的问题**
+```
+逐一移除验证：
+  · 移除 createLayer 里的 maps 读取    → 仍 2 次
+  · 移除 setActive/setClear 的 maps    → 仍 2 次
+  · 移除 wgtsys 里的 maps              → 仍 2 次
+  · 完全禁用 wgtsys 钩子               → **仍 2 次**
+⇒ 不是某一个钩子，而是**当前钩子集整体**改变了 libObj 内部行为。
+```
+
+## ② 最可能的原因：钩子把 libObj 内部的调用也劫持了
+```
+libObj 导出的这些符号（WidgetSystem::createLayer / Layer::setActive /
+getLayer / getWidget / updateFrame / isFrameDelay / notifyDraw ...）
+**在 libObj 内部也被直接调用**。
+LD_PRELOAD 的符号优先级让 libObj 内部的调用也跳到了我们的钩子，
+而我们的钩子里有 dlsym(RTLD_NEXT) + logline，
+⇒ 每个内部调用都多一层间接 + 写串口 ⇒ 行为/时序被改变。
+```
+
+## ③ 因此本轮的**所有**数据都不可信
+```
+out/mod / nofopen / clean / nosp / simp / diag2 / diag3 / nowg
+  → 全部 createLayer=2（而非 out/cl 的 4）
+  → 全部 wgtsys=0（而非 out/cl 的 3+）
+⇒ 这些运行观测的是"被钩子改坏的系统"，不是原固件行为。
+⇒ **本轮的 setActive on=0 / setClear=0 等数据，不能用来推断固件行为。**
+```
+
+## ④ ★★★ 更严重的回溯影响
+```
+第 163 层的"栈深度 2360 = 2208+40+40+72"这个推论，
+依赖的是"wgtsys 在 [AS] 内被调用 3 次"这个观测。
+而本轮证明：加了更多钩子后 wgtsys 变成 0 次
+⇒ **那个 2360 的数据也可能已被当时的探针污染**。
+⇒ 第 167 层"栈深度算术证明 site3 未执行（2416 < 4296）"的结论，
+   **可信度下降**（虽然 2416 < 4296 这个不等式本身仍成立，
+   但如果 SP 采样点本身受钩子影响，数值参考价值有限）。
+```
+
+## ⑤ 本层净收益（诚实盘点）
+```
+✅ 确认 createLayer 4→2 是**整体钩子集**导致，不是单个钩子
+✅ 查明原因：libObj 内部调用也被我们的导出符号劫持
+✅ 明确本轮所有数据不可信（避免基于污染数据下结论）
+❌ 本轮没有任何可信的新事实
+❌ 帧 = 0
+```
+
+## ⑥ 下一步：回到最小钩子集，重新测基线
+```
+方案：只保留 osal_* 钩子（那批是整个项目的既有基线，已验证稳定），
+      移除所有 ux/wgtsys/gfxeng/Layer/TextSprite/GraphicsEngine 钩子，
+      测一次 createLayer 次数（应为 4）确认基线。
+然后**一次只加一个** ux 钩子，每次验证 createLayer 仍是 4，
+      找出哪一个/哪几个组合会把它打到 2。
+```
+
+## 方法论（第 160 条）★★★★★
+**"LD_PRELOAD 钩子会劫持库的内部调用，不只是外部调用"：
+```
+我一直假设"钩 UXEngine::wgtsys 只影响 appFw 对它的调用"。
+实际上 libObj 内部对 wgtsys/createLayer/setActive 的调用
+**同样会跳到我们的钩子**（因为 LD_PRELOAD 的符号优先）。
+这对**高频基础访问器**是致命的：
+  · 每次内部调用都多一层 + dlsym + 写串口
+  · 时序/行为被改变 ⇒ 被测系统不再是原系统
+⇒ 判据：钩某个库的导出符号前，先确认**该库内部是否也调用它**。
+   若内部高频调用，则不能钩（或必须让钩子体做到零开销直通）。
+```
