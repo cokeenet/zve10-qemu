@@ -16517,3 +16517,109 @@ FORCEMENU entry=0x2e8eeaad thumb=1 w0=af00b5b0 w1=fb46f62a
    在可疑调用前后各插一行裸 write，看日志停在哪一侧。
    停在前 = 崩/死在那个调用里；两侧都有 = 死锁在更深处。
    这一步只需 1 分钟，不要用推理代替。
+
+---
+
+# ★★★★★★★★★★★ 2026-11-05 第一百八十二层（第 61 轮）：**菜单构建器首次成功执行！但走的是"只切银行"分支**
+
+## ① 两个 bug 修复（都应验了历史教训）
+```
+bug 1：Thumb 位错误（**同一个错误犯了第二次**）
+  我给 f140/f108 用了 `base + 0x54e140u`（偶数）⇒ C 函数指针调用进入 ARM 状态 ⇒ 立即崩
+  修正：直接删掉这两次调用（不需要）
+  教训 149 已记："ARM 上验证某地址是函数，必须实际执行一次"
+  教训 170 已记："加前置日志能区分死锁与崩溃" —— 这次正是靠它定位
+
+bug 2：`getenv` 在 im.elf 里不可靠
+  APPSTART_WATCH / FORCE_MENU 时灵时不灵（out/fmenu 有效、out/fm4 无效）
+  原因：bootin.elf 用 putenv 清空环境（教训 120）
+  修正：改成编译期常量 `#define ARG_FORCE_MENU 1` / `ARG_AP_START_WATCH 1`
+```
+
+## ② ★★★★★ 菜单构建器首次成功执行
+```
+基线健康：行数=1480  [AS]=363  createLayer=6  心跳=46  ✅
+
+FORCEMENU entry=0x2e928aad thumb=1 w0=af00b5b0 w1=fb46f62a
+FORCEMENU branching to builder
+[AS]RM getInst n=12 -> 0xacc4058
+[AS]RM switchBank ENTER n=7 self=(nil) bank=0   → LEAVE ret=1
+[AS]RM getInst n=13 -> 0xacc4058
+[AS]RM switchBank ENTER n=8 self=0x1 bank=4     → LEAVE ret=1
+[AS]RM getInst n=14 -> 0xacc4058
+[AS]RM switchBank ENTER n=9 self=0x2 bank=4     → LEAVE ret=1
+**FORCEMENU builder returned 5137432 (0x4e6418)**   ← ★ 成功返回有效指针
+（进程此后继续正常运行，服务线程照常轮转）
+```
+
+## ③ 但没创建任何 widget
+```
+initNode=0  initSprite=0  reset=0  getWidget=0  getLayer=0
+updateFrame=0  processEvent=0  notifyDraw=0  drawText=0  drawFramebuffer=0
+createLayer 仍为 6（未增加）
+```
+
+## ④ 原因已定位：走的是 `0x723acc` 分支（只切银行）
+```asm
+723aba: bl   0x54e108          ; r0 = 状态值
+723ac0: mov  r4, r0            ; r4 = 状态
+723ac8: cmp  r0, #0
+723aca: bne  0x723baa          ; 状态 != 0 就走开
+723acc: blx  ResourceManager::sys_getInstance()
+723ad0: movs r1, #4
+723ad2: mov  r0, r4            ; r0 = r4（bank id，不是 this）
+723ad4: blx  switchBankEth     ; ← 实测 (nil,0)/(1,4)/(2,4) 对上了
+...（共 3 次 switchBank）
+723ba6: blx  switchBankEth     ; 最后再切一次
+723baa: bl   0x54e108          ; 再读状态
+723bb6: cbnz r0, 0x723bd4      ; 状态 != 0 → 跳去 0x723bd4
+```
+**⇒ 这个分支只做"切换资源 bank"，没有任何 widget 创建代码。**
+**⇒ widget 创建在 `0x723bc2` / `0x723bcc` / `0x723bd4` 那三个分支里。**
+
+## ⑤ 重要纠正：`switchBankEth` 的参数不是 this
+```asm
+0010334c <ResourceManager::switchBankEth>:
+  10334c: mov  r3, r0            ; r3 = 第 1 个参数（bank/id 数值）
+  10334e: ldr  r0, [pc,#20]
+  103358: ldr  r0, [r0, #0]      ; ★ 自己取 ResourceManager 单例
+  10335a: mov  r1, r3            ; r1 = 参数1
+  103360: b.w  内部实现
+⇒ **switchBankEth 是静态方法，r0 是普通 bank ID，不是 this**
+⇒ 实测 self=(nil)/1/2 完全正常，不是 bug。
+```
+
+## ⑥ 本层净收益（巨大）
+```
+✅ 修掉两个 bug（Thumb 位 / getenv 不可靠）
+✅ **菜单构建器首次成功执行并返回 0x4e6418**（基线健康，数据可信）
+✅ 查明它走的分支：0x723acc（只切银行，不建 widget）
+✅ **定位到真正建 widget 的三个分支：0x723bc2 / 0x723bcc / 0x723bd4**
+✅ 纠正误判：switchBankEth 的 self=nil 不是 bug，是静态方法的普通参数
+❌ 帧 = 0
+```
+
+## ⑦ 下一步（非常具体）
+```
+0x723aac 的分派逻辑：
+  状态1（0x54e140 的返回）!= 0 → 0x723b32
+  状态2（0x54e108 的返回）:
+      ==1 → 0x723b64 → 3×switchBank → 0x723ba6
+      ==2 → 0x723b86 → ...
+      ==0 → 0x723b42 → 3×switchBank → 0x723ba6
+  之后 0x723baa: 再读状态2
+      ==1 → 0x723bc2   ← 建 widget 的分支之一
+      ==2 → 0x723bcc   ← 之二
+      !=0 → 0x723bd4   ← 之三
+实测我们走到 0x723ba6 后就返回了 ⇒ 说明 0x723baa 之后 cbnz 跳到了 0x723bd4
+⇒ **下一步：反汇编 0x723bd4，看它为什么不建 widget**
+```
+
+## 方法论（第 171 条）★★★★
+**"同一个错误会重复犯——必须把教训变成检查清单，而不是事后总结"：
+```
+Thumb 位错误：第 149 层 FORCE_DRAW 犯过一次，本轮 FORCEMENU 又犯一次。
+教训 149 明明写清了，但我在写新代码时没检查。
+⇒ 判据：凡是"从地址构造函数指针"的地方，**写的时候就加 `| 1` 或断言奇偶**，
+   不要依赖事后的教训回顾。
+```
