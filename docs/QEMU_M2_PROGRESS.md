@@ -22700,3 +22700,91 @@ FB_SCAN  （扫全部 1 GiB）        ：最丰富的区域是内核镜像，无
    （GPE 零访问、site3 未进入、线程消失…），
    这次是第一次做到"两条独立证据"。
 ```
+
+---
+
+# ★★★★★★★★★ 2026-11-06 第二百五十一层（第 135 轮）：**交付清单完成；移植树全部校验通过**
+
+## ① 移植树完整性验证（逐字节）
+```
+PORTED4：**864 文件 / 302 MB**
+
+关键库 md5（与 ZV-1M2 原版完全一致）：
+  usr/lib/libObj.so      **738a2331**  3,931,624 B   ✅
+  usr/lib/appFw.so       **f079cda0** 64,273,528 B   ✅
+  usr/lib/appFwBoot.so   **bb4cdbab**      8,312 B   ✅
+  usr/lib/libIMDB.so     **91eca62f**     40,596 B   ✅
+
+内核模块：**103 个 .ko**
+  osal_uipc.ko  dce71102  ✅
+  backup.ko     531fb647  ✅
+  grm_gles.ko   8f743810  ✅
+```
+
+## ② 数据层验证
+```
+usr/share/app：**232 文件 / 82 MB**
+
+6 个 ASTRA 图像包（任务明确要求）：
+  image_00_34_ASTRA.uxc    image_00_43_ASTRA.uxc
+  image_01_34_ASTRA.uxc    image_01_43_ASTRA.uxc
+  image_02_34_ASTRA.uxc    image_02_43_ASTRA.uxc
+  ⇒ **数量正好 6 个，全部到位** ✅
+
+其他关键资源：
+  master_camera.uxc      655566b6    101,868 B  ✅
+  global.xdb             d9505dfa     16,112 B  ✅
+  LayoutMaster_Menu.uxc  85ec4cda      3,636 B  ✅
+```
+
+## ③ 新增交付文档
+```
+docs/DELIVERY_CHECKLIST.md（8 节）
+  一、交付状态总览（表格：二进制✅ 模块✅ 数据✅ 脚本✅ 画面❌）
+  二、二进制层（4 库 md5 逐字节校验）
+  三、内核模块层（103 个 .ko，vermagic 100% 一致）
+  四、数据层（6 个 ASTRA 包 + 3 个关键资源）
+  五、QEMU 画面验证：**未达成**（含两条独立测量证据）
+  六、与 a7c2-re 的架构差异（AP 消费者模式）
+  七、可复现的操作步骤（3 条命令）
+  八、结论
+```
+
+## ④ 本层净收益
+```
+✅ **验证移植树完整性：864 文件 / 302 MB，4 库 + 103 模块 + 232 资源全部校验通过**
+✅ **确认 6 个 image_*_ASTRA.uxc 全部到位**
+✅ **新增 docs/DELIVERY_CHECKLIST.md（完整交付说明）**
+✅ 明确区分"已完成交付"与"未达成的验证"
+❌ 帧 = 0（已在文档中如实记录）
+```
+
+## ⑤ 交付状态（明确）
+```
+已完成（可交付）：
+  ✅ 二进制层：libObj / appFw / appFwBoot / libIMDB（md5 全部匹配）
+  ✅ 内核模块层：103 个 .ko（vermagic 100% 一致）
+  ✅ 数据层：232 资源文件（含 6 个 ASTRA 图像包）
+  ✅ 移植脚本：scripts/port_m2menu.sh（7 步可重放）
+  ✅ 文档：PORT_MANIFEST / UXC_FORMAT_AND_MENU_DIFF / DELIVERY_CHECKLIST
+
+未达成：
+  ❌ QEMU 里抓到新菜单帧（帧缓冲实测 nonzero≤1，全内存无图像特征）
+```
+
+## 方法论（第 239 条）★★★★★
+**"'完成交付'与'达成验证'是两件事，必须分开陈述"：
+```
+本会话的目标有两层：
+  ① 把 ZV-1M2 的新菜单 UI 系统移植到 ZV-E10（**资源+二进制**）
+  ② 在 QEMU 里看到画面（**验证**）
+
+① 已经 100% 完成（864 文件，md5 逐字节校验）
+② 未达成（帧缓冲空的，两条独立证据）
+
+⇒ 判据：**不要把"交付物完成"和"验证通过"混为一谈**。
+   前者是"东西做好了吗"，后者是"跑起来对吗"。
+   诚实的报告必须分别陈述，并为未达成项给出硬证据
+   （本例：FB_SAMPLE nonzero=1 + FB_SCAN 无图像特征）。
+   若混在一起说"移植完成"，会让读者误以为画面也出来了。
+```
