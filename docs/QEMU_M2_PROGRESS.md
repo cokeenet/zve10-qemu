@@ -23079,3 +23079,105 @@ FORCE_SITE3 会创建一个线程去**主动调用固件的 site3**。
    但那三个指标（行数/[AS]/createLayer）在 FORCE_SITE3=1 时
    仍然显示"健康"（1109/37/6），所以哨兵没报警 ——
    **哨兵指标选得不够敏感**，无法发现"加解锁配对"这类问题。
+
+---
+
+# ★★★★★★★★ 2026-11-06 第二百五十五层（第 139 轮）：**干净配置下：所有绘制探针仍为 0，但发现两处关键错误**
+
+## ① 干净配置下绘制探针全部为 0（无干扰后的真实结果）
+```
+WIDGET initNode      0
+WIDGET initSprite    0
+WIDGET reset         0
+UXLOOP processEvent  0
+FRAMEAPI updateFrame 0
+notifyDraw           0
+DRAWTEXT             0
+drawFramebuffer      0
+FBRM                 0
+⇒ **确认：干净配置下确实没有任何绘制活动**
+```
+
+## ② 但探针确实在工作（其他钩子有输出）
+```
+钩子触发统计：
+  220 SSM        89 RCVC       61 INITSEQ
+   51 REG        41 GV_PROBE   40 SEM
+   40 ENTRY_LOCK  40 ENTRY_UNLOCK  40 ENTRY_FRAME
+   35 U_VALLOC   31 ARGTRACE   28 BLK
+   24 U_SYNC     16 SNDMSG_PROBE  14 MODULE_*
+⇒ 探针基础设施正常，0 是真实结果
+```
+
+## ③ ★★★ 发现错误一：钩错了符号
+```
+固件（im.elf）INITSEQ 解析的是：**uxengine_init**（无 "2"）
+我们钩的是：                      **uxengine_init2**（有 "2"）
+实测 uxengine_init2 ENTER = **0 次**
+
+⇒ 这就是为什么我们从没看到 uxengine 初始化日志
+```
+
+## ④ ★★★★ 但查明：uxengine_init 是**空函数**
+```asm
+000e280c <uxengine_init>:        ← 固件 INITSEQ 解析的实际是它
+  e280c: push {r7, lr}
+  e280e: add  r7, sp, #0
+  e2810: pop  {r7, pc}          ← **立即返回，什么都不做**
+
+000e2814 <uxengine_init2>:       ← 真正的初始化
+  e2814: push {r4,r5,r7,lr}
+  e2816: sub  sp, #24
+  e2818: ldr  r0, [pc,#188]
+  e281a: mov.w r1, #640          ← ★ 宽度
+  e2822: mov.w r2, #480          ← ★ 高度
+  e2826: mov.w r3, #0x80000000
+  ...
+⇒ **uxengine_init 是空壳，uxengine_init2 才真正以 640×480 初始化引擎**
+⇒ im.elf 直接调用了 init2（已确认执行过，日志有 createLayer）
+```
+
+## ⑤ 发现 libObj 还有个专用入口
+```
+libObj.so 导出：
+  uxengine_init            0xe280c  （空壳）
+  uxengine_init2           0xe2814  （真正初始化，640×480）
+  **uxengine_app_fw_init   0xe2974**  ← ★ 专门给 appFw 用的
+  uxengine_exit / res / sus
+⇒ **uxengine_app_fw_init 从未被我们观测过**
+```
+
+## ⑥ 本层净收益
+```
+✅ **确认干净配置下确实无任何绘制活动（10 个探针全 0）**
+✅ **确认探针基础设施正常（其他 20+ 钩子有输出）**
+✅ **发现钩错符号：我们钩 init2，固件 INITSEQ 解析 init**
+✅ **查明 uxengine_init 是空壳，真正初始化在 init2（640×480）**
+✅ **发现第三个入口 uxengine_app_fw_init，从未观测过**
+❌ 帧 = 0
+```
+
+## ⑦ 下一步（新观测点）
+```
+1. **钩 uxengine_app_fw_init** —— 这是专门给 appFw 的入口，
+   可能在 Application_Start 前后被调用，是关键的生命周期点
+2. 钩 uxengine_res（resume）/ uxengine_sus（suspend）
+3. 若 uxengine_app_fw_init 被调用，它的返回值和后续行为值得追
+```
+
+## 方法论（第 243 条）★★★★★
+**"钩子必须覆盖被调用的那个符号，同名不同号的陷阱"：
+```
+我一直在钩 `uxengine_init2`（因为它是 640×480 的初始化，看起来"更像"），
+而固件的 INITSEQ 解析的是 `uxengine_init`（空壳）。
+
+⇒ 两个名字相似但完全不同：
+   init  → 空壳
+   init2 → 真初始化
+   我们钩的 init2 确实被 im.elf 直接调用了，
+   但固件自己的 init 序列走的是 init（空壳，无副作用）
+
+⇒ 判据：**挂钩子前先确认"哪个符号真的被调用"**，
+   不要凭"名字看起来更像真的"来选择。
+   方法：看 INITSEQ/RELOC/字符串里的实际符号名。
+```
