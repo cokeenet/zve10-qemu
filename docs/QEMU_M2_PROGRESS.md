@@ -15965,3 +15965,95 @@ libObj 没有导出 Widget 构造器，无法直接钩"创建"。
 ⇒ 判据：找不到构造入口时，改钩**该类对象必用的方法**，
    用"必经路径是否被走到"代替"构造是否被调用"。
 ```
+
+---
+
+# ★★★★★★★ 2026-11-05 第一百七十六层（第 55 轮）：**Widget 构造器已定位（0x775d4c，94 个调用点）；layer 工厂不含 widget 创建**
+
+## ① ★★★★ 找到 Widget 的构造/初始化函数
+```
+appFw 里唯一的 Widget::initNode 调用点：0x775d56
+所在函数入口：**0x775d4c**（push {r4,r5,r7,lr}）
+函数体：
+  775d4c: push {r4,r5,r7,lr}
+  775d4e: mov  r4, r0
+  775d52: add.w r1, r0, #0x560        ; node = self + 0x560
+  775d56: blx  Widget::initNode(Node&)  ← ★ 挂到渲染节点树
+  775d5a: ldr.w r3, [r4, #0x6a8]
+  775d5e: cbnz r3, 775d72
+  775d60: movs r0, #16
+  775d62: blx  malloc
+  775d66..775d6a: blx libra::Dictionary::Dictionary()
+  775d6e: str.w r5, [r4, #0x6a8]      ; 惰性创建第 1 个 Dictionary
+  775d72..775d86: 同样惰性创建第 2 个 Dictionary（[r4,#0x6c8]）
+  775d8a: pop {r4,r5,r7,pc}
+⇒ **这是 Widget 的"完成构造"函数：挂节点 + 惰性建字典。**
+```
+
+## ② 调用点统计：94 处，全部集中在 UI 区域
+```
+调用 0x775d4c 的位置：**94 处**
+前几个：0x726dcc / 0x726e6c / 0x727a1c / 0x728d7e / 0x72933a / 0x72b3b8 …
+⇒ 全部落在 **0x726xxx..0x72bxxx**（UI 初始化区域，与 0x723xxx 相邻）
+⇒ 每个 widget 类型各有一个构造点，共 94 种 widget。
+```
+
+## ③ 但 `initNode` 钩子实测 = 0（干净数据）
+```
+基线校验：行数=1401 ✅ [AS]=345 ✅ INITSEQ=66 ✅ createLayer=6 ✅
+实测：initNode=0, initSprite=0, reset=0
+⇒ **这 94 处 widget 构造，一处都没有执行。**
+```
+
+## ④ 关键结构确认：layer 工厂不创建 widget
+```
+0x7238c0（UI 初始化，被 site2 调用）：
+  · createLayer ×4（0x7239c0/0x7239ee/0x723a1e/0x723a4c）
+  · 每层 setActive(true) + setClear(false)
+  · 0x723a64..0x723a7a: 把 4 个 layer 句柄存到全局变量
+  · **0x723a7e: ldmia sp!, {..., pc} —— 直接返回**
+⇒ **这个函数是"layer 工厂"，职责就是建 4 个 layer 并存句柄，不创建 widget。**
+⇒ widget 创建在**别的函数**（0x726xxx..0x72bxxx 区域），那些函数没被调用。
+```
+
+## ⑤ 因此卡点精确到
+```
+引擎状态：
+  ✅ uxengine_init2（640×480）
+  ✅ WidgetSystem 单例
+  ✅ 4 个 layer（创建 + 激活 + 清屏策略 + 句柄存全局）
+  ❌ **94 个 widget 构造，一个都没执行**
+  ❌ 主循环 6 个入口全部未调用
+⇒ **layer 建好后，本该去调"创建 widget"的那一步没有发生。**
+```
+
+## ⑥ 本层净收益
+```
+✅ **定位 Widget 构造器 0x775d4c**（94 个调用点，全部在 UI 区域）
+✅ 确认 `initNode` 钩子 = 0，即 94 处构造全部未执行（干净数据）
+✅ 确认 `0x7238c0` 只是 layer 工厂，不含 widget 创建
+✅ 把卡点从"没 widget"细化到"layer 建好后没去调 widget 创建"
+❌ 帧 = 0
+```
+
+## ⑦ 下一步（非常具体）
+```
+layer 工厂返回后（0x723a7e），控制权回到 site2（0x54d2b0）。
+site2 继续执行到 0x54d35e 返回，然后 Application_Start 应调 site3。
+
+问：0x726xxx 区域的 widget 创建函数，是被谁调用的？
+  ⇒ 扫 BL 指令找 0x726xxx 各函数的调用者，
+    看它们是否在 site0/site1/site3/site4/site5 的调用链上。
+  ⇒ 若在 site3（0x54f664）的调用链上，
+    那"site3 是否执行"就是关键（需用干净数据重新验证）。
+```
+
+## 方法论（第 165 条）★★★
+**"'函数返回'本身就是一条信息：它告诉我们这个函数不负责什么"：
+```
+0x7238c0 建完 4 个 layer、存好句柄、直接返回。
+这一"返回"就排除了"widget 在该函数内创建"的可能，
+把搜索范围精确缩小到 0x726xxx..0x72bxxx 那批函数。
+⇒ 判据：反汇编时不要只看"函数做了什么"，
+   **也要看"函数没做什么就返回了"** —— 后者能快速排除整片区域。
+```
