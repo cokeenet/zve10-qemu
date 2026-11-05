@@ -15391,3 +15391,78 @@ logline 用 write(2)，我在探针里用 write(1)，
    并在第一次运行时确认能看到输出，再去解释"没输出"的含义。
    否则会把"看不见"当成"没发生"。
 ```
+
+---
+
+# ★★★★★★★ 2026-11-05 第一百六十九层（第 48 轮）：**挂钩 Layer::setActive 成功，但触发的是另一处（on=0）**
+
+## ① 找到了 createLayer 之后的两处虚函数调用目标
+```asm
+723a48: blx createLayer(ID)      -> r0 = Layer*
+723a4c: movs r1, #1
+723a4e: ldr  r3, [r0, #0]        ; vtable
+723a54: ldr  r3, [r3, #4]        ; vtable[1]
+723a56: blx  r3                  ; → Layer::setActive(true)
+723a5c: movs r1, #0
+723a5e: ldr  r3, [r0, #0]
+723a60: ldr  r3, [r3, #12]       ; vtable[3]
+723a62: blx  r3                  ; → Layer::setClear(false)
+```
+**libObj 导出确认：`Layer::setActive(bool)` @0xe29ae、`Layer::setClear(bool)` @0xe29d8。**
+
+## ② 实测：`setActive` 被调用 **1 次**，但 `on=0`
+```
+LAYERVT setActive n=1 self=0x4d0470 on=0 caller=appfw+0xdca50986
+LAYERVT setActive n=1 ret=0
+```
+**两个关键问题：**
+```
+A. on=0 —— 而 0x723a4c 那处传的是 r1=1。所以这 1 次不是我们要找的那处。
+B. caller=appfw+0xdca50986 —— 这是**无效偏移**（appFw 只有 0x3d00000 大）。
+   ⇒ 我的 lib_text_base 只认 appFw，其它模块（libObj 等）的地址被错算成 appFw 偏移。
+   ⇒ 说明这次调用来自 **libObj 或其它库**，不是 appFw。
+```
+
+## ③ 因此仍未能定位 0x723a56 那处 setActive(true)
+```
+如果 0x723a56 执行了，我们会看到 on=1 的那条。
+只看到 on=0 一条 ⇒ **0x723a56 没有执行**。
+⇒ 与"0x7238c0 建完 4 个 layer 后没走完"的结论一致。
+```
+
+## ④ 顺带澄清：上次 299 行是**偶发**
+```
+out/lvt（299 行，ENTER=0）→ out/lvt2（1050 行，ENTER=1）
+同样的镜像、同样的参数 ⇒ 偶发失败，不是代码问题。
+（历史上也出现过：QEMU 启动偶尔卡在内核末期）
+```
+
+## ⑤ 本层净收益
+```
+✅ 定位并成功挂钩 Layer::setActive / setClear（两个新的可观测点）
+✅ 实测 setActive 只被调 1 次且 on=0 ⇒ **0x723a56 的 setActive(true) 未执行**
+✅ 澄清 299 行是偶发失败，不是回归
+✅ 发现 lib_text_base 只认 appFw，跨模块 caller 偏移会算错（已记录）
+❌ 帧 = 0
+```
+
+## ⑥ 累计证据链（本会话 48 轮）
+```
+site2 → 0x7238c0 UI 初始化：
+  · GestureAnalyzer::setConfig ×8        ✅
+  · WidgetSystem::createLayer ×4          ✅（返回递增句柄）
+  · Layer::setActive(true)  ×?            ❌ **未执行**
+  · Layer::setClear(false)  ×?            ❌ 未执行
+  · 之后存入全局变量 → 函数返回           ❌ 未到达
+⇒ 引擎在**第 4 个 layer 创建成功之后、激活之前**停下。
+```
+
+## 方法论（第 158 条）★★★
+**"跨模块的 caller 地址必须按各自模块的基址换算，不能只认一个模块"：
+```
+lib_text_base("appFw.so") 只给 appFw 的基址。
+钩子可能在 libObj/libbackup 等任意模块里被调用，
+此时 (ra - appfw_base) 会得到 0xdca50986 这样的荒谬偏移。
+⇒ 判据：打印 caller 偏移时，必须先判断 ra 落在哪个模块的范围内，
+   再减去该模块自己的基址。否则会误判"调用来路不明"。
+```
