@@ -15466,3 +15466,84 @@ lib_text_base("appFw.so") 只给 appFw 的基址。
 ⇒ 判据：打印 caller 偏移时，必须先判断 ra 落在哪个模块的范围内，
    再减去该模块自己的基址。否则会误判"调用来路不明"。
 ```
+
+---
+
+# ★★★★★★★ 2026-11-05 第一百七十层（第 49 轮）：**发现探针自身在破坏被测系统（fopen maps 在热路径）**
+
+## ① 现象：改动探针后，可观测点从 4 个掉到 2 个
+```
+out/cl  （第 158 层，旧探针）：
+  [AS]CREATELAYER n=3..6  ← **4 次**，全部成功
+  [AS]UXLOOP wgtsys n=1..3 ← **3+ 次**
+
+out/mod / out/nofopen / out/clean / out/nosp / out/simp （本轮各版本）：
+  CREATELAYER n=1..2      ← **只有 2 次**，且无 [AS] 前缀
+  UXLOOP wgtsys           ← **0 次**
+  LAYERVT setActive n=1 on=0 （来自 libObj+0x107986，不是我们要找的那处）
+```
+
+## ② 根因（已定位）：`fopen("/proc/self/maps")` 被放进了热路径
+```
+本轮新增的辅助函数：
+  lib_text_base(soname)  →  fopen("/proc/self/maps") + fgets 循环
+  module_of(ra, &off)    →  fopen("/proc/self/maps") + fgets 循环
+它们被放进了：
+  · wgtsys() 钩子       ← UXEngine::wgtsys 是**极度高频**的访问器
+  · createLayer() 钩子
+  · setActive()/setClear() 钩子
+
+后果：
+  · 每次 wgtsys() 都要打开/解析整个 maps（几十到几百行）
+  · 动态链接器/glibc 内部也可能调 wgtsys
+  ⇒ 严重拖慢甚至阻断初始化流程 ⇒ 后续 2 次 createLayer 不再发生
+  ⇒ **探针改变了被测系统的行为（观察者效应）**
+```
+**已逐个移除：createLayer → setActive/setClear → wgtsys。但 wgtsys 仍为 0。**
+
+## ③ 当前怀疑：`g_real_wgtsys` 解析失败，钩子返回 NULL
+```
+钩子代码：
+  if (!g_real_wgtsys) g_real_wgtsys = dlsym(RTLD_NEXT, sym);
+  void *r = g_real_wgtsys ? g_real_wgtsys() : 0;
+  ...
+  return r;      ← 若 g_real_wgtsys == NULL，返回 0
+⇒ 调用方拿到 NULL 单例 ⇒ 后续一切失败
+⇒ 与本轮"createLayer 从 4 掉到 2"完全吻合
+但为什么 out/cl 那次能成功？**因为那次没有 LAYERVT 等新符号**，
+可能新符号导致 dlsym(RTLD_NEXT) 的搜索顺序或符号可见性变化。
+```
+
+## ④ 本层净收益（负向但重要）
+```
+✅ **定位到一个严重的自伤 bug**：把 fopen("/proc/self/maps") 放进热路径钩子，
+   直接改变了被测系统的行为（4 次 createLayer → 2 次）
+✅ 逐步移除后仍未恢复，说明还有第二处（g_real_wgtsys 可能为 NULL）
+❌ 本轮没有取得新的事实（所有新数据都不可信，因为探针在干扰系统）
+❌ 帧 = 0
+```
+
+## ⑤ 下一步
+```
+1. 回退到 out/cl 那次能工作的 argtrace 版本（git 里有历史）
+   或：移除所有本轮新增的钩子（LAYERVT/module_of/sp_note/STKPROBE），
+       只保留 out/cl 时的钩子集
+2. 确认 wgtsys 恢复 3+ 次、createLayer 恢复 4 次
+3. 然后再逐个、单独地加回新钩子，每次验证基线是否被破坏
+```
+
+## 方法论（第 159 条）★★★★★ 本轮最重要
+**"探针本身可能改变被测系统的行为——热路径钩子里绝不做 fopen/解析"：
+```
+`UXEngine::wgtsys()` 是引擎里最频繁的访问器（每次取 WidgetSystem 都调）。
+我在它的钩子里加了 `lib_text_base("appFw.so")`，
+而那个函数每次都要 fopen + fgets 整个 /proc/self/maps。
+结果：createLayer 从 4 次掉到 2 次，wgtsys 日志从 3+ 掉到 0。
+⇒ **我的探针把被测系统改坏了，然后我在用被改坏的系统数据下结论。**
+⇒ 判据：
+   ① 钩子函数里只允许 O(1) 的操作（读一个全局、加一个计数器、写一行日志）
+   ② 任何 fopen/getenv/malloc/maps 解析都必须**预先算好、缓存在全局**，
+      绝对不能每次调用都做
+   ③ 加新探针后，**必须先验证基线指标（如 createLayer 次数）没有变化**，
+      才能相信新数据
+```
