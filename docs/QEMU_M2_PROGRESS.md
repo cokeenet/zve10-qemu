@@ -19765,3 +19765,97 @@ TS pid=115 comm=im.elf nthread=**64** nrunning=1
    · 打印总数量（`total=N, shown=M`）
    · 若 N > M，说明被截断，不能据此断言不存在
    这一条如果早执行，本会话能省下至少 15 轮。
+
+---
+
+# ★★★★★★★★★★★★★ 2026-11-06 第二百一十六层（第 100 轮）：**答案：Application_Start 阻塞在 futex**
+
+## ① 修正截断后，立刻看到了目标线程
+```
+TSTATE stuck total_threads=**74**          ← 打印总数（新规则，防截断误判）
+TSTATE tid=195 state=S wchan=**futex_wait_queue_me**   ← ★ 目标线程！
+```
+
+## ② ★★★ 74 个线程的 wchan 分布
+```
+  32 × futex_wait_queue_me      ← 最多
+  24 × osal_rcv_msg_tmo
+  10 × wchan=0（运行中）
+   4 × __k_4u_wait_cb
+   2 × poll_schedule_timeout
+   1 × utimer_res_sleep
+   1 × hrtimer_nanosleep
+```
+
+## ③ ★★★★★ Application_Start 的阻塞点已确定
+```
+tid=195（Application_Start）:
+  state  = S
+  wchan  = **futex_wait_queue_me**
+
+⇒ **它阻塞在一个 futex 上** —— 即用户态的：
+   · pthread_mutex_lock（互斥锁）
+   · pthread_cond_wait（条件变量）
+   · 或 std::mutex / std::condition_variable
+
+★ 不是硬件、不是消息队列、不是 D 状态 I/O
+★ 是**用户态同步原语**
+```
+
+## ④ 为什么之前一直看不到
+```
+第 203→215 层（13 轮）：dump_thread_state 的 `shown < 12` 截断
+  而进程有 74 个线程
+  ⇒ tid=195 排在 12 名之后，被静默丢弃
+  ⇒ 一直误判为"线程消失了"
+
+修正后第一次采样就看到答案。
+```
+
+## ⑤ 现在的完整因果链（终于闭环）
+```
+Application_Start (tid=195)
+  → site2 (0x54d2b0) 执行
+  → 0x7238c0: 4×createLayer + setActive + setClear  ✅ 全部成功
+  → **阻塞在某个 futex**（用户态互斥锁/条件变量）
+  ⇒ 从此不再前进
+  ⇒ site3 永不执行
+  ⇒ 无 widget、无主循环、无绘制、帧 = 0
+```
+
+## ⑥ 本层净收益（重大突破）
+```
+✅ **修正 shown<12 截断（第 203 条方法论的直接应用）**
+✅ **新增 total_threads 输出（防止再犯截断误判）**
+✅ **首次看到目标线程：tid=195 state=S wchan=futex_wait_queue_me**
+✅ **确定阻塞性质：用户态 futex，不是硬件/内核 I/O**
+✅ 拿到 74 个线程的完整 wchan 分布
+✅ 基线完好（1179/38/6）
+❌ 帧 = 0
+```
+
+## ⑦ 下一步（方向明确）
+```
+要找的是：Application_Start 在等哪个 futex？
+
+方法：
+  1. 在 site2 内部的可疑调用前后插入 futex 探针
+     —— 但更简单：钩 pthread_mutex_lock / pthread_cond_wait
+  2. 钩住它们，打印调用者（模块+偏移）
+     ⇒ 立刻知道是哪一行代码在等锁
+
+★ 关键：glibc 2.11 的 pthread_mutex_lock 是弱符号，
+   可以用 LD_PRELOAD 钩（不是内联系统调用）。
+```
+
+## 方法论（第 204 条）★★★★★★★ 本会话最有价值的教训
+**"13 轮的谜题，答案是探针里一个 `shown < 12`"：
+```
+第 203 层我总结了"输出截断被误读为数据不存在"是本会话第 5 次同类错误，
+并立下规则："任何 X 不存在的结论，必须先打印 total/shown"。
+**本层严格执行该规则后，一轮就拿到了 13 轮没拿到的答案。**
+
+⇒ 这条规则的价值已被验证：它把"无限期的观测迷雾"
+   压缩成"一次正确的采样"。
+⇒ 建议：今后所有探针的输出，**默认首行打印 total 与 shown**，
+   成本一行代码，收益是避免整轮甚至整阶段的误判。
