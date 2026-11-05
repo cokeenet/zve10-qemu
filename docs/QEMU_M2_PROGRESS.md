@@ -20596,3 +20596,86 @@ a7c2 只报 `mutex < 4096`（无效低地址）。
    尤其当对方是"已经在生产环境跑通"的项目时，
    "我做不到"极可能是"我的做法不对"，而不是"这件事不可能"。
   这比反复自证"为什么不行"有价值得多。
+
+---
+
+# ★★★★★★★★★★★★★ 2026-11-06 第二百二十六层（第 110 轮）：**找到了！Application_Start 卡在 std::mutex::lock() 上**
+
+## ① 扩展检测后，一次就捕获到目标线程的锁调用
+```
+ENTRY_LOCK   n=1 mutex=0x36314080  caller=appFw.so+0x52abfe
+ENTRY_UNLOCK n=1 mutex=0x36314080
+ENTRY_LOCK   n=2 mutex=0x36314080  caller=appFw.so+0x52abfe
+ENTRY_UNLOCK n=2 mutex=0x36314080
+**ENTRY_LOCK  n=3 mutex=0x359fbc08  caller=appFw.so+0x52abfe**   ← ★ 再也没解锁！
+
+LOCK=3  UNLOCK=2
+```
+
+## ② ★★★★★ caller = appFw+0x52abfe 的精确含义
+```asm
+0052abf0:
+  52abf8: mov  r0, r4
+  52abfa: blx  529460 <**pthread_mutex_lock@plt**>
+  52abfe: cbz  r0, 52ac04                    ← ★ 这是我们捕获的返回地址
+  52ac00: blx  528b00 <**__throw_system_error@plt**>   ← 加锁失败抛异常
+  52ac04: pop  {r3, r4, r7, pc}
+```
+**⇒ 这是 C++ 标准库的 `std::mutex::lock()` 内联实现
+   （`__gthread_mutex_lock` 失败则 `__throw_system_error`）**
+
+## ③ ★★★ 完整因果链（终于闭环）
+```
+Application_Start (tid=195, comm=AppFw)
+  → site2 (0x54d2b0) 执行
+  → 0x7238c0: 4×createLayer + setActive + setClear  ✅
+  → 第 3 次调用 **std::mutex::lock(0x359fbc08)**
+  → **卡在这里，永不返回**（UNLOCK 只有 2 次，第 3 次没有）
+  ⇒ site3 永不执行
+  ⇒ 无 widget、无主循环、无绘制
+  ⇒ **帧 = 0**
+```
+
+## ④ 关键数据
+```
+· 前两把锁 0x36314080 —— 正常加锁/解锁（配对）
+· 第三把锁 **0x359fbc08** —— **只加锁，从未解锁**
+· 全部来自同一个 caller：appFw+0x52abfe（std::mutex::lock）
+```
+
+## ⑤ 本层净收益（本会话最重要的突破）
+```
+✅ **捕获到目标线程的全部 3 次锁操作**
+✅ **定位卡点：第 3 次 std::mutex::lock(0x359fbc08) 永不返回**
+✅ **解析出 caller = std::mutex::lock() 的内联实现**
+✅ 基线完好（1191/41/6, ENTER=1）
+❌ 帧 = 0
+```
+
+## ⑥ 下一步（方向已完全明确）
+```
+现在只需回答：**谁持有 0x359fbc08 这把锁？**
+
+方法：
+  1. 该地址在 0x35xxxxxx（约 900MB）—— appFw 的数据段/堆
+  2. 找出哪个线程持有它：需要读 mutex 的内部字段（owner/__data）
+  3. 或者：从 appFw 的静态分析找 0x359fbc08 对应的全局对象
+     —— 但它是运行时地址，需要基址换算
+
+★ 更直接：**在 gdb 里读 0x359fbc08 处的 mutex 结构**
+   glibc 的 pthread_mutex_t: __lock(4) + __count(4) + __owner(4) + __kind(4)...
+   __owner 就是持有者 tid！
+```
+
+## 方法论（第 214 条）★★★★★★★ 本会话最关键的方法论
+**"'只记录异常'是对的，但'异常'的定义要随目标而变"：
+```
+第 225 层照抄 a7c2 的条件（mutex < 4096 才报），结果一条都没捕获。
+根本原因：**我们的 bug 不是"无效指针"，而是"合法指针上的死锁"**。
+
+改成本项目的条件（tid == g_as_tid 就报）后，**一次就捕获到了**。
+
+⇒ 判据：借鉴别人的诊断工具时，**必须重新定义"什么算异常"**。
+   a7c2 找的是野指针（mutex<4096），我们找的是死锁（合法地址但不返回）。
+   同一个钩子框架，换一个过滤条件，就能解决完全不同的问题。
+   照抄结构，不照抄判据。
