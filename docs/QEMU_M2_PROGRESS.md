@@ -22874,3 +22874,101 @@ a7c2 的方案：固件通过 qid 把帧推给 AP 消费者。
    本会话我做过同样的事（libObj 的导出、grm_gles.ko 的符号），
    但漏掉了 libosal_uipc —— 而这个库正是卡点的所在层。
 ```
+
+---
+
+# ★★★★★★★ 2026-11-06 第二百五十三层（第 137 轮）：**RCVC 数据完整分析；澄清 AFTER_S3 的真实含义**
+
+## ① RCVC 统计（96 次 osal_rcv_msg_tmo 调用）
+```
+按 qid 分布（前 5）：
+  11 × qid=0x16c8477   ← libRsrcHotshoe.so（热靴资源，tmo=88 轮询）
+   6 × qid=0x80003b
+   6 × qid=0x7a804c
+   6 × qid=0x7a0020
+   4 × qid=0xa1e006
+
+按超时分布：
+  60 × tmo=-1     ← ★ **无限等待**（真阻塞）
+  13 × tmo=-1     （同上，分两批）
+  11 × tmo=88     ← 轮询
+   6 × tmo=1000
+   4 × tmo=0
+   1 × tmo=60000
+   1 × tmo=1
+```
+
+## ② ★★★ 重要澄清：AFTER_S3 不是固件的 site3
+```
+8 条带 AFTER_S3 标记的记录：
+  [AS]RCVC n=77 qid=0x1cf60b9 tmo=-1 mod=appFw.so off=0x2b22ddd AFTER_S3
+  [AS]RCVC n=78 qid=0x1cf60ba tmo=-1 mod=dataflowInfraFramework.so
+  ...
+  [AS]RCVC n=84 qid=0xa1e006 tmo=1000 mod=libObj.so off=0x1dba07
+
+但查代码发现：
+  g_s3_after 只在 **第 2191 行** 被设置，而那里在
+  **`site3_force_thread`**（我自己写的强制调用线程）内部！
+
+  static unsigned frame[2208/4] __attribute__((aligned(8)));
+  memset(...);
+  __atomic_store_n(&g_s3_after, 1, ...);   ← 这里
+
+⇒ **AFTER_S3 = "我的强制线程开始跑之后"，不是"固件执行了 site3"**
+⇒ 这 8 条记录是**强制线程存在时的系统活动**，与固件无关
+```
+
+## ③ 但这批数据仍有价值：看到了正常的消息流
+```
+site3 之前的正常 RCVC（固件真实活动）：
+  RCVC n=71 qid=0x102021f tmo=-1  mod=libObj.so off=0x1f4b4b
+  RCVC n=72 qid=0x16c8477 tmo=88  mod=libRsrcHotshoe.so
+  RCVC n=74 qid=0x16c8477 tmo=88  mod=libRsrcHotshoe.so
+  RCVC n=75 qid=0x94016a tmo=-1  mod=im.elf off=0x2657
+  RCVC n=76 qid=0x16c8477 tmo=88  mod=libRsrcHotshoe.so
+
+⇒ 固件在 site2 之后、site3 之前，**没有任何 appFw.so 发起的无限等待**
+   （只有 libObj / libRsrcHotshoe / im.elf 的）
+```
+
+## ④ 本层净收益
+```
+✅ **完整统计 RCVC（96 次，按 qid 和 tmo 分类）**
+✅ **发现 60 次 tmo=-1 无限等待，分布在多个模块**
+✅ **澄清 AFTER_S3 是我自己的强制线程标记，不是固件 site3**
+✅ **确认：site2 → site3 之间，appFw 没有发起无限等待**
+✅ 基线完好
+❌ 帧 = 0
+```
+
+## ⑤ 下一步（新的排查角度）
+```
+既然 site2 → site3 之间 appFw 没有发起无限等待，
+那 Application_Start 线程（tid=195）到底卡在哪？
+
+★ 关键：ENTRY_LOCK n=3 的 mutex 地址与前两把差恒定 0x918478。
+  若它阻塞在 futex 上，应该有对应的 RCVC 或 self 等待。
+  但 RCVC 里没有 appFw 的 tmo=-1（在 site3 之前）
+
+⇒ 可能：那次 lock 不是通过 osal（而是直接 pthread_mutex_lock）
+   我们已经确认它是 std::mutex::lock → pthread_mutex_lock → futex
+   而 futex 等待不会经过 osal_rcv_msg_tmo
+
+⇒ **所以：Application_Start 线程确实阻塞在一个 futex 上，
+   而这个 futex 对应的锁从未被任何 osal 调用触及**
+```
+
+## 方法论（第 241 条）★★★★★
+**"探针的标记名必须精确反映它测的东西，否则会误导"：
+```
+`g_s3_after` 这个变量名看起来像"site3 之后"，
+但它实际上由 `site3_force_thread` 设置 ——
+那是我自己写的**强制调用线程**，不是固件真实的 site3。
+
+我差点把这 8 条 AFTER_S3 记录当成"固件执行了 site3 之后的证据"，
+进而推出"site3 其实进入了"的错误结论。
+
+⇒ 判据：**读自己以前写的探针输出时，必须先确认那个标记是在哪里设置的**。
+   变量名/日志标签可能有历史遗留的歧义，
+   而隔了很多轮之后，我只会看到标签，不会记得它的真实含义。
+   （本会话已有类似教训：第 215 层 `shown < 12` 也是探针语义问题）
