@@ -19412,3 +19412,94 @@ CPU 稳定命中：
 ⇒ 判据：统计 CPU 模式分布后，**必须再符号化热点 PC**，
    确认它落在"工作代码"还是"idle 代码"上。
    只看模式分布会得出与事实相反的结论。
+
+---
+
+# ★★★★★★★★★★ 2026-11-06 第二百一十二层（第 96 轮）：**首次拿到完整的线程 wchan 表 —— 发现 2 个线程一直 R 状态**
+
+## ① 修复了一个长期存在的探针 bug
+```c
+/* 旧代码：读 stat 成功后直接 continue，wchan 分支成了死代码 */
+logline("TSTATE tid=%s state=%c\n", de->d_name, st);
+continue;                                    // ← wchan 永远走不到
+
+/* 修复后：两者都打印 */
+logline("TSTATE tid=%s state=%c", de->d_name, st);
+snprintf(path, ..., "/proc/self/task/%s/wchan", de->d_name);
+... logline(" wchan=%s", buf);
+⇒ 之前 8 轮的 TSTATE 输出全都缺 wchan，白丢了这个信息
+```
+
+## ② ★★★ 首次拿到完整线程等待表
+```
+TSTATE tid=115 state=S wchan=osal_rcv_msg_tmo       ← 等 osal 消息队列
+TSTATE tid=116 state=S wchan=hrtimer_nanosleep      ← 睡眠
+TSTATE tid=117 state=R wchan=0                      ← ★ **一直运行中**
+TSTATE tid=118 state=S wchan=__k_4u_wait_cb         ← 等 osal 回调
+TSTATE tid=119 state=S wchan=__k_4u_wait_cb
+TSTATE tid=120 state=S wchan=__k_4u_wait_cb
+TSTATE tid=122 state=S wchan=osal_rcv_msg_tmo
+TSTATE tid=123 state=S wchan=__k_4u_wait_cb
+TSTATE tid=124 state=S wchan=osal_rcv_msg_tmo
+TSTATE tid=125 state=R wchan=0                      ← ★ **一直运行中**
+TSTATE tid=126 state=S wchan=futex_wait_queue_me
+TSTATE tid=127 state=S wchan=futex_wait_queue_me
+```
+
+## ③ ★★★★ 核心发现
+```
+★ 没有任何线程的 wchan 显示"卡在 site2 内部的某个计算里"
+  所有 S 状态线程都在等：osal_rcv_msg_tmo / __k_4u_wait_cb / futex / nanosleep
+
+★ **tid=117 和 tid=125 一直是 state=R（运行中），wchan=0**
+  ⇒ 这两个线程**从不阻塞**，一直在用户态跑
+  ⇒ 它们很可能就是 Application_Start 线程（或其子孙）
+  ⇒ **Application_Start 不是"阻塞了"，而是"在用户态跑个不停"**
+```
+
+## ④ 这与第 211 层的"CPU 在 idle"如何统一？
+```
+第 211 层：CPU 大部分时间在 kernel idle（ambauart_console_read / read_cycles）
+本轮：tid=117/125 一直 R 状态
+
+⇒ 统一解释：
+   单核 guest 上，一个 R 状态线程会占用 CPU。
+   若它跑得很勤，QEMU 采样应该大量命中它。
+   但实测采样 93% 在 idle 路径 ⇒ **tid=117/125 的 R 状态可能是
+   "短暂可运行"，实际占 CPU 时间不多**。
+   
+   ⇒ 更可能：这两个线程在**反复短睡/唤醒**（busy-ish polling），
+     每次只跑很短，所以采样时多数落在 idle。
+```
+
+## ⑤ 本层净收益
+```
+✅ **修复 TSTATE 探针的 wchan 死代码 bug**（8 轮来一直缺这个信息）
+✅ **首次拿到 12 个线程的完整等待链**
+✅ **发现 tid=117 / tid=125 一直是 R 状态（从不阻塞）**
+✅ 确认所有 S 状态线程都在等消息/futex/nanosleep（没有卡在计算里）
+✅ 提出统一解释（单核上 R 线程短暂可运行，CPU 大部分仍 idle）
+❌ 帧 = 0
+```
+
+## ⑥ 下一步（关键：确定哪个 tid 是 Application_Start）
+```
+必须知道 tid=117/125 是不是 Application_Start 线程。
+方法：
+  · 在 my_start（Application_Start 包装）里打印 gettid()
+  · 然后对照 TSTATE 表，就能确认哪个 tid 是它
+
+⇒ 这一步做完，就能回答："Application_Start 线程是 R 还是 S？"
+   若是 R ⇒ 它在用户态死循环（要找出循环位置）
+   若是 S ⇒ 它在等某个消息（要找出是哪个队列）
+```
+
+## 方法论（第 200 条）★★★★★
+**"探针里的 `continue` 可能让整个分支变成死代码"：
+```
+dump_thread_state 里 `logline(state); continue;` 导致后面的 wchan 读取
+**永远执行不到**，8 轮以来所有 TSTATE 输出都缺最关键的 wchan 字段。
+⇒ 判据：写探针时，**任何 `continue`/`early return` 之后的分支都要检查
+   是否变成死代码**。最便宜的验证：让探针打印一个它必然产生的字段，
+   看是否真的出现。
+```
