@@ -14473,3 +14473,90 @@ memset 是 libc 最底层、最高频的函数：
    不要选 libc 基础函数。若业务层没有可钩点，宁可改代码（但要按第 142 条先在
    可丢弃程序里验证）。
 ```
+
+---
+
+# ★★★★★★★★★★ 2026-11-05 第一百五十八层（第 37 轮）：**UI layer 栈创建成功！引擎确实在构建界面**
+
+## ① 用调用方地址（`__builtin_return_address`）定位到真正的 UI 初始化函数
+```
+[AS]UXLOOP wgtsys n=1..12  caller=appfw+0x723928 / 0x72393a / 0x72394c …
+⇒ 全部来自 appFw+0x723xxx —— **不是**我之前静态分析以为的 0x54f894！
+```
+`0x723xxx` 反汇编显示：
+```asm
+723900: blx ResourceManager::sys_getInstance()
+723908: blx ResourceManager::switchBankEth()          ← 切换资源 bank
+...
+723924: blx UXEngine::wgtsys()
+723928: blx WidgetSystem::getGestureAnalyzer()        ← 手势分析器
+72392e: movw r2, #800
+723932: blx GestureAnalyzer::setConfig(2, 800)        ← 触摸手势配置
+...
+7239ae: blx ux::core::ID::genID(const char*)          ← 用名字生成 ID
+7239b6: blx UXEngine::wgtsys()
+7239bc: blx **WidgetSystem::createLayer(const ID&)**   ← ★★★ 创建 UI Layer！
+7239dc/7239e4/7239ea: 重复（第 2 个 layer）
+723a0c/723a14/723a1a: 重复（第 3 个）
+723a3a/723a42/723a48: 重复（第 4 个）
+```
+
+## ② ★★★★★ 实测：`createLayer` **被成功调用 4 次（AS 内）**
+```
+[AS]CREATELAYER n=3 self=0x4ddb28 id=0x311ebe00 w=8001653f caller=appfw+0x7239c0
+[AS]CREATELAYER n=3 ret=5125080
+[AS]CREATELAYER n=4 self=0x4ddb28 id=0x311ebe04 w=80016abe caller=appfw+0x7239ee
+[AS]CREATELAYER n=4 ret=5125744
+[AS]CREATELAYER n=5 self=0x4ddb28 id=0x311ebe08 w=8001703d caller=appfw+0x723a1e
+[AS]CREATELAYER n=5 ret=5126408
+[AS]CREATELAYER n=6 self=0x4ddb28 id=0x311ebe0c w=800175bc caller=appfw+0x723a4c
+[AS]CREATELAYER n=6 ret=5127072
+（另有 2 次在 AS 外，共 12 次）
+```
+**关键观察：**
+```
+· WidgetSystem 单例 self=0x4ddb28 稳定
+· 4 个 Layer 的 ID 连续：0x311ebe00 / +4 / +8 / +0xc
+· w[0] = 0x8001653f / 0x80016abe / 0x8001703d / 0x800175bc
+  高 16 位都是 0x8001，低 16 位递增 ⇒ 确实是连续分配的 ID
+· **每一次都成功返回非零句柄（5125080 → 5127072，递增）**
+```
+
+## ③ 这是本项目最重要的正向证据
+```
+之前 30 多轮的结论一直是"引擎没画图"。
+现在可以明确说：
+  · Application_Start 内**确实在构建 UI**（4 个 layer 创建成功）
+  · WidgetSystem 单例有效、ID 系统工作、createLayer 返回句柄
+  · 引擎状态是"UI 骨架已建，但还没往里面加 widget / 还没请求绘制"
+⇒ 与 a7c2 第 3 步的差距被缩小到：**layer 建了，但 widget 没建**
+```
+
+## ④ 本层净收益（本轮最大）
+```
+✅ **首次证明引擎在 Application_Start 内成功构建 UI layer 栈**（4 次，有句柄）
+✅ 定位到真正的 UI 初始化函数区域 0x723xxx（此前一直误看 0x54f894）
+✅ 发现 4 个 layer 的 ID 连续分配（0x311ebe00 +4×4）
+✅ 确认 WidgetSystem 单例在 AS 内有效
+❌ 帧 = 0（layer 有，widget 和绘制请求还没有）
+```
+
+## ⑤ 下一步（方向非常明确）
+```
+紧接 0x723a48（第 4 个 layer）之后是大量 ResourceManager::switchBankEth 调用，
+再往后应该有 **createWidget / addWidget / createScreen** 之类的调用。
+⇒ 把 0x723b00..0x724000 段里的导出调用全部列出，
+   找 createWidget / addChild / setScreen 等，逐个挂钩，
+   就能知道 widget 创建到哪一步、卡在哪。
+```
+
+## 方法论（第 147 条）★★★★★
+**"`__builtin_return_address(0)` 是定位'到底是哪个调用点'的最便宜手段"：
+```
+我用了 4 轮猜测 0x54f894 是主循环入口（静态反汇编看到的），
+实际运行时调用的却是 0x723xxx 的另一处。
+在已有的 wgtsys 钩子里加一行 __builtin_return_address(0)，
+立刻拿到 12 个调用点地址，10 秒定位到真正的 UI 初始化函数。
+⇒ 判据：怀疑"某函数被谁调用"时，**不要靠静态反汇编穷举调用点**，
+   直接在钩子里打 return address —— 一次运行给出全部答案。
+```
