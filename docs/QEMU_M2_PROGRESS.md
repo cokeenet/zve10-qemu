@@ -14407,3 +14407,69 @@ C. 对 site1/site2（0x54d154 / 0x54d2b0）内部的导出调用挂钩，
 再结合 processEvent/processSystemMessage 都为 0，上界压到 0x54f882。
 ⇒ 判据：binary search 的执行点不用改代码，只要选对**可钩的里程碑**。
 ```
+
+---
+
+# ★★★★★★★ 2026-11-05 第一百五十七层（第 36 轮）：**memset 钩子破坏启动（内核都起不来）；里程碑法需换目标**
+
+## ① 尝试：钩 memset / __aeabi_uldivmod（按调用方地址过滤）
+```
+思路：这两个是 0x54f664 内部（0x54f6be / 0x54f70a / 0x54f75c）的真 PLT 调用，
+     用 __builtin_return_address(0) 过滤 "调用方在 0x54f664..0x54f886 内"，
+     这样就能知道 0x54f664 至少执行到了哪一步。
+```
+**结果：灾难性失败**
+```
+ENTER = 0
+日志 = 299 行（正常 7800+）
+尾部：
+  <6>TCP cubic registered
+  <6>NET: Registered protocol family 17
+  <3>hctosys.c: unable to open rtc device (rtc0)
+⇒ **内核都没能启动到 init** ⇒ memset 钩子让整个系统崩了
+```
+
+## ② 原因（已确认）
+```
+memset 是 libc 最底层、最高频的函数：
+  · 内核/glibc 内部、动态链接器、每一个库的构造函数都在调它
+  · 我们的钩子里有 dlsym(RTLD_NEXT,"memset") —— 而 dlsym 本身可能调 memset
+  ⇒ 递归/重入，且发生在动态链接器初始化阶段 ⇒ 系统级崩溃
+⇒ **memset / memcpy 这类 libc 基础函数，永远不能在 LD_PRELOAD 里钩。**
+```
+**已完整撤销。**
+
+## ③ 本轮净收益（负向但重要）
+```
+✅ 用一次失败明确了"libc 基础函数不可钩"这条硬规矩
+✅ 撤销干净，回到基线（没有污染后续实验）
+❌ 未获得 0x54f664 内部的位置标记
+❌ 帧 = 0
+```
+
+## ④ 下一步（换不影响 libc 的里程碑）
+```
+0x54f664..0x54f882 里还有这些**非 libc** 的导出调用可以试：
+  · 0x54f68a  bl 0x54833c  （appFw 内部，不可钩）
+  · 0x54f694  blx 0x925fb0 （appFw 内部 .text）
+  · 0x54f6ce  blx 0x9240f8
+  · 0x54f74e  bl 0x52b0ca  （在 .plt 区！0x5289d0..0x52ab00）
+  · 0x54f83a  bl 0x52bf6c  （也在 .plt 区）
+⇒ 0x52b0ca 和 0x52bf6c 在 .plt 段内但**没有符号名**（readelf -r 找不到），
+  说明是本地 PLT 或 ifunc 桩。需要查 .rel.plt 里对应项。
+更稳妥的替代：
+  · 直接钩 `UXEngine::wgtsys()` 的**调用方地址**（我们已有钩子），
+    记录 __builtin_return_address(0)，就能知道那 3 次来自哪个调用点，
+    从而判断是否进入了 0x54f894 的循环。
+```
+
+## 方法论（第 146 条）★★★★★
+**"永远不要 LD_PRELOAD 钩 libc 最底层的函数（memset/memcpy/strlen/malloc）"：
+```
+它们被动态链接器自身、glibc 内部、每个库的构造函数调用，
+而钩子里的 dlsym/log/write 又会反向调用它们 ⇒ 重入 + 初始化期崩溃。
+本次直接把系统打到"内核起不来"（299 行，连 init 都没到）。
+⇒ 判据：要观测某个"位置"，选**业务层**的导出符号（UXEngine::wgtsys 这类），
+   不要选 libc 基础函数。若业务层没有可钩点，宁可改代码（但要按第 142 条先在
+   可丢弃程序里验证）。
+```
