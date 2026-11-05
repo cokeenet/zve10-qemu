@@ -368,3 +368,99 @@ initializeArena           332 B
 
 ⇒ **下一步必须先确认：ZVE10 的 libObj.so 那 20.3 MB 里到底装了什么。**
    如果它也含 UI 类，那换掉会丢掉大量原生功能。
+
+---
+
+## 十、★★★ 换 libObj 的代价评估（2026-11-05 第 70 轮）
+
+### 1) 20.3 MB 与 3.9 MB 的差距在哪
+```
+ZVE10 libObj.so (21,305,528 B)      ZV1M2 libObj.so (3,931,624 B)
+  .text      13.23 MB        vs        2.16 MB     ← 差 11 MB 代码
+  .rodata     3.59 MB        vs        0.55 MB
+  .ARM.extab  1.01 MB        vs        0.14 MB
+  .ARM.exidx  0.47 MB        vs        0.13 MB
+  .data.rel.ro 0.44 MB       vs        0.07 MB
+  .data       0.47 MB        vs        0.44 MB（几乎一样）
+```
+
+### 2) ★ ZVE10 libObj 独有的 UI 类（ZV1M2 完全没有）
+```
+类名前缀                 ZVE10 libObj 导出数
+  ViewBase                    69
+  LayoutableWidgetBase        49
+  AppWidgetBase               27
+  DefRootView                 22
+  CmnViewMenuData             21
+  HighlightManager            18
+  View                        13
+  LkmIconguide                 8
+
+⇒ 这些类在 **ZV1M2 的 libObj.so 和 appFw.so 里都不存在**
+  （appFw.so 只在字符串里出现 0 次，且它只导出 1 个符号：Application 系列）
+⇒ appFw.so 的 UI 类全是**内部符号，已 strip**
+```
+
+### 3) ★★★ wgtsys 引擎接口高度兼容（这是好消息）
+```
+ZVE10 libObj  wgtsys 导出 99 个
+ZV1M2 libObj  wgtsys 导出 104 个
+  完全相同 92 个（93%）
+  只 ZVE10 有  7 个
+  只 ZV1M2 有 12 个
+
+只 ZVE10 有的 7 个（换掉会丢）：
+  LayoutableWidgetBase::setDefWidgetMode
+  LayerBase::moveLast
+  WidgetBase::getID
+  Widget::getTopHitMargin / getLeftHitMargin / getRightHitMargin / getBottomHitMargin
+
+只 ZV1M2 有的 12 个（新接口，说明引擎确实升级了）：
+  WidgetSystem::notifyDraw / updateFrame / processEvent / updateCurrentTime
+  WidgetSystem::isFrameDelay
+  WidgetBase::acceptMultiTouch / getTimerInfo / isMouseCapture
+  Widget::Widget()  ← ★ **构造函数**（ZVE10 的 libObj 没有导出！）
+  GestureAnalyzer::getPinchOriginPos / getDevicePos / isMultiTouch
+```
+**⇒ 第 164 层我推断"libObj 不导出 Widget 构造函数"是对的 —— 但那只对 ZVE10 成立；
+   ZV1M2 的 libObj **确实导出** `Widget::Widget()`。**
+
+### 4) 结论：移植必须整体替换，且会失去一代原生 UI
+```
+✅ 可行部分：
+   · 引擎接口 93% 兼容（92/99 相同）
+   · kmod 102/103 同名、78 个字节完全相同、vermagic 100% 一致
+   · 菜单数据框架同构（master_camera 335 项中 330 项相同）
+   · 图形后端同为 ASTRA
+
+❌ 不可回避的代价：
+   · 必须换 libObj.so（否则 appFwBoot 找不到 uxengine_init2）⇒ 丢 20.3 MB 的一代 UI 类
+   · 必须换 libIMDB.so（清单入口不同）
+   · 必须新增 appFwBoot.so + appFw.so（64 MB）
+   · 一代原生功能（闪光灯/AF 模式/PAL/Caution 等）的 UI 入口全部消失
+
+⇒ **这不是"给 ZVE10 加一个新菜单"，而是"把 ZVE10 的 UI 层整体换成 ZV-1M2 的"。**
+```
+
+### 5) 修正后的移植清单（必须项）
+```
+必须替换（缺一不可）：
+  ① libObj.so        20.3 MB → 3.9 MB
+  ② libIMDB.so       37204 B → 40596 B（清单入口 appFw.so → appFwBoot.so）
+  ③ + appFwBoot.so   8,312 B（新增，导出 Application_System_Init）
+  ④ + appFw.so       64,273,528 B（新增，导出 Application_Start）
+  ⑤ + AdjChkConfig.so 82,440 B（appFw.so 的唯一缺失依赖）
+  ⑥ usr/kmod/*.ko    全部换成 ZV-1M2 版（已证 verifiable）
+  ⑦ usr/share/app/   全部换成 ZV-1M2 版（含 6 个 *_ASTRA.uxc）
+
+可选保留：
+  · viewUnified2..8.so（一代原生 UI，换 libObj 后可能无引用者）
+  · CautionConfig*.so / libBizFw*.so（原生业务，视需求）
+```
+
+### 6) 对脚本的修正
+```
+scripts/port_m2menu.sh 需要加入：
+  - 用 ZV-1M2 的 libObj.so 覆盖 ZVE10 的  ← **之前漏了，致命**
+  - 校验 appFwBoot.so 的 uxengine_init2 能在新 libObj 里找到
+```
