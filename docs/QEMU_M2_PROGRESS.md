@@ -16956,3 +16956,85 @@ PLT frame_0x9240d4   S=0x2edda0d4 lit=0x12f7799 → target=0x300d1881 mod=appFw.
 ⇒ 判据：连续 3 种不同观测手段因**同一个原因**失败时，
    应该改变问题本身，而不是继续找第 4 种手段。
 ```
+
+---
+
+# ★★★★★★★ 2026-11-05 第一百八十七层（第 66 轮）：**bootin 的 dmode/amode 语义完全解出；我们的配置是正确的**
+
+## ① 反汇编定位（注意 bootin.elf 的 .text 有 0x8000 偏移）
+```
+.text: vaddr=0x8e40  file_off=0xe40   ⇒ 换算：va = file_off - 0xe40 + 0x8e40
+.rodata: vaddr=0xa164 file_off=0x2164
+```
+
+## ② ★★★★★ `dmode` 是 **ASCII 字符**，不是数字
+```asm
+9760: cmp  r2, #49      ; '1'
+9764: ldr  r2, [pc,#84] → 0xa650 = "s g r u "
+9768: cmp  r2, #50      ; '2'
+976c: ldr  r2, [pc,#80] → 0xa659 = "s g r u l "
+9770: cmp  r2, #51      ; '3'
+9774: ldr  r2, [pc,#76] → 0xa664 = "s g r u l i a "
+9778: ldr  r2, [pc,#76] → 0xa738 = "s "        ← 默认
+977a: str  r2, [r3,#12]                        ; 写进 im.elf 参数字符串
+```
+**字面量池已全部读出验证：**
+```
+0x97bc → 0xa650  b's g r u '
+0x97c0 → 0xa659  b's g r u l '
+0x97c4 → 0xa664  b's g r u l i a '
+0x97c8 → 0xa738  b's '          （默认）
+0x97cc → 0xa673  b' app_argv=adj '
+0x97d0 → 0xa682  b' app_argv=usbj '
+0x97d4 → 0xa749  b' '
+```
+
+## ③ `amode` 同理
+```asm
+9782: cmp  r2, #97       ; 'a' → " app_argv=adj "
+978a: cmp  r2, #117      ; 'u' → " app_argv=usbj "
+9790: 其它              → " "
+```
+
+## ④ 结论：我们的配置**正确**，不是阻塞原因
+```
+我们的 init：bootin.elf 'target=qemu ' dmode=3 amode=normal
+  dmode=3  ⇒ 命中 cmp #51 ⇒ "s g r u l i a "（最长的启动模式）✅
+  amode=normal ⇒ 不是 'a'/'u' ⇒ 走默认 " " ✅
+⇒ **模式选择是正确的，这一项可以彻底关闭。**
+```
+
+## ⑤ 本层净收益
+```
+✅ **完全解出 bootin.elf 的 dmode/amode 语义**（含字面量池验证）
+✅ 确认 dmode=3 对应最长启动模式 "s g r u l i a "
+✅ 排除"启动模式选错"这条可能
+✅ 顺带记录 bootin.elf 的 .text 有 0x8000 vaddr/offset 偏移（易踩坑）
+❌ 帧 = 0
+```
+
+## ⑥ 下一步（回到用户给的方向）
+```
+用户明确要求："移植整套新菜单触摸 UI，不只是资源，二进制也要移植"
+
+当前 QEMU 实验树里，**二进制其实已经是 ZV-1M2 的了**：
+  ✅ appFw.so / appFwBoot.so / im.elf / bootin.elf 都是 ZV-1M2 版
+  ✅ usr/kmod 全部是 ZV-1M2 版
+  ✅ /setting 同代
+  ❌ 卡在 Application_Start 内部（site2 之后不继续）
+
+⇒ 下一步应该是：**量化"移植到 ZVE10 一代"还差什么**
+   即：把当前实验树（ZV-1M2 用户态）与真实 ZVE10 一代固件对比，
+   列出所有差异，分门别类（哪些必须换、哪些可以保留）。
+   这是用户真正要的交付物。
+```
+
+## 方法论（第 176 条）★★★
+**"配置文件的值可能是字符而不是数字——反汇编才能确定"：
+```
+bootin 的 dmode 参数，我一开始以为是数字（dmode=3 ⇒ 模式 3），
+实际上它做的是 `cmp r2, #'3'` —— 比较 ASCII 字符。
+若按数字理解，会去找"模式 3 的枚举定义"，永远找不到。
+⇒ 判据：解析命令行参数语义时，**必须反汇编到 cmp 指令看比较的常量**，
+   不要按"参数名像数字就以为是数字"去推理。
+```
