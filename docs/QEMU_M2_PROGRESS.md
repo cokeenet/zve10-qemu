@@ -15622,3 +15622,91 @@ out/mod / nofopen / clean / nosp / simp / diag2 / diag3 / nowg
 ⇒ 判据：钩某个库的导出符号前，先确认**该库内部是否也调用它**。
    若内部高频调用，则不能钩（或必须让钩子体做到零开销直通）。
 ```
+
+---
+
+# ★★★★★★★★★★ 2026-11-05 第一百七十二层（第 51 轮）：**找到过去十几轮所有"基线崩溃"的总根因**
+
+## ① 根因：`my_start` 一直走 UDF 探针，而 UDF 会让进程静默
+```c
+static unsigned long my_start(...)
+{
+    ...
+    unsigned long r = as_site_probe(a, b, c, d);   // ← 走了 UDF 探针！
+    ...
+}
+```
+**而第 168 层已确证：SIGILL 在这个 guest 里不投递给用户态。**
+**⇒ `as_site_probe` 一旦打补丁，`real_start` 进去就静默，`Application_Start` 内部什么都没执行。**
+
+**⇒ 过去十几轮里所有"createLayer 从 4 掉到 2"、"wgtsys 变 0"、"[AS]=0"的观测，
+   **全部**是这个 UDF 探针造成的 —— 不是钩子污染，不是 libObj 内部劫持，不是热路径 fopen。**
+
+## ② 我之前的错误归因（已全部撤回）
+```
+❌ "fopen(/proc/self/maps) 在热路径导致系统变慢"  → 不是主因
+❌ "LD_PRELOAD 劫持 libObj 内部调用"              → 不是主因
+❌ "createLayer 钩子本身让 4 变 2"                → 不是（下面有反证）
+```
+**反证：现在 `createLayer` 钩子仍然启用着，而实测是 6 次（含 4 次真实 UI 初始化）！**
+
+## ③ ★★★★★ 基线已完全恢复
+```
+改回 `unsigned long r = real_start(a, b, c, d);` 之后：
+  行数      = 1375    （此前 1011~1034）
+  [AS] 行数 = 321     （此前 0！）
+  INITSEQ   = 66      （此前 60）
+  createLayer = 6     （此前 2）
+
+明细：
+  CREATELAYER n=1 ret=5226464  caller_appfw_off=0xdc82396e   ← libObj 内部
+  CREATELAYER n=2 ret=5226528  caller_appfw_off=0xdc823978   ← libObj 内部
+  CREATELAYER n=3 ret=5353408  caller_appfw_off=0x7239c0     ← ★ appFw UI 初始化
+  CREATELAYER n=4 ret=5354072  caller_appfw_off=0x7239ee     ← ★
+  CREATELAYER n=5 ret=5354736  caller_appfw_off=0x723a1e     ← ★
+  CREATELAYER n=6 ret=5355400  caller_appfw_off=0x723a4c     ← ★
+```
+**⇒ 4 次真实 UI layer 创建**全部回来了，且 caller 偏移有效（0x7239c0 等）。
+
+## ④ 这解释了整个会话后半段的混乱
+```
+第 165 层起，我在 my_start 里接上了 as_site_probe。
+从那以后的每一次运行，Application_Start 都在 UDF 处停死，
+于是：
+  · [AS] 全 0        → 我误以为"site3 未执行"
+  · createLayer 只有 2 → 我误以为"钩子污染"
+  · wgtsys=0          → 我误以为"dlsym 失败"
+⇒ **十几轮的全部推论都建立在"系统被我自己停死"的数据上。**
+```
+
+## ⑤ 本层净收益（本会话最重要的纠正）
+```
+✅ **找到并修复了污染十几轮数据的总根因**（my_start 走 UDF 探针）
+✅ 基线完全恢复（[AS]=321, INITSEQ=66, createLayer=6 含 4 次真实 UI 初始化）
+✅ 撤回三组错误归因（fopen 热路径 / libObj 劫持 / createLayer 钩子本身）
+✅ 确认 createLayer 钩子可以安全使用（当前就是启用的，6 次都正常）
+❌ 帧 = 0
+```
+
+## ⑥ 下一步
+```
+既然基线恢复、createLayer 钩子可用，现在可以重新做那些被污染的观测：
+  1. 重新加回 wgtsys / setActive / setClear / getLayer / updateFrame 钩子
+  2. 每次确认 [AS]=321、createLayer=6 没变
+  3. 用干净的数据重新回答：0x723xxx 建完 4 个 layer 后到底走到哪
+```
+
+## 方法论（第 161 条）★★★★★ 本会话最重要的教训
+**"一个失效的探针会静默污染其后十几轮的全部数据，而每轮的表现都像新的谜题"：
+```
+UDF 探针从第 165 层开始接管 my_start，让 Application_Start 停在原地。
+之后所有观测都呈现"部分正常 + 关键点缺失"的形态：
+  · 进程活着、日志有 1000+ 行、ENTER=1
+  · 但 [AS]=0、createLayer 只有 libObj 内部那 2 次
+这种形态**看起来完全像"固件在某处停了"**，
+于是我把每一轮都当成新的谜题去解，还发明了新方法（栈深度、module_of）。
+⇒ 判据：任何时候发现"部分指标正常、关键指标为 0"，
+   **第一件事是回退到最后一个已知良好状态并重测基线**，
+   而不是继续在异常状态下做新观测。
+   我在第 165→172 层（8 轮）都没做这件事。
+```
