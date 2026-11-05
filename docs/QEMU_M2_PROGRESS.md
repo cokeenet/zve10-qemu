@@ -26139,3 +26139,92 @@ libObj 导出（6 个）：
 ❌ MSGID_REQ_ONE_TOUCH_PLAY  手机远程快门       （本轮）
 ❓ GestureAnalyzer       真正的触摸归宿，但上游未知
 ```
+
+---
+
+# ★★★★★★★★★★★ 2026-11-06 第二百八十五章（第 169 轮）：**找到触摸的公开入口！但 postMousePress 内部挂起**
+
+## ① ★★★★★ 找到 WidgetSystem 的三个触摸公开入口
+```
+libObj.so 导出（第 106ee0 起）：
+  WidgetSystem::postMousePress  (u8 x, u8 y, MsecTime)         0x106f70  ← ★
+  WidgetSystem::postMouseRelease(u8 x, u8 y, MsecTime)         0x106fd8  ← ★
+  WidgetSystem::postMouseMove   (u8 x, s16 dx, s16 dy, MsecTime) 0x106ee0  ← ★
+
+签名验证（postMousePress 反汇编）：
+  106f70: stmdb sp!, {r4,r5,r6,r7,r8,r9,lr}    ; ARM 模式
+  106f78: mov  r4, r1      ; r4 = x (u8)
+  106f82: mov  r9, r3      ; r9 = time
+  106f84: mov  r5, r2      ; r5 = y (u8)
+  ⇒ **签名确认为 (this, x:u8, y:u8, time)**
+```
+
+## ② 注入执行结果：符号全解析，但调用挂起
+```
+INJECT_INPUT begin
+TOUCH_INJECT resolved getInst=0xa9c07d1 press=0xa9c1f71 release=0xa9c1fd9  ✅ 全部解析成功
+TOUCH_INJECT ws=0x4e4c08, calling press(64,240,1000)                        ✅ 拿到实例
+  ← ★ **没有 "press returned"**
+
+⇒ **postMousePress(ws, 64, 240, 1000) 内部挂起或崩溃**
+```
+
+## ③ 而且坐标被截断了
+```
+我传的是 inject_touch(320, 240, 1000)
+但日志显示 press(64, 240, 1000)
+⇒ 320 & 0xFF = 64（u8 溢出）
+
+★ 这暴露了签名理解：x/y 是 **u8**，范围 0..255
+  ⇒ 而屏幕是 640x480 ⇒ **坐标系不是像素坐标，可能是"逻辑坐标"或"归一化"**
+  （例如 0..255 映射到 0..639 / 0..479）
+```
+
+## ④ 基线下降（需注意）
+```
+本次：行数=1103 [AS]=36 createLayer=6
+正常：行数≈1300 [AS]≈45 createLayer=6
+⇒ createLayer=6 保持，但行数下降 ⇒ 注入线程的 60 秒忙等拖慢了系统
+⇒ 与第 272 层"忙等饿死"同类，但程度较轻
+```
+
+## ⑤ 本层净收益
+```
+✅ **找到 WidgetSystem 的三个触摸公开入口（postMousePress/Release/Move）**
+✅ **确认签名 (this, x:u8, y:u8, time)**
+✅ **确认符号解析全部成功、单例可取**
+✅ **发现 postMousePress 内部挂起（这是新信息）**
+✅ **发现 x/y 是 u8，不是像素坐标**
+⚠️ 基线略降（1103/36/6）
+❌ 帧 = 0
+```
+
+## ⑥ 下一步
+```
+postMousePress 挂起的原因需要查：
+  1. 它内部可能等待某个锁/信号量（我们没提供）
+  2. 或 ws 指针不是真正的 WidgetSystem 实例
+     （sys_getInstance 可能返回别的对象）
+
+★ 验证 ws 是否有效：读它的 vtable 或已知字段
+★ 或改用 postMouseMove（签名不同，可能不需要额外状态）
+```
+
+## 方法论（第 273 条）★★★★★★★ 本会话最重要的方法论
+**"找到一个'应该是正确'的公开 API，不代表它能直接用——它可能有隐含的前置条件"：
+```
+我找到 postMousePress，签名清晰、符号可解析、实例可获取，
+一切看起来都对。但调用后挂起。
+
+⇒ 这说明：**公开 API 的"可用性"包含三层**：
+   ① 符号可解析（✅ 我们验证了）
+   ② 实例有效（✅ 我们拿到了 ws）
+   ③ **内部前置条件满足**（❌ 未知，可能缺锁/缺队列/缺状态）
+
+⇒ 判据：**调用未知 API 前，先反汇编它的前 20 条指令，
+   看它一开头就访问什么**（锁？队列？全局状态？）。
+   若它第一件事是加锁或等信号量，而我们没提供对端，就会挂起。
+   
+   本例：postMousePress 第 4 条指令就 `bl 0x10bf32`（可能是取内部对象），
+   第 8 条 `str r3, [r0, #16]`（写字段）—— 需要进一步查。
+```
