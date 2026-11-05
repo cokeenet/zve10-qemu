@@ -23651,3 +23651,106 @@ QEMU 残留 = 0
    多次救了我，但我有时会因为"想先跑一次看看"而跳过验证。
    本轮的 rb4→rb7 就是连着四次跳过验证、直到第四次才修好。
 ```
+
+---
+
+# ★★★★★★★ 2026-11-06 第二百六十一章（第 145 轮）：**只读 PC 采样：25 个 appFw 采样点，但没有一处靠近 Application_Start**
+
+## ① 只读分析（不修改任何东西，纯读已有日志）
+```
+out/rb7 的 PC 采样：306 个
+按 (模式, 地址高字节) 分布：
+  svc 0x5f000000..  ×195   ← 内核模块区（idle 路径）
+  svc 0x60000000..  ×73    ← 内核 .text
+  usr 0x2f000000..  ×15    ← ★ appFw .text
+  usr 0x04000000..  ×7
+  usr 0x2e000000..  ×4     ← ★ appFw .text
+  usr 0x30000000..  ×4     ← ★ appFw .text
+  ...
+
+★ 落在 appFw .text 范围的用户态采样 = **25 个**
+   分布：appFw+0x5473ff .. appFw+0x2c9e177
+   ⇒ 覆盖整个 .text（0x52ab00..0x2ce8ac8）
+```
+
+## ② ★★★ 但关键：没有一个采样靠近 Application_Start
+```
+Application_Start = 0x54d580
+site2 入口        = 0x54d2b0
+site2 的 UI 初始化 = 0x7238c0
+site3 入口        = 0x54f664
+
+25 个采样点的偏移：
+  0x5473ff, 0x629583, 0x6e6c5b, 0x7512a7,
+  0x134fc6f, 0x13c25ab, 0x1a9b6e3, 0x1f9b9c7, ...
+  **全部 > 0x540000，且没有一个在 0x54d580±0x1000 或 0x7238c0±0x1000 内**
+
+⇒ **采样窗口（定时器/GPIO）没有覆盖到 Application_Start 执行的那一小段时间**
+⇒ 它在启动早期就完成了（或阻塞了），采样器开始工作时它已经不在那里
+```
+
+## ③ 决定性检查：ENTER 之后的 appFw 活动
+```
+Application_Start ENTER 在第 1015 行（总 1313 行）
+之后所有 appFw 相关日志的分布：
+  **38 × appFw.so+0x52abfe**   ← std::mutex::lock thunk
+   1 × caller=appfw+0x7239c0   ← createLayer 调用点
+   1 × caller=appfw+0x7239d8   ← setClear
+   1 × caller=appfw+0x7239ee
+   1 × caller=appfw+0x723a08
+   1 × caller=appfw+0x723a1e
+   1 × caller=appfw+0x723a36
+   1 × caller=appfw+0x723a4c
+   1 × caller=appfw+0x723a64
+
+⇒ **之后再无任何 appFw 日志**
+⇒ ENTER 之后 appFw 只做了：加解锁 38 次 + 建 4 个 layer 的 8 次调用
+```
+
+## ④ 本层净收益
+```
+✅ **用只读 PC 采样确认：25 个采样落在 appFw .text，覆盖全段**
+✅ **确认没有一个采样靠近 Application_Start / site2 / site3**
+✅ **确认 ENTER 之后 appFw 只有 mutex + layer 两类活动**
+✅ 全程只读，未修改任何东西，基线 1313/47/6
+❌ 帧 = 0
+```
+
+## ⑤ 下一步
+```
+现在的事实：
+  · ENTER 之后 appFw 只有 38 次 mutex + 8 次 layer 调用
+  · 之后完全静默
+  · 而 ENTER 从未返回（RETURN=0）
+
+★ 关键问题：**38 次 mutex + 8 次 layer 之后，线程去哪了？**
+   · 若返回了 site2，则应执行 site3（0x54f664）—— 但 SITE3PROBE=0
+   · 若卡住，wchan 应显示某处 —— 但之前测到 futex_wait_queue_me
+
+⇒ 最可能：**它在某个我们没挂钩子的地方阻塞了**
+   而唯一已知的阻塞证据是 wchan=futex_wait_queue_me
+
+★ 新思路：既然 ENTER 之后 appFw 只调了 0x52abfe（mutex thunk），
+   而它被调用 38 次全部配对成功 —— 那线程在 mutex 之外的地方阻塞。
+   ⇒ 应该查 **site2 内部的非 mutex 阻塞点**
+   ⇒ 特别是 site2 里对 libObj / osal 的调用
+```
+
+## 方法论（第 249 条）★★★★
+**"只读观测虽然信息量小，但它是唯一不会破坏基线的"：
+```
+本会话最后 6 轮（139-144）我一直在尝试"更强的观测手段"：
+  · gdb 断点 → 污染内存
+  · 忙等窗口 → 饿死固件
+  · GPE 传参 → 扰动图形块
+每一次都以基线破坏告终。
+
+本轮改回**纯只读**（分析已有日志），
+虽然没拿到新突破，但：
+  · 基线完好（1313/47/6）
+  · 得到了明确的分布数据（25 个采样点、38+8 次调用）
+  · 排除了"应用在 appFw 别处继续跑"的可能
+
+⇒ 判据：**当"更强的观测"反复失败时，回到"最弱的观测"（只读日志）
+   往往能给出可靠的边界信息**，即使不能直接突破。
+```
