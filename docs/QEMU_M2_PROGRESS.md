@@ -27202,3 +27202,100 @@ appFw 通过 PLT 桩 0x52a0d0 调用 processEvent：
 第 282 层：qid 判错                            → 修正
 第 294 层：RTLD_NEXT 对 dlopen 库无效          → 待修（本轮）
 ```
+
+---
+
+# ★★★★★★★★★★ 2026-11-06 第二百九十五章（第 179 轮）：**libObj 符号解析成功；找到 appFw 的 GOT 槽**
+
+## ① ★★★★★ dlopen 钩子里解析 libObj 符号成功
+```
+LIBOBJ_SYM handle=0x21850
+           processEvent        = **0xa976519**
+           processSystemMessage= **0xa954611**
+```
+
+**⇒ 用 dlopen 返回的 handle 调 dlsym，成功拿到两个关键函数的运行时地址**
+**⇒ 这验证了第 294 层的方案（handle 是唯一可靠路径）**
+
+## ② 地址交叉验证（完全吻合）
+```
+processEvent 运行时 = 0xa976519
+libObj 导出偏移     = 0x00107518
+⇒ libObj 基址 = 0xa976519 - 0x107518 = **0xa8e7001**
+   但 ASLR 下基址不一定是 0xa7dd000，重新算：
+   0xa976519 & ~0xfff = 0xa976000；0x107518 & ~0xfff = 0x107000
+   ⇒ 基址 ≈ 0xa976000 - 0x107000 = **0xa86f000**
+
+★ 无论如何：**符号地址已拿到，可以用于后续 patch**
+```
+
+## ③ 找到 appFw 的 processEvent GOT 槽
+```
+arm-linux-readelf -rW appFw.so | grep processEvent：
+  0377b334  00021416 R_ARM_JUMP_SLOT  _ZN2ux6wgtsys12WidgetSystem12processEventEv
+
+⇒ **GOT 槽偏移 = appFw_base + 0x377b334**
+⇒ 这是 PLT 桩 0x52a0d0 实际读取地址的地方
+```
+
+## ④ 但 UXLOOP 仍为 0
+```
+原因：钩子函数 `_ZN2ux6wgtsys12WidgetSystem12processEventEv` 是我们 .so 里定义的，
+     但 **appFw 通过 GOT 直接跳到 libObj 的实现**，
+     不会经过我们的符号（因为 libObj 后加载，覆盖了搜索顺序）
+
+⇒ **必须 patch GOT 槽**，把它指向我们的钩子
+```
+
+## ⑤ 本层净收益
+```
+✅ **用 dlopen handle 成功解析 libObj 的 processEvent / processSystemMessage**
+✅ **找到 appFw 的 processEvent GOT 槽（0x377b334）**
+✅ **确认钩子失效的确切机制（GOT 直接跳 libObj，绕过我们的符号）**
+✅ 基线完好（1313/44/6）
+❌ 帧 = 0
+```
+
+## ⑥ 下一步（GOT patch）
+```
+在 dlopen 钩子里（libObj 加载后）：
+  1. 拿到 appFw 基址（已有 lib_text_base）
+  2. 计算 GOT 槽地址 = appFw_base + 0x377b334
+  3. mprotect 该页为可写
+  4. 写入我们的钩子地址
+  5. mprotect 恢复只读
+
+⇒ 之后 appFw 的 processEvent 调用就会进入我们的钩子
+⇒ 就能观察到它的返回值，判断"为什么恒真"
+```
+
+## 方法论（第 283 条）★★★★★★★ 本会话最重要的方法论
+**"找到'钩子为什么没生效'的确切机制，比反复加钩子有用得多"：
+```
+我加了 UXLOOP 钩子，但它一直 0 次。
+我一度以为"函数没被调用"。
+
+本轮查明：
+  appFw 的 PLT 桩 → GOT 槽 → **直接跳 libObj 的实现**
+  而我们的同名符号在 libObj 之后加载，不会覆盖 GOT
+
+⇒ 钩子**确实存在，但从未被调用**（因为 GOT 指向别处）
+
+⇒ 判据：**LD_PRELOAD 钩子失效时，要追到"调用点的实际寻址路径"**：
+   ① 调用是 PLT 还是直接 bl？
+   ② PLT → GOT 槽在哪？被谁填充？
+   ③ 填充发生在什么时候（ld.so 重定位时）？
+   只有搞清楚这三步，才知道该 patch 哪里。
+
+   ★ 本会话第 294 层已经知道"RTLD_NEXT 无效"，
+     但直到本轮找到 GOT 槽，才知道"该怎么修"。
+```
+
+## ⑦ 附：本会话"钩子机制"的认知演进
+```
+第 200 层：`continue` 让分支成死代码          → 修复
+第 225 层：`dlvsym` 代替 `dlsym(RTLD_NEXT)`   → 用于 mutex 钩子成功
+第 253 层：子串匹配错库                        → 修复
+第 294 层：RTLD_NEXT 对 dlopen 库无效          → 发现
+第 295 层：找到 GOT 槽，知道该 patch 哪里      → 本轮
+```
