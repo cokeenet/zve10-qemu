@@ -27431,3 +27431,100 @@ Application_Start
 第 296 层：patch 时验证发现槽仍是 PLT0 ⇒ **函数从未被调用**（本轮）
 ⇒ **最终答案不是"钩子生效了"，而是"钩子的验证失败告诉了我们真相"**
 ```
+
+---
+
+# ★★★★★★★★ 2026-11-06 第二百九十七章（第 181 轮）：**GOT 槽检测器本身失效 —— 对照组揭穿了它**
+
+## ① ★★★★★ 对照实验的设计（本会话方法论的一次成功应用）
+```
+我加了两个"已知被调用过"的对照槽：
+  CONTROL createLayer      —— 实测被调用 12 次
+  CONTROL osal_rcv_msg_tmo —— 实测被调用 96 次
+
+预期：这两个槽应该 RESOLVED
+```
+
+## ② 结果：对照组也是 UNRESOLVED
+```
+GOT_SLOT CONTROL createLayer (called 12x)       value=0x2e5569d0 UNRESOLVED(PLT0)
+GOT_SLOT CONTROL osal_rcv_msg_tmo (called 96x)  value=0x2e5569d0 UNRESOLVED(PLT0)
+GOT_SLOT GRM_fbrmRegisterTriggerFrameworkCb     value=0x2e5569d0 UNRESOLVED(PLT0)
+GOT_SLOT WidgetSystem::processEvent             value=0x2e5569d0 UNRESOLVED(PLT0)
+GOT_SLOT UXEngine::wgtsys                       value=0x2e5569d0 UNRESOLVED(PLT0)
+
+★ **五个槽全是同一个值 0x2e5569d0**
+  ⇒ 0x2e5569d0 - 0x2e02e000(ASSERTBASE) = **0x5289d0**（PLT0）
+```
+
+## ③ 结论：检测器失效，不是"函数没被调用"
+```
+若 createLayer（确定被调用 12 次）的槽也读作 UNRESOLVED，
+则说明**我读的地址不是那些符号的 GOT 槽**。
+
+⇒ 第 296 层的"processEvent 从未被调用"结论 **作废**。
+   （那也基于同一个错误的检测器）
+
+★ 可能原因：
+  · r_offset 在 appFw 里是**相对 .got 段的偏移**，不是 vaddr
+  · 或 .rel.plt 的 r_offset 需要额外的基址修正
+  · 或我读的 0x377acf8 落在 .got 段外（该段 0x377abc8..0x37a30a8）
+    —— 实际上在段内，但可能未初始化（.bss 式）
+```
+
+## ④ 本层净收益（重要的自我纠正）
+```
+✅ **用对照组揭穿了 GOT 槽检测器自身失效**
+✅ **作废第 296 层"processEvent 从未被调用"的结论**
+✅ **确认问题在"读哪个地址"，不在"固件行为"**
+✅ 基线完好（1336/46/6）
+❌ 帧 = 0
+```
+
+## ⑤ 下一步
+```
+需要弄清 appFw 的 .rel.plt 的 r_offset 语义：
+  · 若 r_offset 是 vaddr    ⇒ 运行时地址 = base + r_offset   （我用的是这个）
+  · 若 r_offset 是段内偏移  ⇒ 运行时地址 = got_vaddr + r_offset
+  · 用 readelf 的 .got 段范围验证：
+      .got vaddr = 0x377abc8, size = 0x684e0 ⇒ 0x377abc8..0x37e30a8
+      r_offset = 0x377acf8 ⇒ 在范围内 ✅
+  ⇒ **应该是对的**
+
+★ 那为什么读出 PLT0？
+  ⇒ 可能：**读到的那一刻，槽还没被重定位**（patch 时机在 my_start，
+     而 my_start 在 real_start 之前，此时 PLT 可能还是 lazy 未触发）
+  ⇒ 但我们读到的是**运行 170 秒后**的状态……
+
+★ 更可能：**mprotect/读权限问题导致读到了别的页**，
+  或 /proc/self/maps 的 base 与 dladdr 的 base 不一致。
+```
+
+## 方法论（第 285 条）★★★★★★★★ 本会话最重要的方法论
+**"任何检测器都必须先用'已知答案'标定——对照组不是可选项"：
+```
+第 296 层我用 GOT 槽状态得出"processEvent 从未被调用"的重大结论。
+本轮加对照组发现：**createLayer（确定调用 12 次）的槽也显示 UNRESOLVED**
+⇒ 检测器本身就是错的 ⇒ 那个结论作废。
+
+⇒ 判据（硬规则）：
+   **任何新的检测手段，在用于得出"零/缺失"类结论前，
+     必须先用一个"已知非零"的样本标定它。**
+   · 检测"函数是否被调用" → 用已知调用过的函数做对照
+   · 检测"帧是否为 0"       → 用已知有内容的缓冲区做对照
+   · 检测"某输出是否为空"   → 用已知会输出的路径做对照
+
+★ 本会话此前已有同类教训（第 189/190 层的 stderr 被吞掉），
+  但那次是"管道"，这次是"寻址"。
+  **共同点：检测器失效时会给出"全零"这种看似确定的答案。**
+```
+
+## ⑥ 附：本会话"检测器失效"清单
+```
+1. stderr 被 systemd 吞掉        → 12 轮误判"零访问"
+2. `continue` 让 wchan 成死代码  → 8 轮缺关键字段
+3. `shown<12` 截断               → 13 轮误判"线程消失"
+4. 子串匹配错库                  → 基址全错
+5. RTLD_NEXT 对 dlopen 库无效    → 钩子静默失效
+6. **GOT 槽地址读错（本轮）**     → "从未调用"的错误结论
+```
