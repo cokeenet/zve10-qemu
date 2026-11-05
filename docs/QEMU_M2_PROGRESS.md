@@ -14081,3 +14081,79 @@ Application_Start 到底执行到第几个调用（尤其是有没有走到帧�
    这条与第 132 条（阳性对照）同源，但这次是把它用在 GOT 这类
    "值本身有语义"的场景上，结论同样是：先验证仪器，再相信读数。
 ```
+
+---
+
+# ★★★★★★★ 2026-11-05 第一百五十三层（第 32 轮）：**UDF 调用点探针：补丁写入成功，但信号未被处理**
+
+## ① 实现了最安全的调用点插桩（不再猜 Thumb-2 分支编码）
+```c
+/* 把 Application_Start 的 6 个调用点各 4 字节改写成两条 16 位 UDF
+   （0xde01 —— 固定字面量，不需要任何分支编码器，这是之前翻车的地方）
+   SIGILL 处理函数记一笔、恢复原指令、把 arm_pc 指回该地址、返回。 */
+static const unsigned char udf4[4] = { 0x01, 0xde, 0x01, 0xde };
+```
+**实测（out/ab）—— 补丁确实打上了，且原字节与磁盘文件完全一致：**
+```
+ASSITE arming at entry=0x2e3f5580
+ASSITE mprotect ret=0 errno=0 range=0x2e3f5000..0x2e3f6000
+ASSITE patched idx=0 addr=0x2e3f5590 orig=d8f304e8 now=01de01de
+ASSITE patched idx=1 addr=0x2e3f559a orig=fff7dbfd now=01de01de
+ASSITE patched idx=2 addr=0x2e3f55a6 orig=fff783fe now=01de01de
+ASSITE patched idx=3 addr=0x2e3f55ac orig=02f05af8 now=01de01de   ← 帧循环
+ASSITE patched idx=4 addr=0x2e3f55b0 orig=d6f368eb now=01de01de
+ASSITE patched idx=5 addr=0x2e3f55b6 orig=fff7bfff now=01de01de
+ASSITE about to call real_start
+（此后再无任何输出，也不返回）
+```
+**原字节核对（与 objdump 一致，说明偏移全对）：**
+```
+0x54d590: d8 f3 04 e8   = blx 0x92559c     ✅
+0x54d59a: ff f7 db fd   = bl  0x54d154     ✅
+0x54d5a6: ff f7 83 fe   = bl  0x54d2b0     ✅
+0x54d5ac: 02 f0 5a f8   = bl  0x54f664     ✅ ← 帧循环
+0x54d5b0: d6 f3 68 eb   = blx 0x923c84     ✅
+0x54d5b6: ff f7 bf ff   = bl  0x54d538     ✅
+```
+
+## ② 失败点已定位（诚实记录）
+```
+`about to call real_start` 之后就完全没有输出（基线在这里之后还有 200-600 行）。
+⇒ 进入 real_start 后第一条 UDF 就触发，但 **SIGILL 处理函数没有让进程继续**。
+⇒ 已排除：mprotect 失败、补丁没写入、偏移算错、logline 非异步信号安全
+   （HIT 日志已改成裸 write()，仍然没有输出）
+⇒ 未排除：ucontext 的 arm_cpsr（Thumb 位）没有设对，导致返回后再次 UDF；
+   或者 QEMU 的 -M zve10 模型在用户态 UDF 的 ucontext 回填上不完整。
+```
+
+## ③ 为什么不再继续调这个探针
+```
+这已经是本项目**第 4 次**因为"在活的固件进程里做底层代码变换"而卡住：
+  1. g_svc_backup 未定义 ⇒ 整个 .so 静默不加载（浪费 3 轮）
+  2. IMDB 三件套钩子签名猜错 ⇒ 启动从 7800 行掉到 424 行
+  3. Thumb/ARM 模式错 ⇒ prefetch abort（浪费 3 轮）
+  4. 本次 UDF + SIGILL 恢复 ⇒ 进程静默
+⇒ 每次的代价都是 1-3 轮，而收益是"多知道一条信息"。
+⇒ 更划算的做法已经写在 docs/M2_FEASIBILITY.md：先确认 libgpe.so 在真机上存不存在。
+```
+
+## ④ 本层净收益
+```
+✅ **六条调用点的原字节全部核对无误**（d8f304e8 / 02f05af8 …），
+   这本身就是有价值的静态确认：Application_Start 确实是那六连调，无分支。
+✅ 证明 mprotect 在 guest 里可用（ret=0），代码页可以改
+✅ 证明 UDF 编码 0xde01 被正确写入
+❌ 未能取得"哪一步执行了"的运行时证据
+❌ 帧 = 0
+```
+
+## 方法论（第 142 条）★★★★
+**"在活进程里改代码的单次失败代价远高于静态分析"：
+```
+静态分析（objdump/readelf/扫 BL 指令）几乎零成本、可重复、不会破坏进程。
+在活进程里改代码：一次失败就是一整轮（3 分钟启动 + 排查）。
+本次之后，凡是可以静态回答的问题，一律不再用运行时插桩去问。
+⇒ 判据：先用静态手段把问题空间压到最小，
+   只有当"运行时值"本身是唯一答案时，才动代码插桩，
+   并且插桩必须**先在一个可丢弃的最小程序里验证**（不是在固件进程里首验）。
+```
