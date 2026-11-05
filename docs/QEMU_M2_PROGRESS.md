@@ -21953,3 +21953,88 @@ qid 注册（0x558a00 / 0x558cbc）、FBRM 注册都在 0x54efa6 之后，
    **必须确认该观测点位于"事件发生点"之后的第一时间**，
    而不是在函数的中后段。
    本例应把观测点放在 0x54f674（site3 入口）而不是 0x558a00（后半段）。
+
+---
+
+# ★★★★★★★ 2026-11-06 第二百四十三章（第 127 轮）：**修复基址缓存 bug；确认 createLayer n=1,2 属于 im.elf 而非 appFw**
+
+## ① 修复的 bug：lib_text_base 的单槽缓存
+```c
+/* 旧：只有一个缓存槽 */
+static char cached_name[64];
+static void *cached_base;
+if (cached_name[0] && strncmp(cached_name, soname, ...) == 0) return cached_base;
+
+/* 新：小表（8 槽，按 name 索引） */
+static struct { char name[32]; void *base; } cache[8];
+static int cache_n;
+for (int ci = 0; ci < cache_n; ci++)
+    if (strncmp(cache[ci].name, soname, ...) == 0) return cache[ci].base;
+```
+**原因：UI 代码交替查询 libObj.so 和 appFw.so，单槽缓存会互相驱逐。**
+
+## ② 但真正的原因不是缓存 —— 是调用时机
+```
+CREATELAYER n=1 ret=5175232 (NULL=0) caller_appfw_off=**0xdcea496e**
+CREATELAYER n=2 ret=5066872 (NULL=0) caller_appfw_off=**0xdcea4978**
+CREATELAYER n=3 ret=5086888 (NULL=0) caller_appfw_off=0x7239c0   ← 正确
+CREATELAYER n=4..6 ...                   0x7239ee / 0x723a1e / 0x723a4c
+
+行号对照：
+  **1002: CREATELAYER n=1**                  ← 在 Application_Start 之前
+  **1014: ARGTRACE >>> Application_Start ENTER**
+  1054: CREATELAYER n=3                      ← site2 的 4 个 layer
+
+⇒ **n=1, n=2 发生在 Application_Start 之前**
+⇒ 属于 **im.elf 自己**的 layer 创建（那时 appFw.so 还没加载完，
+   ra 落在 im.elf，减去 appFw 基址得到无意义的 0xdcea496e）
+⇒ **site2 的 4 个 layer 是 n=3..6，全部成功**
+```
+
+## ③ 本层净收益
+```
+✅ **修复 lib_text_base 单槽缓存 bug（改为 8 槽小表）**
+✅ **查明 n=1,n=2 是 im.elf 自己的 layer，不是 site2 的**
+✅ **确认 site2 的 4 个 layer（n=3..6）偏移全部正确、全部成功**
+✅ 基线良好（1396/48/6，比之前更完整）
+❌ 帧 = 0
+```
+
+## ④ 下一步（回到核心问题）
+```
+当前确定的因果链：
+  im.elf 建 2 个 layer（n=1,2）
+  → Application_Start ENTER（tid=195）
+  → site2 建 4 个 layer（n=3..6）全部成功
+  → 两次加锁（n=2, n=3 in ENTRY_LOCK）
+  → site3 至少进入了（因为 0x54ef74 第一条就是虚函数 0x54ef8c）
+
+★ 核心待答：**0x54ef8c 的 blx r3 跳到了哪里？**
+   frame[16] = frame+2204（site1 构造）
+   *(frame+2204) = vtable 指针
+   vtable[0] = 第一个虚函数
+
+⇒ 在探针里零副作用地读这三级指针
+```
+
+## 方法论（第 231 条）★★★★
+**"先确认'异常值'的上下文，再改代码"：
+```
+我看到 off=0xdcea496e 就断定"缓存 bug"，改成了 8 槽表。
+改完发现异常值依然存在 —— 因为真正原因是**调用发生在 appFw 加载之前**，
+ra 本来就不属于 appFw，减去 appFw 基址当然得到垃圾。
+
+⇒ 判据：看到异常值时，**先确认"这次调用的上下文是否合法"**
+   （模块是否已加载、对象是否已构造），
+   再怀疑"计算逻辑有 bug"。
+   本例中"减去 appFw 基址"这个操作本身在当时就不成立。
+```
+
+## ⑤ 附：本轮基线变化说明
+```
+本轮：行数=1396 [AS]=48 createLayer=6
+之前：行数=1109 [AS]=37 createLayer=6
+
+⇒ 行数/[AS] 上升是因为缓存修复后更多日志成功输出（不是污染）
+⇒ createLayer=6 不变 ⇒ 关键指标稳定
+```
