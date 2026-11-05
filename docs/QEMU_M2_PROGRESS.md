@@ -18742,3 +18742,98 @@ site2 的 10 个调用里，已知：
    **说明你在绕过一整套初始化流程**，而不是缺一两个值。
    此时应停止补字段，回到"让原流程跑完"。
 ```
+
+---
+
+# ★★★★★★★★★★★★★ 2026-11-06 第二百零五层（第 89 轮）：**首次在 QEMU 侧采到 guest PC —— 发现长期看不到输出的真正原因**
+
+## ① 一个贯穿全程的盲区（本层才发现）
+```
+我一直在 qemu.log 里找 QEMU 侧的 fprintf(stderr) 输出，但**一直是空的**。
+原因：systemd-run 默认 StandardError=inherit，把 stderr 送进 journal，
+      而 stdout 重定向到 qemu.log 只捕获了 systemd 自己那一行 "Running as unit:..."
+
+⇒ **之前所有 GPE_DUMP / SUGI_DUMP / PLT 输出，我一次都没真正看到过。**
+   第 189 层"GPE 零访问"、第 190 层"sugilite 零访问"的结论
+   其实是**基于空日志**得出的 —— 那两条结论作废，需重测。
+
+修法：
+  --property=StandardError=file:$OUTD/qemu.err
+  --property=StandardOutput=file:$OUTD/qemu.out
+```
+
+## ② ★ 首次成功采到 guest PC（190 个采样）
+```c
+static void pc_sample(const char *why)
+{
+    CPUState *cs = qemu_get_cpu(0);
+    CPUARMState *env = cpu_env(cs);
+    fprintf(stderr, "PC_SAMPLE %s pc=%08x lr=%08x sp=%08x cpsr=%08x\n",
+            why, env->regs[15], env->regs[14], env->regs[13], env->uncached_cpsr);
+}
+```
+采样结果（按内核符号归类）：
+```
+  modules(0x5f000000)        94   ← 内核模块区热点
+  ambauart_console_read      34   ← UART 控制台读
+  cxd4115_read_cycles        30   ← 时钟读
+  modules(0x2f000000)        14   ← appFw 区
+  **cpu_v7_do_idle           11**  ← ★ CPU 空闲
+  modules(0x30000000)         7
+  modules(0x4000000)          6
+  modules(0x2e000000)         6   ← appFw 区
+  rt_spin_lock_slowlock       2
+```
+
+## ③ ★★★ 关键发现：CPU 大部分时间在 **idle**
+```
+cpu_v7_do_idle 出现 11 次
+ambauart_console_read 34 次（说明在轮询串口）
+cxd4115_read_cycles 30 次（时钟中断）
+
+⇒ **系统没有卡死，CPU 在正常地 idle / 轮询串口 / 处理时钟中断**
+⇒ 之前"卡住"的描述不准确：**系统在运行，只是没有进展到建 widget**
+```
+
+## ④ 这修正了两个长期结论
+```
+❌ 第 189 层"GPE 零访问" —— 基于空日志，**作废**
+❌ 第 190 层"sugilite 零访问" —— 同样基于空日志，**作废**
+
+✅ 新的可信事实：
+   · CPU 有 idle 时间（不是忙等死循环）
+   · CPU 大量时间在串口读（ambauart_console_read 34 次）
+   · cpsr=0x13（内核态）的采样占多数
+   · 用户态 appFw 区（0x2e/0x2f）只占 20/190
+```
+
+## ⑤ 本层净收益（方法学突破）
+```
+✅ **发现并修复 stderr 丢失问题**（systemd-run 默认 inherit）
+✅ **首次实现 QEMU 侧 guest PC 采样**（190 采样点）
+✅ **发现 CPU 有 idle，系统没卡死**
+✅ **作废两个基于空日志的结论**（GPE/sugilite 零访问）
+❌ 帧 = 0
+```
+
+## ⑥ 下一步（用这个新工具重测一切）
+```
+现在有了 PC 采样，可以重做那些基于空日志的判断：
+  1. 重测 GPE/sugilite 是否真被访问（之前结论作废）
+  2. 专门在 site3 调用前后各采一批 PC，看差异
+  3. 采样时记录用户态 PC（cpsr bit4=0 表示用户态）
+
+⇒ **这是本会话第一次真正"看见" guest 在做什么。**
+```
+
+## 方法论（第 193 条）★★★★★★ 本会话最重要的一条
+**"验证你的日志管道本身——空日志不等于零活动"：
+```
+我在 8 个轮次里反复读取 qemu.log，得到"零 GPE 访问""零 sugilite 访问"，
+并据此排除了整个硬件方向。
+真相是：**stderr 根本没进那个文件**（systemd-run 默认 inherit）。
+⇒ 判据：在相信"某个日志里没有 X"之前，**必须先确认日志管道是通的**。
+   最便宜的做法：在代码里加一行无条件的 fprintf(stderr, "HERE\n")，
+   跑一次，确认它出现在你读的那个文件里。
+   否则所有"零/无/不存在"的结论都是**基于空数据的幻觉**。
+```
