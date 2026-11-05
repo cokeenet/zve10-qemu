@@ -23460,3 +23460,100 @@ BP_WINDOW closed, calling real_start
    报告和响应之间要有足够的时间窗。
    本轮窗口只有 8 秒，而我的轮询发现机制太慢（270 秒才看到）。
    ⇒ 窗口和时间同步是这类方案的成败关键。
+
+---
+
+# ★★★★★★★ 2026-11-06 第二百五十九章（第 143 轮）：**90 秒窗口成功；但 gdb batch 模式无法在运行中的目标上 continue**
+
+## ① 窗口延长生效
+```
+BP_WINDOW 在启动后约 **40 秒**出现（不是之前的 270 秒，
+因为这次没加 -S，启动更快）
+  BP_WINDOW real_start=0x2e36f581 site2ret=0x2e36f35f site3=0x2e371665
+基线完好：行数=1297 [AS]=47 createLayer=6
+```
+
+## ② auto-gdb 脚本工作正常
+```
+AUTOBP got real_start=0x2e36f581 site2ret=0x2e36f35f site3=0x2e371665
+AUTOBP setting breakpoints 0x2e36f2b1 0x2e36f35f 0x2e371665
+Breakpoint 1 at 0x2e36f2b1   ✅
+Breakpoint 2 at 0x2e36f35f   ✅
+Breakpoint 3 at 0x2e371665   ✅
+⇒ **断点全部设置成功**
+```
+
+## ③ ★★★ 但 continue 被拒绝
+```
+Cannot execute this command while the target is running.
+Use the "interrupt" command to stop the target and then try again.
+
+⇒ **QEMU gdbstub 在非 -S 模式下，gdb 连上后目标仍在运行**
+⇒ batch 模式的 `continue` 命令被拒绝
+⇒ 断点虽然设了，但从未命中（因为 gdb 没有真正接管执行）
+```
+
+## ④ 本层净收益
+```
+✅ **确认 90 秒窗口足够（BP_WINDOW 在 40 秒出现）**
+✅ **auto-gdb 脚本能自动发现地址并设置 3 个断点**
+✅ **确认断点设置语法正确（3 个都成功）**
+✅ 基线完好（1297/47/6）
+❌ continue 被拒绝，断点未命中
+❌ 帧 = 0
+```
+
+## ⑤ 下一步（关键：改用 -S 模式）
+```
+问题：非 -S 模式下 gdb 无法接管运行中的目标
+
+方案：
+  1. QEMU 用 **-S** 启动（立即暂停）
+  2. gdb 在 guest 启动前就连上，`continue` 让 guest 跑
+  3. guest 启动约 40 秒后进入 BP_WINDOW
+  4. auto-gdb 在同一时刻从**另一个 gdb 连接**下断点？
+     ⇒ 不行，QEMU gdbstub 只支持一个连接
+
+★ 正确方案：**一个 gdb 连接，全程挂着**
+   · 先连上（-S 模式，目标暂停）
+   · `break` 三个点（但地址未知，基址还没打印！）
+
+⇒ **矛盾：断点需要地址，地址需要 guest 运行**
+
+★★ 突破口：**断点设在 my_start 里 BP_WINDOW 之后的第一条指令**
+   —— 那条指令的地址是已知的（在 argtrace.so 里，不是 appFw）
+   但 argtrace.so 的基址也随机……
+
+⇒ **真正可行的方案：用 QEMU 的 `-d` 或者 `singlestep` 太慢**
+
+★ 最实际：**让 BP_WINDOW 期间 guest 暂停自己**
+   在窗口内调用一个"等待 gdb 附加"的动作，例如：
+   · 读 /proc/self/maps 之外的、会触发 gdb 的事件
+   · 或者：窗口内一直轮询一个内存标志，gdb 写该标志后继续
+   ⇒ 但 gdb 写内存也需要先接管目标
+
+⇒ **最终方案：QEMU -S 启动，gdb 连上后先 continue，
+   然后 gdb 一直在后台（不退出），auto-gdb 用 gdb 的 `interrupt`
+   在窗口期打断，此时才能下断点。**
+   gdb 必须**常驻**而不是 batch 模式一次性执行。
+```
+
+## 方法论（第 247 条）★★★★★
+**"工具的能力边界要先确认，否则会在错误的假设上反复尝试"：
+```
+我连续两轮假设"gdb batch 脚本可以给运行中的 QEMU 下断点并继续"。
+实际情况：QEMU gdbstub 在非 -S 模式下，gdb 连上不会暂停目标，
+batch 模式的 continue 直接被拒绝。
+
+⇒ 判据：**使用外部调试器前，先用最小实验确认它的接管时机**：
+   · 非 -S 启动：gdb 连上时目标在跑 → 必须 interrupt 才能操作
+   · -S 启动：gdb 连上时目标暂停 → 可以直接下断点再 continue
+   这两种模式的行为完全不同，不能混用假设。
+```
+
+## ⑥ 附：本轮未污染基线
+```
+1297 行 / [AS]=47 / createLayer=6
+⇒ 90 秒窗口没有破坏固件（它在窗口后正常继续）
+⇒ 窗口方案本身是安全的
+```
