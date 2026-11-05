@@ -20679,3 +20679,83 @@ Application_Start (tid=195, comm=AppFw)
    a7c2 找的是野指针（mutex<4096），我们找的是死锁（合法地址但不返回）。
    同一个钩子框架，换一个过滤条件，就能解决完全不同的问题。
    照抄结构，不照抄判据。
+
+---
+
+# ★★★★★★★★★ 2026-11-06 第二百二十七层（第 111 轮）：**锁是空闲的 ⇒ 卡点不在 lock() 里**
+
+## ① 复现结果一致
+```
+ENTRY_LOCK   n=1 mutex=0x36681080  caller=appFw+0x52abfe
+ENTRY_UNLOCK n=1 mutex=0x36681080
+ENTRY_LOCK   n=2 mutex=0x36681080  caller=appFw+0x52abfe
+ENTRY_UNLOCK n=2 mutex=0x36681080
+ENTRY_LOCK   n=3 mutex=0x35d68c08  caller=appFw+0x52abfe   ← 无配对 UNLOCK
+```
+（地址每次不同，是 ASLR/堆分配差异，但模式完全一致：前 2 次配对，第 3 次不配对）
+
+## ② ★★★ 用 gdb 读第 3 个 mutex 的结构
+```
+mutex @ 0x35d68c08:
+  __lock   = **0**     ← **空闲！**
+  __count  = 0
+  __owner  = 0         ← kind=0（PTHREAD_MUTEX_TIMED_NP）不追踪 owner
+  __kind   = 0
+  __nusers = 1
+```
+
+## ③ ★★★★ 关键矛盾与结论
+```
+若 Application_Start 卡在 lock(0x35d68c08) 里：
+  ⇒ 锁应处于 __lock=1（被持有）或至少 __nusers 增加
+  ⇒ 但实测 __lock=0（空闲）
+
+⇒ **那次 lock 根本没有阻塞** —— 它成功返回了！
+⇒ **卡点在 lock() 返回之后**
+```
+
+## ④ 修正上一层的结论
+```
+第 226 层我说："卡在第 3 次 std::mutex::lock(0x359fbc08)"
+★ 错了：lock 成功返回，卡在它**之后**。
+
+真正的顺序应该是：
+  lock(0x35d68c08) 成功
+  → 执行 lock 保护区内的工作
+  → **在保护区内卡住**（没走到 unlock）
+  ⇒ 所以 UNLOCK 只有 2 次
+```
+
+## ⑤ 本层净收益
+```
+✅ 复现了 LOCK=3 / UNLOCK=2 的稳定模式
+✅ **读出 mutex 结构：__lock=0（空闲）、__kind=0（不追踪 owner）**
+✅ **纠正第 226 层结论：卡点不在 lock() 里，在 lock 之后**
+✅ 明确下一层方向：找 lock 保护区内做了什么
+❌ 帧 = 0
+```
+
+## ⑥ 下一步
+```
+需要知道 lock 之后执行了什么。
+候选：
+  · caller 是 0x52abfe（std::mutex::lock 的内联实现）
+  · 返回地址的**上一层**才是真正的业务调用者
+  ⇒ 需要打印 `__builtin_return_address(1)`（第 2 层返回地址）
+
+★ 实现：在 ENTRY_LOCK 里同时打印 RA(0) 和 RA(1)，
+   再对比模块+偏移，就能找到是 appFw 的哪个函数在调用 std::mutex::lock
+```
+
+## 方法论（第 215 条）★★★★★
+**"'对象处于什么状态'比'调用了什么'更能定位卡点"：
+```
+第 226 层我从"LOCK=3 UNLOCK=2"推断"卡在 lock 里"。
+本层读 mutex 结构发现 __lock=0 ⇒ 锁是空闲的 ⇒ 推断错误。
+
+若我第 226 层就顺手读一下 mutex 状态，一步就能知道
+"lock 成功了，卡在后头"，而不是等到下一轮才纠正。
+
+⇒ 判据：判断"是否卡在某次调用里"时，
+   **先看被操作对象的状态**（锁是否被持有、队里是否有元素、标志位是多少），
+   再结合调用的配对情况推断。状态比调用序列更直接。
