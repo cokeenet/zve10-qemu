@@ -298,3 +298,73 @@ ZVE10 的 libIMDB 清单里**有** appFw.so、gui.so、libgpe.so、libgrm.so（�
    A. 把这个树做成可在真机 /usr 上部署的镜像（用户真正的目标）
    B. 继续在 QEMU 里排查 site2 的阻塞（若解决，就能在 QEMU 里看到新菜单）
 ```
+
+---
+
+## 九、★ 两代启动架构的根本差异（2026-11-05 第 69 轮）
+
+### 这是本次移植最关键的结构性发现
+
+```
+ZVE10 一代：
+  im.elf → libIMDB 清单 → **libObj.so** 导出 Application_System_Init(144B)
+                            libObj.so = 20.3 MB（含全部 UI）
+  ⇒ 应用入口在 libObj 里
+
+ZV-1M2：
+  im.elf → libIMDB 清单 → **appFwBoot.so** 导出 Application_System_Init(284B)
+                            appFwBoot.so = 8,312 B
+                            libObj.so = 3.9 MB（**纯引擎，无应用入口**）
+  ⇒ 应用入口在 appFwBoot 里，它再 dlopen("appFw.so") + dlsym("Application_Start")
+```
+
+### 两代 libObj.so **不是同一个东西**
+
+| | ZVE10 | ZV1M2 |
+|---|---|---|
+| 大小 | **21,305,528 B (20.3 MB)** | **3,931,624 B (3.9 MB)** |
+| md5 | `12cf982d…` | `738a2331…` |
+| `Application_System_Init` | ✅ 导出（144 B） | ❌ **没有** |
+| `uxengine_init` | ✅ 导出（6 B） | ✅ 导出（6 B） |
+| `uxengine_init2` | ❌ **没有** | ✅ 导出（216 B） |
+| 定位 | 引擎 + 全部 UI | **纯引擎** |
+
+### `appFwBoot.so` 的完整导出（8,312 B）
+```
+Application_System_Init   284 B   ← 应用入口
+Main                      120 B   ← 线程体
+initializeArena           332 B
++ stella::BitArray<u32/u16> 的各种弱符号（内联展开）
+
+导入的 osal 符号：
+  osal_valloc_msg_wait / osal_snd_sync_msg / osal_free_msg
+  osal_create_waitable_thread / osal_set_cpu
+字符串：
+  "appFwBoot.so" / "appFw.so" / "Application_Start"
+```
+
+### ★ 这意味着移植**必须成组替换**
+```
+❌ 不能只换 appFw.so：
+   ZVE10 的 libObj.so 里没有 uxengine_init2，
+   而 appFwBoot.so 的 Main 会 blx uxengine_init2 ⇒ 找不到符号 ⇒ 加载失败
+
+✅ 必须同时换：
+   libObj.so      (ZVE10 20.3MB → ZV1M2 3.9MB)
+   appFwBoot.so   (新增)
+   appFw.so       (新增 64MB)
+   libIMDB.so     (清单入口改 appFwBoot.so)
+   + appFw.so 的 15 个 NEEDED（14 个 ZVE10 已有，1 个 AdjChkConfig.so 需带）
+```
+
+### 对移植脚本的修正
+
+**当前脚本（`scripts/port_m2menu.sh`）漏了 `libObj.so`** —— 这是致命遗漏。
+必须加入第 3 步：用 ZV-1M2 的 `libObj.so` 覆盖 ZVE10 的。
+
+但注意：`libObj.so` 从 20.3 MB 缩到 3.9 MB，**意味着 ZVE10 一代的原生 UI 类
+（CmnView*/LG_master_*/ACT_Icon* 等，共 21 MB）会全部消失**。
+那些类在 `viewUnified*.so` 里也有一部分，但 `libObj.so` 自己那 20 MB 里是什么需要确认。
+
+⇒ **下一步必须先确认：ZVE10 的 libObj.so 那 20.3 MB 里到底装了什么。**
+   如果它也含 UI 类，那换掉会丢掉大量原生功能。
