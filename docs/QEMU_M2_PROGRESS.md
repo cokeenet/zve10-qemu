@@ -24092,3 +24092,104 @@ libra::Variant              变体类型
 uxengine_init / init2 / app_fw_init   引擎入口
 GRM_fbrm*                   帧缓冲资源管理
 ```
+
+---
+
+# ★★★★★★★★★★ 2026-11-06 第二百六十五章（第 149 轮）：**发现一个贯穿全会话的基址 bug：libObj 的基址一直算错**
+
+## ① 关键矛盾
+```
+第 148 轮：把 PC 采样符号化，推出 libObj 基址 = **0x04000000**
+          （5 个采样点全部落在 libObj .text 内）
+
+但 GE_PROBE 日志一直显示：**base=0xa70f000**
+          （而且 0xa70f000 + 0x357490 = 0xaa66490，自洽）
+```
+
+## ② ★★★★★ 根因：`lib_text_base` 用的是**子串匹配**
+```c
+if (!strstr(line, soname)) continue;   /* ← 旧代码 */
+```
+```
+"libObj.so" 是其他库名的前缀！
+（例如 libObjDB.so / libObjXxx.so 之类）
+⇒ strstr 先匹配到了名字更长的那个库
+⇒ **本会话中所有基于 libObj 基址的计算全部用错了基址**
+```
+
+## ③ 影响范围（严重）
+```
+所有用到 lib_text_base("libObj.so") 的探针都受影响：
+  · GE_PROBE（读 GraphicsEngine 单例指针 0x357490）
+  · force_draw_once（强制调用 drawFramebuffer）
+  · 所有 libObj 内部地址的换算
+
+★ 这意味着：
+   **第 148 轮之前所有"libObj 相关"的结论都需要重新审视。**
+```
+
+## ④ 尝试修复：改成精确 basename 比较
+```c
+const char *slash2 = strrchr(line, '/');
+if (!slash2) continue;
+if (strcmp(slash2 + 1, soname) != 0) continue;
+```
+**实测结果：`GE_PROBE no libobj base`**
+```
+⇒ 精确匹配找不到 "libObj.so"
+⇒ 说明 /proc/self/maps 里的实际字符串不是恰好 "libObj.so"
+（可能带版本后缀、或是软链接路径、或有空格等）
+```
+
+## ⑤ 本层净收益（重要的 bug 发现）
+```
+✅ **发现 lib_text_base 的子串匹配 bug**
+✅ **确认本会话中 libObj 的基址一直算错（0xa70f000 vs 真实的 0x04000000）**
+✅ 尝试精确匹配，发现 maps 里的实际名字不是恰好 "libObj.so"
+✅ 基线完好（1260/46/6）
+❌ 尚未拿到正确的 libObj 基址
+❌ 帧 = 0
+```
+
+## ⑥ 下一步
+```
+需要先弄清 /proc/self/maps 里 libObj 的实际字符串。
+方法：临时打印 maps 里所有含 "libObj" 的行。
+
+然后据此设计正确的匹配规则（可能是带版本号，或需要 ends-with 判断）。
+```
+
+## 方法论（第 253 条）★★★★★★★ 本会话最重要的方法论
+**"'能用'的启发式匹配会静默给出错误答案——子串匹配是最危险的一类"：
+```
+`strstr(line, "libObj.so")` 看起来完全合理：
+  找包含 "libObj.so" 的 maps 行。
+
+但它会匹配到 `libObjDB.so`、`libObjExtra.so` 等**所有以它为前缀的库**，
+而且**静默成功**（返回了一个看似合法的基址 0xa70f000）。
+
+本会话中：
+  · 这个 bug 存在了 149 轮
+  · 期间所有 libObj 基址计算都是错的
+  · 没有任何断言/日志提示"匹配到多个候选"或"名字不完全匹配"
+
+⇒ 判据（硬规则）：
+   **路径/名字匹配必须精确，或至少在匹配到多个时报警。**
+   `strstr` / `startswith` / `indexOf` 这类"包含"匹配，
+   在"前缀相同"的场景下会给出错误结果而不报错。
+   正确做法：
+     ① 精确比较 basename
+     ② 若业务需要宽松匹配，必须打印**所有**匹配到的候选，
+        让人看到"匹配了几个"
+   本会话前面另一个类似 bug：第 243 层"单槽缓存"也是静默错误。
+```
+
+## ⑦ 附：这个 bug 可能的连锁影响
+```
+如果 GE_PROBE 一直读的是错误地址 0xaa66490，
+那它报的 value=0x0aad7044 也不是真正的 GraphicsEngine 单例。
+
+⇒ "GraphicsEngine 单例存在"这个结论**不成立**（基于错误基址）。
+⇒ 而第 148 轮"libObj 在活跃执行"的结论**仍然成立**
+   （那是基于 PC 采样点直接换算，不经过 lib_text_base）
+```
