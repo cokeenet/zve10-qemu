@@ -16237,3 +16237,96 @@ site3 未执行
    或者从目标反向追（本例：从 0x723aac 反查调用者，一步就找到 0x54efa6）。
    反向追通常比正向 N 跳更省事。
 ```
+
+---
+
+# ★★★★★★★★★ 2026-11-05 第一百七十九层（第 58 轮）：**SITE3PROBE=0 实测确认 site3 未执行；因果链完全闭环**
+
+## ① 决定性探针设计
+```
+完整链（第 178 层静态确认）：
+  Application_Start 0x54d580
+    └─ 0x54d5ac  bl 0x54f664        (site3，帧循环)
+         └─ 0x54f674 bl 0x54ef74    (它的第一个调用)
+              └─ 0x54efa6 bl 0x723aac  (菜单构建器 → 94 个 widget 构造点)
+
+0x54ef74 里**只有一个可钩的导出调用**：
+  0x54efe8: blx GRM_fbrmRegisterTriggerFrameworkCb@plt
+⇒ 钩它 + 用 caller 偏移 (0x54efe8) 区分 ⇒ 能直接证明 0x54ef74 是否执行
+   ⇒ 而它是 site3 的第一个调用 ⇒ 等价于证明 site3 是否执行
+```
+
+## ② 实测结果（基线完好，数据可信）
+```
+基线校验：行数=1404 ✅  [AS]=331 ✅  INITSEQ=66 ✅  createLayer=6 ✅
+
+SITE3PROBE（GRM_fbrmRegisterTriggerFrameworkCb 被调用次数）= **0**
+⇒ **0x54ef74 从未执行 ⇒ site3（0x54f664）从未执行。**
+```
+
+## ③ ★★★★★ 因果链完全闭环（全部有实测支撑）
+```
+site3 未执行                                    ← SITE3PROBE=0
+  ⇒ 0x54ef74 未执行                              ← 同上
+  ⇒ 0x723aac 菜单构建器未执行                     ← 推论
+  ⇒ 94 个 widget 构造点全部未执行                 ← initNode=0 实测
+  ⇒ 没有任何 widget                              ← getWidget=0 实测
+  ⇒ processEvent/updateFrame/notifyDraw 不调用    ← 6 入口全 0 实测
+  ⇒ 没有绘制                                     ← drawText/drawFramebuffer=0 实测
+  ⇒ 帧 = 0
+```
+**同时正向链也全部有实测支撑：**
+```
+Application_System_Init → dlopen appFw → dlsym Application_Start → 建线程  ✅
+uxengine_init2(640,480)                                    ✅（跳过则 AS 进不去）
+site2(0x54d2b0) → 0x7238c0 → 4×createLayer + setActive(true) + setClear(false) ✅
+```
+**⇒ 唯一断点：`0x54d5ac` 这条 `bl 0x54f664`。**
+
+## ④ 现在的处境（精确）
+```
+Application_Start 的六连调：
+  0x54d590  site0: blx 0x92559c   （ARM 桩，语义未解）
+  0x54d59a  site1: bl  0x54d154   （12 字节小函数）
+  0x54d5a6  site2: bl  0x54d2b0   ✅ 执行，且内部走到 0x54d35e 返回
+  0x54d5ac  site3: bl  0x54f664   ❌ **未执行 ← 唯一断点**
+  0x54d5b0  site4: blx 0x923c84
+  0x54d5b6  site5: bl  0x54d538
+```
+
+## ⑤ 本层净收益
+```
+✅ 设计并执行了决定性探针（0x54ef74 唯一导出调用 + caller 偏移）
+✅ **SITE3PROBE=0 实测确认 site3 未执行**（基线完好，数据可信）
+✅ **因果链完全闭环**：正向 3 环 + 负向 7 环，全部有实测支撑
+✅ 把问题精确到单一指令：**0x54d5ac 的 bl**
+❌ 帧 = 0
+```
+
+## ⑥ 下一步（只剩一个方向）
+```
+要弄清 0x54d5ac 为何没执行，必须在 Application_Start 内部观测。
+已试过并失败：符号钩子（内部函数）、UDF（SIGILL 不投递）、
+              GOT 槽位（阳性对照证伪）、栈回溯（不可靠）。
+
+**唯一还没试的零风险手段：hook _Unwind / __cxa_* 之外的
+"异常处理以外的返回路径" —— 但 appFw 不导入 __cxa_throw/longjmp。**
+
+⇒ 剩余可能：
+   A. 让 Application_Start 跑到 site3 之前的东西**加速/跳过**，
+      看是否影响 —— 但无法观测。
+   B. **换思路：不再追问"为什么没执行"，改为"直接执行它"**
+      —— 即 a7c2 的做法：主动调用菜单构建器 0x723aac。
+      需要的状态：ResourceManager（已初始化）、WidgetSystem（单例 0x4e3818 存在）
+      ⇒ 可以直接调 0x723aac()，看它是否创建 widget！
+```
+
+## 方法论（第 168 条）★★★★
+**"'卡在哪'回答完毕后，就该转向'绕过它'"：
+```
+前 25 轮我在不断收窄"卡在哪"，现在已收窄到单条指令（0x54d5ac）。
+但继续追问"为什么"的手段已经穷尽（4 种观测方法全部失败）。
+⇒ a7c2 的做法本来就是**绕过**（主动调用菜单入口），不是修复原流程。
+⇒ 判据：当"为什么"的观测手段穷尽时，不要再造新观测方法，
+   改问"能不能不依赖它" —— 直接调用下游入口，让系统从中断处继续。
+```
