@@ -26644,3 +26644,115 @@ InfraInput::GetPhyKeyStatus / GetEventStatus 里的所有 `ldr rX, [pc, #N]`：
 第 282 层：消息注入 → 伪造查询结果
 第 289 层：补 i2c 触摸设备 → 改应答内容（本轮）
 ```
+
+---
+
+# ★★★★★★★★ 2026-11-06 第二百九十章（第 174 轮）：**appFw 通过 PLT 调用 InfraInput，但从未真正调用**
+
+## ① GetPhyKeyStatus 的解析：原样拷贝 40 字节
+```asm
+002074f8:
+  2074f8: ldr.w ip, [r7, #4]        ; ip = 应答消息指针
+  2074fc: mov  r6, r4               ; r6 = 输出缓冲区
+  2074fe: mov  lr, ip
+  207500: ldmia.w lr!, {r0,r1,r2,r3} ; 拷 16 字节
+  207504: stmia r6!, {r0,r1,r2,r3}
+  207506: ldmia.w lr!, {r0,r1,r2,r3} ; 再拷 16 字节
+  20750a: stmia r6!, {r0,r1,r2,r3}
+  20750c: ldmia.w lr, {r0,r1}        ; 再拷 8 字节 → 共 40
+  207510: stmia.w r6, {r0,r1}
+  207514: osal_free_msg              ; 释放消息
+  207520: mov  r0, r5                ; 返回状态码
+
+⇒ **GetPhyKeyStatus 只是把 40 字节应答原样拷贝给调用者，自己不解析**
+⇒ 按键码字段的含义在**调用者**那里
+```
+
+## ② 关键：libObj 内部无人调用这两个函数
+```
+扫描整个 libObj（ARM bl + Thumb bl）：
+  GetPhyKeyStatus (0x207724) 的调用者: **0 处**
+  GetEventStatus  (0x208790) 的调用者: **0 处**
+
+⇒ 它们只对外导出
+```
+
+## ③ ★★★★ 而 appFw 确实导入了 10 个 InfraInput 符号
+```
+arm-linux-nm -D appFw.so | grep "U .*InfraInput"：
+  InfraInput::SetCallback       ← ★ 设置事件回调
+  InfraInput::RmCallback
+  InfraInput::GetInstance
+  InfraInput::ReleaseInstance
+  InfraInput::SetEventKeyList
+  InfraInput::RmEventKeyList
+  InfraInput::SetKeyRepeat / SetKeyRepeatReset
+  InfraInput::SendEventInitData
+  InfraInput::**GetPhyKeyStatusCache**   ← 带 Cache 版本
+
+⇒ **appFw 通过 PLT 调用这些（有 10 个 PLT 桩）**
+⇒ **LD_PRELOAD 可以钩到！**
+```
+
+## ④ 但日志显示它们从未被调用
+```
+grep GetPhyKey|GetEventStatus|InfraInput 于 serial0.log：
+  **零匹配**
+
+⇒ 说明：
+  A. appFw 只在某些条件下才调用它们（如收到输入事件后）
+  B. 或调用发生在 m2qemu 的日志窗口之外
+```
+
+## ⑤ 本层净收益（重要发现）
+```
+✅ **确认 GetPhyKeyStatus 只是拷贝 40 字节，不解析**
+✅ **确认 libObj 内部无人调用（纯导出）**
+✅ **发现 appFw 导入 10 个 InfraInput 符号，且有 PLT 桩**
+✅ **确认这些 PLT 桩可以被 LD_PRELOAD 钩到**
+✅ **但日志显示它们从未被调用**
+✅ 基线完好（1307/47/6）
+❌ 帧 = 0
+```
+
+## ⑥ 下一步（关键：钩 SetCallback）
+```
+最值得注意的是 **InfraInput::SetCallback**：
+  appFw 用它注册"输入事件回调"
+  ⇒ 若我们能钩到它，就能拿到回调函数指针
+  ⇒ 然后**直接调用那个回调，伪造一次输入事件**
+  ⇒ 这是最干净的注入方式（不碰引擎内部状态）
+
+方法：
+  1. LD_PRELOAD 钩 SetCallback
+  2. 记录回调指针
+  3. 构造一个 _InfraInputEvent 结构
+  4. 直接调用回调
+```
+
+## 方法论（第 278 条）★★★★★★★ 本会话最重要的方法论
+**"找'注册回调'的 API，比找'查询状态'的 API 更适合注入"：
+```
+我一直在找"怎么查询输入状态"，然后伪造查询结果。
+但更干净的方式是：**找到回调注册点，直接调用回调**。
+
+区别：
+  · 伪造查询结果 → 需要理解数据结构 + 引擎内部状态
+  · 直接调回调   → 只需要构造一个事件结构 + 调用函数指针
+
+⇒ 判据：**要"注入一个事件"时，优先找 callback/publish/emit 类 API，
+   而不是 find/query/get 类 API。**
+   前者是"推"，后者是"拉"，注入天然适合"推"。
+   
+   本会话前面 3 轮（283/289/290）都在研究"拉"路径，
+   浪费了不少时间。
+```
+
+## ⑦ 附：本会话"注入"方向的第 5 次修正
+```
+第 277 层：消息注入到 0x7a804c        → 错（内部计数器）
+第 282 层：改为伪造查询结果           → 部分对
+第 283 层：追到 0x924127 同步请求     → 是状态查询
+第 285-288 层：postMousePress         → 崩溃/挂起
+第 290 层：改为钩 SetCallback 直接调回调 ← 本轮
+```
