@@ -22134,3 +22134,88 @@ logline("VT_PROBE ... slot0=%#x slot1=%#x", vtp[0], vtp[1]);
 
 ⇒ 已形成习惯：**改完立刻 arm-linux-gcc -o /tmp/t.so 验证能否编译**，
    这次正是靠这一步及时发现的。
+
+---
+
+# ★★★★★★★ 2026-11-06 第二百四十五章（第 129 轮）：**排除条件变量：Application_Start 从未调用 cond_wait**
+
+## ① 新增 COND_HOOK（照 a7c2 mutex-trace 的安全模式）
+```c
+/* constructor 里 dlvsym 解析；钩子体纯尾调用；只报 tid==g_as_tid */
+__attribute__((constructor)) static void cond_hook_init(void) {
+    g_native_cond_wait = dlvsym((void*)-1, "pthread_cond_wait", "GLIBC_2.4");
+    g_native_cond_timedwait = dlvsym((void*)-1, "pthread_cond_timedwait", "GLIBC_2.4");
+}
+int pthread_cond_wait(void *cond, void *mutex) { ... ENTRY_COND ... }
+int pthread_cond_timedwait(...)                { ... ENTRY_CONDTW ... }
+```
+
+## ② 实测结果
+```
+行数=1391  [AS]=44  createLayer=6  ✅ 基线完好
+**ENTRY_COND / ENTRY_CONDTW 计数 = 0**
+```
+
+## ③ ★★★ 结论：排除了条件变量
+```
+Application_Start 线程（tid=195）的全部可观测行为：
+  · ENTRY_LOCK n=1  → 有配对 UNLOCK（正常，site2 内）
+  · ENTRY_LOCK n=2  → 无 UNLOCK
+  · ENTRY_LOCK n=3  → 无 UNLOCK（mutex 与前两把差 0x918478）
+  · **ENTRY_COND = 0（从未调用条件变量）**
+
+⇒ **它没有阻塞在 pthread_cond_wait 上**
+⇒ 那 wchan=futex_wait_queue_me 对应的 futex 不是条件变量
+```
+
+## ④ 当前排除清单（本次会话累计）
+```
+❌ 硬件未建模（第 189/190 层，后经 stderr 修复推翻）
+❌ 死锁 / D 状态（第 190 层）
+❌ 探针污染（逐步排除）
+❌ appFw 补丁（第 205 层）
+❌ Thumb 位错误（多次验证）
+❌ sleep() 不可靠（是探针问题，非固件问题）
+❌ frame+16 为 NULL（第 234 层实测有值）
+❌ 线程栈大小（256 KB 无变化）
+❌ 分支选择（第 240 层纠正）
+❌ 条件变量（**本轮新增**）
+```
+
+## ⑤ 本层净收益
+```
+✅ **按 a7c2 安全模式新增 cond_wait/timedwait 钩子（基线完好）**
+✅ **确认 Application_Start 从未调用条件变量**
+✅ 缩小了阻塞点范围
+✅ 基线完好（1391/44/6）
+❌ 仍未定位具体阻塞点
+❌ 帧 = 0
+```
+
+## ⑥ 下一步（新思路：读用户态栈内容）
+```
+前面 pt_regs 的 pc 落在 heap，说明"保存的 PC 不是代码地址"。
+但 pt_regs 里还有 **sp = 0x04014144**（用户态栈指针）。
+
+★ 新思路：**读用户态 sp 指向的栈内容**，
+   从中找 appFw 的返回地址（0x2dd4b000..0x40000000）。
+   栈上的返回地址不受"保存时机"影响，是真正调用链的痕迹。
+
+这是本会话最后一次尝试从运行时恢复调用栈。
+若仍失败，则说明固件在该线程上的执行流确实无法从外部观测，
+需要改用"给 QEMU 补硬件模型"的路线（a7c2 的第 4/6 步）。
+```
+
+## 方法论（第 233 条）★★★★
+**"排除法也是有进展——只要每次都真的排除了一个可能"：
+```
+本轮没有找到阻塞点，但**确认排除了"条件变量"**。
+这不像"出帧"那样显眼，但它让搜索空间确实变小了。
+
+⇒ 判据：在长期无突破的阶段，**"可靠地排除一个假设"应被视为进展**，
+   前提是：
+   ① 排除依据是实测（ENTRY_COND=0），不是推理
+   ② 排除了之后能明确说出"剩下什么"
+
+   本轮两者都满足（剩 pthread_mutex/自旋/自定义 futex）。
+```
