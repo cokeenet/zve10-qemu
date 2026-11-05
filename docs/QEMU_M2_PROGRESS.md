@@ -26033,3 +26033,109 @@ static int g_svc_sensor(void){ static int v=-1;
 第 283 层：发现查询走 0x924127 同步请求 → 是状态查询，不是按键
 ⇒ 仍在找"按键/触摸"的真正来源
 ```
+
+---
+
+# ★★★★★★★★ 2026-11-06 第二百八十四章（第 168 轮）：**排除两条错误路径；定位到 GestureAnalyzer 是触摸的真正归宿**
+
+## ① 排除：REQ_ONE_TOUCH_PLAY 不是触摸屏输入
+```
+字符串证据：
+  ApiCallback< REQ_ONE_TOUCH_PLAY_IMPL >::operator() : completion_token:0x%04x dst:0x%04x
+  GlobalMessageHandler::handle : MSGID_REQ_ONE_TOUCH_PLAY from 0x%04x
+  GlobalMessageHandler::handle : MSGID_REQ_ONE_TOUCH_PLAY_IMPL from 0x%04x
+  REQ_ONE_TOUCH_PLAY:0x%X
+
+★ "ONE_TOUCH_PLAY" 是**智能手机遥控的一键拍摄**功能
+  （Sony Imaging Edge 的远程快门），不是触摸屏输入
+⇒ **排除这条路**
+```
+
+## ② libObj 里的 MSGID 体系（185 个）
+```
+strings 提取出 **185 个唯一的 MSGID_***
+主要类别：
+  MSGID_ACV_PLUGGED/UNPLUGGED_EVT      （AV 线插拔）
+  MSGID_ASYNC_*_CMD / *_CMP            （WiFi 异步命令）
+  MSGID_BUS_RESET_EVT
+  MSGID_ERROR_HARDWARE/SOFTWARE_EVT
+  MSGID_REQ_ONE_TOUCH_PLAY[_IMPL]      ← 远程快门，非触摸
+  ...
+⇒ **没有 MSGID_TOUCH_* 或 MSGID_INPUT_*** 
+⇒ 触摸不通过这套 MSGID
+```
+
+## ③ ★★★★★ 定位：触摸的真正归宿是 GestureAnalyzer
+```
+libObj 导出（6 个）：
+  WidgetSystem::getGestureAnalyzer()              0x1057e8
+  GestureAnalyzer::setGestureYRatio(float)        0x10455c
+  GestureAnalyzer::getPinchOriginPos(u8, s16&, s16&)  0x1052ee  ← ★ 捏合起点
+  GestureAnalyzer::setConfig(GestureConfig, u16)  0x1044ac
+  GestureAnalyzer::getDevicePos(u8, s16&, s16&)   0x1051f2  ← ★ 触摸坐标
+  GestureAnalyzer::isMultiTouch()                 0x1048a8  ← ★ 多点触控
+
+⇒ **触摸坐标通过 getDevicePos / getPinchOriginPos 对外提供**
+⇒ 但**没有 setDevicePos** ⇒ 触摸数据是被**外部 push** 进 GestureAnalyzer 的
+   （即某个更底层的输入层把坐标"喂"给它）
+```
+
+## ④ 这也解释了为什么主循环不重绘
+```
+主循环每轮：
+  · 调用 getDevicePos / isMultiTouch 查询触摸状态
+  · 没有触摸 ⇒ 不产生事件 ⇒ 不重绘
+
+而触摸数据来自某个"喂数据"的层
+⇒ 该层的上游是**硬件触摸控制器**（QEMU 无此设备）
+⇒ 所以永远没有触摸
+```
+
+## ⑤ 本层净收益
+```
+✅ **排除 REQ_ONE_TOUCH_PLAY（是远程快门，不是触摸）**
+✅ **确认 185 个 MSGID 里没有触摸相关项**
+✅ **定位 GestureAnalyzer 是触摸的归宿（getDevicePos/getPinchOriginPos/isMultiTouch）**
+✅ **推断：触摸数据由更底层"喂入" GestureAnalyzer，源头是硬件触摸控制器**
+✅ 基线完好（1303/49/6）
+❌ 帧 = 0
+```
+
+## ⑥ 下一步（最后的方向）
+```
+找"谁把触摸坐标喂给 GestureAnalyzer"：
+  ⇒ 搜 libObj 里所有写 GestureAnalyzer 内部状态的函数
+     （可能在 ux::wgtsys::WidgetSystem 的 processEvent 里）
+
+★ 若找到，就可以在探针里直接调用它，伪造一次触摸
+  ⇒ 这是唯一可能产生绘制的路径
+```
+
+## 方法论（第 272 条）★★★★★
+**"命名相似不等于功能相同——'TOUCH' 在相机语境里可能指'手机遥控'"：
+```
+我看到 MSGID_REQ_ONE_TOUCH_PLAY 里有 "TOUCH"，
+一度以为找到了触摸屏输入。
+
+实际那是 Sony 的"一键拍摄"远程快门功能
+（Imaging Edge 手机 App 的 "One Touch Play"）。
+
+⇒ 判据：**在特定领域（相机/嵌入式）里，常见词可能有领域特定含义。**
+   "TOUCH" 在相机里既可能指"触摸屏"，也可能指"一键式操作"。
+   **必须看它的调用上下文（这里是 GlobalMessageHandler + completion_token，
+   明显是异步请求-应答），而不是只看名字。**
+   
+   本会话我因为"看名字下结论"已犯错多次：
+   · 0x723aac "菜单构建器"（实际只设手势比例）
+   · Application_System_Init "系统初始化"（实际是模块加载器）
+   · 0x7a804c "输入队列"（实际是计数器）
+   · REQ_ONE_TOUCH_PLAY "触摸输入"（实际是远程快门）
+```
+
+## ⑦ 附：本会话已排除的"输入通道"候选（4 个）
+```
+❌ qid=0x7a804c          内部通知/计数器       （第 282 层）
+❌ qid=0x924127          指示灯状态查询        （第 283 层）
+❌ MSGID_REQ_ONE_TOUCH_PLAY  手机远程快门       （本轮）
+❓ GestureAnalyzer       真正的触摸归宿，但上游未知
+```
