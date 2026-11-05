@@ -15,6 +15,7 @@ M2=/mnt/build/fw/COMPARE/extracted/ZV1M2
 E10=/mnt/build/fw/COMPARE/extracted/ZVE10
 E10M2=/mnt/build/fw/COMPARE/extracted/ZVE10M2
 
+export PATH=/mnt/build/ref-chocotan-zve10/work/armv7-eabihf--glibc--stable-2020.08-1/bin:$PATH
 log() { printf '[port] %s\n' "$*"; }
 
 [[ -e "$OUT" ]] && { echo "输出目录已存在: $OUT" >&2; exit 1; }
@@ -37,11 +38,14 @@ log "  基准树: $(find "$OUT" -type f | wc -l) 个文件"
 log "覆盖 usr/kmod 为 ZV-1M2 版"
 rm -rf "$OUT/usr/kmod"; mkdir -p "$(dirname "$OUT/usr/kmod")"; cp -a "$M2/usr/kmod" "$OUT/usr/kmod"
 
-# ---- 3. 放入 ZV-1M2 独有的 UI 栈 ----
+# ---- 3. 放入 ZV-1M2 的 UI 栈 ----
+# libObj.so 是必须的：ZV-1M2 的 appFwBoot.so 会 blx uxengine_init2，
+# 而 ZVE10 的 libObj.so 没有该符号（20.3MB -> 3.9MB，丢了整代 UI 类）。
 log "放入 ZV-1M2 新菜单 UI 栈"
-for f in appFw.so appFwBoot.so AdjChkConfig.so libuiobserve.so; do
-    [[ -f "$M2/usr/lib/$f" ]] && cp -a "$M2/usr/lib/$f" "$OUT/usr/lib/" \
-        && log "  + $f ($(stat -c%s "$M2/usr/lib/$f") B)"
+for f in libObj.so appFw.so appFwBoot.so AdjChkConfig.so libuiobserve.so; do
+    [[ -f "$M2/usr/lib/$f" ]] || { log "  · $f 在 ZV-1M2 里不存在（跳过）"; continue; }
+    cp -a "$M2/usr/lib/$f" "$OUT/usr/lib/$f"
+    log "  + $f ($(stat -c%s "$OUT/usr/lib/$f") B)"
 done
 
 # ---- 4. 补齐 ZV-1M2 独有依赖（30 个）----
@@ -66,7 +70,7 @@ rm -rf "$OUT/usr/share/app"; mkdir -p "$(dirname "$OUT/usr/share/app")"; cp -a "
 # ---- 7. 校验 ----
 log "校验"
 fail=0
-for f in appFw.so appFwBoot.so AdjChkConfig.so libIMDB.so; do
+for f in libObj.so appFw.so appFwBoot.so AdjChkConfig.so libIMDB.so; do
     if [[ -f "$OUT/usr/lib/$f" ]]; then
         printf '  ✅ %-20s %10s B\n' "$f" "$(stat -c%s "$OUT/usr/lib/$f")"
     else
@@ -74,11 +78,26 @@ for f in appFw.so appFwBoot.so AdjChkConfig.so libIMDB.so; do
     fi
 done
 # appFw.so 的 NEEDED 是否全部齐备
-export PATH=/mnt/build/ref-chocotan-zve10/work/armv7-eabihf--glibc--stable-2020.08-1/bin:$PATH
 for lib in $(arm-linux-readelf -dW "$OUT/usr/lib/appFw.so" 2>/dev/null | grep NEEDED | sed 's/.*\[//;s/\]//'); do
     if find "$OUT" -name "$lib" 2>/dev/null | grep -q .; then :; else
         printf '  ⚠️  appFw.so 需要 %s —— 输出树里没有\n' "$lib"; fail=1
     fi
 done
 printf '  appFw.so NEEDED 检查完成\n'
+
+# 决定性校验：appFwBoot 需要的 uxengine_init2 必须在 libObj 里导出
+_syms=$(arm-linux-readelf -sW --dyn-syms "$OUT/usr/lib/libObj.so" 2>/dev/null || true)
+if [[ "$_syms" == *uxengine_init2* ]]; then
+    printf '  ✅ libObj.so 导出 uxengine_init2（appFwBoot 可解析）\n'
+else
+    printf '  ❌ libObj.so 缺少 uxengine_init2 —— appFwBoot 会加载失败\n'; fail=1
+fi
+# 反向：ZVE10 的 viewUnified*.so 需要 libObj 里的一代类，换掉后应确认是否仍可用
+for cls in ViewBase CmnViewMenuData; do
+    if [[ "$_syms" == *"$cls"* ]]; then
+        printf '  ✅ libObj 仍提供 %s（一代 viewUnified 可用）\n' "$cls"
+    else
+        printf '  ⚠️  libObj 不再提供 %s —— 一代 viewUnified*.so 将无法链接\n' "$cls"
+    fi
+done
 [[ $fail -eq 0 ]] && log "✅ 移植树组装完成: $OUT" || log "⚠️ 有缺失，见上"

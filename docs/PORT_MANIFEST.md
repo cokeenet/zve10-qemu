@@ -464,3 +464,58 @@ scripts/port_m2menu.sh 需要加入：
   - 用 ZV-1M2 的 libObj.so 覆盖 ZVE10 的  ← **之前漏了，致命**
   - 校验 appFwBoot.so 的 uxengine_init2 能在新 libObj 里找到
 ```
+
+---
+
+## 十一、★ 移植树组装成功（2026-11-05 第 71 轮）
+
+### 修正了两个致命/隐蔽的 bug
+
+```
+bug 1（致命）：脚本漏了 libObj.so
+  ZV-1M2 的 appFwBoot.so 会 blx uxengine_init2，
+  而 ZVE10 的 libObj.so **没有这个符号**
+  ⇒ 不换 libObj 则 appFwBoot 加载必然失败
+  已修复：现在 libObj.so 是第 3 步的第一个文件
+
+bug 2（隐蔽）：`set -euo pipefail` + `grep -q` 的 SIGPIPE 陷阱
+  readelf ... | grep -q "xxx"  在 pipefail 下：
+  grep 找到匹配立即退出 → readelf 收到 SIGPIPE → 管道返回非零
+  ⇒ **校验永远失败，即使符号存在**
+  修法：先赋给变量再字符串匹配
+    _syms=$(readelf ... || true)
+    [[ "$_syms" == *uxengine_init2* ]]
+```
+
+### 最终成品：`/mnt/build/m2qemu/port/PORTED4`
+
+```
+文件数: 864
+总大小: 302 MB
+
+关键文件 md5 全部与 ZV-1M2 一致：
+  ✅ libObj.so      738a2331  (3.9 MB，原 ZVE10 20.3 MB)
+  ✅ appFw.so       f079cda0  (64.3 MB)
+  ✅ appFwBoot.so   bb4cdbab  (8.3 KB)
+  ✅ libIMDB.so     91eca62f  (40.6 KB，清单入口 appFwBoot.so)
+  ✅ AdjChkConfig.so
+  ✅ usr/kmod/*.ko  103 个，全部 ZV-1M2 版
+  ✅ usr/share/app/ 232 个，含 6 个 image_*_ASTRA.uxc
+
+校验结果：
+  ✅ appFw.so 的 15 个 NEEDED 全部齐备
+  ✅ libObj.so 导出 uxengine_init2（appFwBoot 可解析）
+  ⚠️  libObj 不再提供 ViewBase / CmnViewMenuData
+      ⇒ 一代 viewUnified*.so 将无法链接到这些基类
+      ⇒ 这是"整体换 UI 层"的必然代价（见第十节）
+```
+
+### 脚本陷阱清单（供后续复用）
+
+```
+本次踩到并修复的 shell 陷阱：
+  ① cp -a src/ dst/  时 dst 不存在 ⇒ 先 mkdir -p
+  ② set -euo pipefail + `cmd | grep -q` ⇒ SIGPIPE 导致假失败
+  ③ for f in ...; do [[ -f ]] || continue; done 里 continue 不影响循环外（正确）
+  ④ PATH 必须在脚本最开头 export，否则 readelf/gcc 找不到
+```
