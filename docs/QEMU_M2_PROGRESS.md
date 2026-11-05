@@ -15313,3 +15313,81 @@ Application_Start 的帧 = 2208，也是常数。
 ⇒ 判据：栈帧大小是**从反汇编可精确算出**的常数，比任何间接观测都可靠；
    用它做"某个嵌套调用是否发生过"的判据，是无争议的硬证据。
 ```
+
+---
+
+# ★★★★★★★ 2026-11-05 第一百六十八层（第 47 轮）：**找到一个真实 bug（fd 不一致）；SIGILL 仍不投递；UDF 探针放弃**
+
+## ① ★★★ 本轮修掉的真实 bug：裸写用错了文件描述符
+```c
+static void logline(...) { ... write(2, b, n); }        // 一直是 stderr(fd 2)
+/* 但我在信号处理函数和 real_start 打点里写的是： */
+write(1, buf, n);                                        // ← stdout(fd 1) ❌
+```
+**串口只接了 fd 2（stderr），所以所有 `write(1,...)` 的日志都看不到。**
+**修成 `write(2,...)` 后，`ASSITE about to call real_start` 立刻出现了 —— 证明这个 bug 是真的。**
+
+## ② 但 SIGILL 仍然不投递
+```
+修正 fd 之后的实测：
+  ASSITE arming at entry=0x2dae0580
+  ASSITE mprotect ret=0 errno=0 range=0x2dae0000..0x2dae1000
+  ASSITE patched idx=0 addr=0x2dae05a6 orig=fff783fe now=01de01de   (site2)
+  ASSITE patched idx=1 addr=0x2dae05ac orig=02f05af8 now=01de01de   (site3)
+  ASSITE about to call real_start
+  （此后再无任何输出，也没有崩溃信息）
+⇒ UDF 指令执行了，但 **SIGILL 没有被投递到用户态处理函数**。
+```
+
+## ③ 同时修掉的第二个 bug：`AS_SITE_MAX` 越界
+```
+表里只剩 2 项，但 `#define AS_SITE_MAX 6` ⇒ 循环越界，
+把 0x54d580（函数入口本身）也打了补丁，日志里能看到：
+  ASSITE patched idx=2 addr=0x2d96a580 orig=10490122 now=01de01de  ← 入口被覆盖！
+修成 `AS_SITE_MAX 2` 后，只剩正确的两个补丁。
+```
+
+## ④ 因此 UDF 探针路线正式放弃
+```
+已尝试并失败：
+  · 六点全打（第 153 层）：静默
+  · 修正 arm_cpsr Thumb 位（第 168 层）：仍静默
+  · 修正 fd 1→2（第 168 层）：日志能打出来了，但 SIGILL 仍不投递
+  · 修正 AS_SITE_MAX 越界（第 168 层）：补丁位置正确了，仍静默
+⇒ **根因是 SIGILL 在这个 guest 环境里不投递给用户态**，
+   不是我们的处理函数写错了。
+⇒ 固件已恢复原版（appFw md5 = 6d1e2c9a49a96729b30417b47801e667）。
+```
+
+## ⑤ 本层净收益
+```
+✅ 修掉两个真实 bug（fd 1 vs 2；AS_SITE_MAX 越界）
+✅ 用一个能打印的探针，**确凿证明** SIGILL 不投递（而非"没触发"）
+✅ 固件恢复原版，基线干净
+❌ UDF 探针路线彻底关闭
+❌ 帧 = 0
+```
+
+## ⑥ 至此，QEMU 侧的观测手段全部穷尽
+```
+· 符号钩子      ✅ 可用（已榨干：wgtsys/getLayer/getWidget/updateFrame/isFrameDelay/
+                   processEvent/processSystemMessage/notifyDraw/drawText/drawFramebuffer/
+                   createLayer/getGestureAnalyzer/updateCurrentTime/resmgr/gfxeng）
+· 栈深度采样    ✅ 可用（已用它证明 site3 未执行：2416 < 4296）
+· GOT 槽位法    ❌ 阳性对照证伪
+· UDF+SIGILL    ❌ SIGILL 不投递（本层确证）
+· 代码 patch    ❌ 语义风险高（r0 无法重建）
+· dladdr        ❌ glibc 2.11 上基址错误
+⇒ **静态分析 + 符号钩子 + 栈深度，能得出的结论已经全部得出。**
+```
+
+## 方法论（第 157 条）★★★★
+**"裸写日志前先确认 fd 与已有日志一致"：
+```
+logline 用 write(2)，我在探针里用 write(1)，
+结果探针日志全部丢失 —— 而这条探针正是用来判断"SIGILL 有没有触发"的。
+日志丢失时，我误判为"SIGILL 没触发"，实际是"日志没输出"。
+⇒ 判据：新增任何日志通道时，**先和已有通道用同一个 fd**，
+   并在第一次运行时确认能看到输出，再去解释"没输出"的含义。
+   否则会把"看不见"当成"没发生"。
+```
