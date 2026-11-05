@@ -22788,3 +22788,89 @@ docs/DELIVERY_CHECKLIST.md（8 节）
    （本例：FB_SAMPLE nonzero=1 + FB_SCAN 无图像特征）。
    若混在一起说"移植完成"，会让读者误以为画面也出来了。
 ```
+
+---
+
+# ★★★★★★★ 2026-11-06 第二百五十二层（第 136 轮）：**找到 osal_uipc 的完整消息队列 API —— 可以查询/注入 qid**
+
+## ① libosal_uipc.so 导出的完整 API（22 个）
+```
+消息队列：
+  **osal_snd_msg**              发送消息
+  **osal_rcv_msg_tmo**          带超时接收
+  **osal_snd_sync_msg**         同步发送
+  **__osal_snd_sync_msg**
+  osal_free_msg                 释放消息
+  osal_msg_size                 消息大小
+  osal_get_msg_pri / osal_set_msg_pri
+  osal_reg_msg_queue_cb         注册队列回调
+  osal_reg_sync_msg_queue_cb
+  **msgq_dump**                 ★ dump 所有队列
+  **osal_stat_msgq**            ★ 查询指定 qid 状态
+  osal_set_msgq_broadcast_mode / log_mode / rt_mode
+
+信号量：
+  osal_sig_sem / osal_stat_sem / get_bsem / bsem_dump
+  check_dynamic_sem_id
+```
+
+## ② osal_stat_msgq 的签名（反汇编推断）
+```asm
+00004430 <osal_stat_msgq>:
+  4430: tst.w r0, #0x8000        ; 检查 r0（qid）的第 15 位
+  4434: push {r7}
+  4438: bne.n 4442               ; 若置位，走特殊路径
+  443a: b.w u_osal_stat_msgq@plt ; 否则直接转发给底层
+  4442: cmp r0, #0
+  4446: mov.w r0, #0xfc00        ; 错误码
+⇒ **签名：osal_stat_msgq(int qid, <stat 结构指针>)**
+```
+
+## ③ ★★★★ 这打开了"扮演消费者"的可行路径
+```
+a7c2 的方案：固件通过 qid 把帧推给 AP 消费者。
+我们现在的状况：固件卡在 site3 之前，根本到不了注册 qid 那一步
+                （0x558a00 / 0x558cbc 注册 0x870935 / 0x87094e，实测 0 次）
+
+★ 但现在有了 osal_snd_msg，可以做一件之前做不到的事：
+   **主动向固件正在等待的 qid 注入消息**，看看能否把它唤醒。
+
+⇒ 需要先知道：固件在等哪个 qid
+   方法：钩 osal_rcv_msg_tmo（已有钩子），打印 qid 参数
+   然后统计：哪些 qid 被等待、等多久
+```
+
+## ④ 本层净收益
+```
+✅ **完整列出 libosal_uipc.so 的 22 个导出 API**
+✅ **查明 osal_stat_msgq 的签名（qid + stat 结构）**
+✅ **找到 msgq_dump（可 dump 所有队列状态）**
+✅ **确认 osal_snd_msg 可用于注入消息**
+✅ 建立了"扮演消费者"的技术基础
+❌ 帧 = 0
+```
+
+## ⑤ 下一步（具体可执行）
+```
+1. 在探针里延迟调用 msgq_dump() —— 一次就能看到所有 qid 的积压情况
+2. 或调用 osal_stat_msgq(0x870935, &stat) / (0x87094e, &stat)
+   看这两个队列是否被创建、是否有人等
+3. 若固件在等某个 qid，用 osal_snd_msg 注入消息试探
+```
+
+## 方法论（第 240 条）★★★★
+**"库的导出符号表是'这个系统能做什么'的完整说明书"：
+```
+我在前 130 轮反复试图"从外部观测固件内部状态"，
+却从未系统性地查看 libosal_uipc.so 导出了什么。
+
+一轮 `arm-linux-nm -D` 就得到 22 个 API，其中包括：
+  · msgq_dump    —— 能直接 dump 所有队列
+  · osal_stat_msgq —— 能查询任意 qid 状态
+  · osal_snd_msg —— 能注入消息
+
+⇒ 判据：**面对一个不熟悉的组件，先列出它导出的全部符号**。
+   导出表 = "我能调用什么"，比反汇编推断语义快得多、准得多。
+   本会话我做过同样的事（libObj 的导出、grm_gles.ko 的符号），
+   但漏掉了 libosal_uipc —— 而这个库正是卡点的所在层。
+```
