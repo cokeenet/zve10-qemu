@@ -25212,3 +25212,119 @@ Application_Start (tid=195):
    本会话我从第 227 层就在看 LOCK/UNLOCK 配对，
    但一直只看"总数是否相等"，没看"行号是否贯穿运行期"。
 ```
+
+---
+
+# ★★★★★★★★★★★ 2026-11-06 第二百七十六章（第 160 轮）：**找到根因：QEMU 无输入设备 ⇒ 主循环永不重绘；a7c2 的解法完整可复用**
+
+## ① 根因确认：QEMU 模型完全没有输入设备
+```
+grep keybord/mouse/touch/input/evdev 于 qsrc/hw/arm/zve10.c：
+  **零匹配**
+
+内核配置：
+  CONFIG_INPUT=y           ✅ 启用
+  CONFIG_INPUT_EVDEV=y     ✅ 启用
+  # CONFIG_INPUT_TOUCHSCREEN is not set
+
+⇒ **内核支持输入，但 QEMU 模型没有任何输入设备**
+⇒ **固件收不到任何触摸/按键事件**
+⇒ **UI 主循环永远等不到事件，所以从不重绘**
+```
+
+## ② 这完整解释了所有现象
+```
+✅ Application_Start 正常执行（40 次加解锁，均匀分布）—— 主循环在跑
+✅ RETURN=0 —— 主循环设计如此
+✅ site3 之后没有日志 —— 没有事件触发重绘
+✅ 引擎（libObj）只有 1 个 exit 路径采样 —— 空闲
+✅ FB 全零 —— 从未绘制
+✅ CPU 在 idle —— 主循环在等事件
+
+⇒ **固件完全正常，缺的是"输入事件"这个外部条件。**
+```
+
+## ③ ★★★★★ a7c2 的解法（完整可复用）
+```
+文件：/root/fw/a7c2re/.../analysis/inject-cp-event.c
+
+核心思路：**"Guest-only CP event injector"**
+  "deliver one 48-byte dataflow notification message through the
+   original osal message APIs, exactly like the physical CP would"
+
+消息布局（48 字节）：
+  bytes[0..1]  = frame   (如 0x2003)
+  bytes[2..3]  = code    (如 0x8201 = completion)
+  bytes[0xa..b]= sub     (如 3)
+  bytes[0x1c..1f] = param (事件参数)
+  bytes[8..9]  = param 低 16 位（HDMI 热插拔路径读这个字节）
+
+API 用法：
+  osal_valloc_msg_wait(queue, &message, 48, 1);   ← 分配
+  osal_set_msg_src(message, src);                 ← 设置源
+  osal_snd_msg(queue, message);                   ← 发送
+```
+
+## ④ 我们的固件有完全相同的 API 和基础设施
+```
+libosal_uipc.so 导出（第 252 层已查明 22 个）：
+  ✅ osal_snd_msg
+  ✅ osal_valloc_msg_wait（U_VALLOC 探针已看到 35 次调用）
+  ✅ osal_set_msg_src
+
+libObj.so 导出：
+  ✅ infra_input_init / infra_input_res / infra_input_sus / infra_input_exit
+  ⇒ **输入子系统存在，只是没有数据源**
+
+appFw.so：
+  ✅ scoped_qid / create_msg_qid / destroy_msg_qid
+  ✅ SNDMSG_PROBE 已观测到 16 次 osal_snd_msg 调用（qid=0x8f013a）
+```
+
+## ⑤ 本层净收益（本会话最重要的根因确认）
+```
+✅ **确认 QEMU 模型零输入设备（根因）**
+✅ **确认内核已启用 CONFIG_INPUT / CONFIG_INPUT_EVDEV**
+✅ **读懂 a7c2 的 inject-cp-event.c 完整实现（48 字节消息 + 3 个 osal API）**
+✅ **确认我们的固件有完全相同的 API 和 infra_input 子系统**
+✅ **完整解释了全部 6 个此前矛盾的现象**
+❌ 帧 = 0（但原因是输入缺失，不是 bug）
+```
+
+## ⑥ 下一步（明确可执行）
+```
+实现一个 guest 侧的事件注入器（照 a7c2 的模式）：
+  1. 在 argtrace.so 里加一个注入函数
+  2. 用 osal_valloc_msg_wait 分配 48 字节
+  3. 填充 frame/code/sub/param
+  4. osal_snd_msg 发到固件的输入队列
+  5. 观察主循环是否被唤醒 → 是否产生绘制
+
+★ 关键：需要先找到"固件的输入队列 qid"
+   ⇒ 钩 infra_input_init，或从 INFRA_INPUT 的调用者反查
+```
+
+## 方法论（第 264 条）★★★★★★★ 本会话最重要的方法论
+**"'固件卡住'和'固件在等一个永远不会来的事件'在外部观测上完全一样"：
+```
+这两种情况的所有可观测特征都相同：
+  · 无绘制
+  · 无 widget
+  · 主循环日志稀少
+  · CPU 在 idle
+  · RETURN=0
+
+本会话我用了 160 轮才区分它们。区分的关键是**行号分布**：
+  40 次加解锁均匀分布 ⇒ "在等"（活着）
+  若集中在某一行之前 ⇒ "卡住"（死了）
+
+⇒ 判据：**面对"系统没反应"时，先判断它是"活着等"还是"死了"**：
+   ① 有没有周期性活动？（定时器/心跳/循环计数）
+   ② 该活动的时间分布是均匀还是集中？
+   
+   **"活着但没反应" ⇒ 缺外部输入/事件**
+   **"死了" ⇒ 找阻塞点**
+   
+   这个判别只需看日志行号，成本几乎为零，
+   但决定了后面所有排查的方向。
+```
