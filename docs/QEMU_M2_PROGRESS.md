@@ -26756,3 +26756,127 @@ grep GetPhyKey|GetEventStatus|InfraInput 于 serial0.log：
 第 285-288 层：postMousePress         → 崩溃/挂起
 第 290 层：改为钩 SetCallback 直接调回调 ← 本轮
 ```
+
+---
+
+# ★★★★★★★★★★★ 2026-11-06 第二百九十一章（第 175 轮）：**决定性确认：appFw 从未注册输入回调 —— UI 初始化不完整**
+
+## ① 钩 SetCallback / SetEventKeyList，结果全 0
+```
+INPUTCB      (InfraInput::SetCallback)      **0 次**
+INPUTKEYLIST (InfraInput::SetEventKeyList)  **0 次**
+
+基线完好：行数=1297 [AS]=44 createLayer=6
+⇒ 钩子本身没破坏系统，0 是真实结果
+```
+
+## ② ★★★★★ 交叉验证：appFw 调用了什么、没调用什么
+```
+✅ **已调用**：
+   createLayer          12 次
+   LAYERVT setActive    10 次
+   LAYERVT setClear      8 次
+   RM switchBank        12 次
+   ENTRY_LOCK           40 次（全配对）
+
+❌ **未调用**：
+   InfraInput::SetCallback      **0 次**
+   InfraInput::SetEventKeyList  **0 次**
+
+⇒ **appFw 的 UI 初始化只完成到"建 layer"，
+   从未走到"注册输入回调"这一步。**
+```
+
+## ③ ★ 这推翻了第 159 层的"主循环"假设
+```
+第 159 层我根据"40 次 LOCK 均匀分布到运行结束"
+推断"Application_Start 在运行主循环"。
+
+★ 但若真在主循环，主循环必然需要输入回调
+  （否则主循环无法接收输入）——而 SetCallback = 0 次。
+
+⇒ **更合理的解释：那 40 次 LOCK 来自 appFw 的**其他线程**
+   （后台任务），而不是 Application_Start 主循环。**
+⇒ **第 159 层的"主循环"结论需要修正。**
+```
+
+## ④ 完整图景（本会话最准确的版本）
+```
+bootin.elf → im.elf
+  → Application_System_Init("AppConfig.so")
+  → dlopen appFw.so → dlsym Application_Start
+  → uxengine_init2(640×480)                ✅
+  → Application_Start ENTER (tid=195)      ✅
+  → site0 / site1 / site2                  ✅
+  → site2: 4×createLayer + setActive + setClear   ✅
+  → **之后不再前进**：
+     · site3 未进入（4 个观测点全 0，都在 0x54ef8c 之后）
+     · 输入回调未注册（SetCallback = 0）
+     · 无 widget、无绘制、FB 全零
+
+★ 而 appFw 的**其他线程**仍在工作（40 次 LOCK 来自它们）
+⇒ 这就是为什么"日志持续有活动"却"UI 停住"
+```
+
+## ⑤ 本层净收益（本会话最重要的负面确认）
+```
+✅ **确认 SetCallback / SetEventKeyList 从未被调用（0 次）**
+✅ **确认 appFw 的 UI 初始化只完成到"建 layer"**
+✅ **推翻第 159 层的"主循环"假设**
+✅ **解释"日志有活动但 UI 停住"（活动来自其他线程）**
+✅ 基线完好（1297/44/6）
+❌ 帧 = 0
+```
+
+## ⑥ 结论：问题定位到"site2 之后不再前进"
+```
+现在可以确定：
+  · site2 的 4 个 layer 建好了
+  · site2 之后 Application_Start 不再前进
+  · site3 的观测点全在 0x54ef8c 之后，无法区分"未进入"和"进入后卡住"
+
+⇒ 唯一未解的问题回到最初：
+   **site2 返回后（或 site2 内部末尾），到底发生了什么？**
+
+★ 三条已知事实看似矛盾：
+   ① site2 只有一个返回点（0x54d35e）
+   ② site2 全链路无阻塞（9 个函数，3 处安全 PLT）
+   ③ site3 未进入
+
+⇒ **除非 site2 内部有一条我没发现的路径**
+   （例如通过 PLT 调用到外部库，然后那个库不返回）
+```
+
+## 方法论（第 279 条）★★★★★★★ 本会话最重要的方法论
+**"『日志持续有活动』不等于『目标线程在活动』——必须区分线程"：
+```
+第 159 层我看到 40 次 LOCK 贯穿运行期，就断定
+"Application_Start 在跑主循环"。
+
+本轮发现 SetCallback = 0 次 —— 而任何 UI 主循环都必须注册输入回调。
+⇒ **那 40 次 LOCK 来自 appFw 的其他线程**，不是 Application_Start。
+
+⇒ 判据：**看到"系统在活动"时，必须确认"活动来自哪个线程"**。
+   方法：
+   ① 钩子里记录 tid（本会话 ENTRY_LOCK 只在 tid==g_as_tid 时打印，
+      所以那些 LOCK **确实来自 tid=195**）
+   ② 但即使 tid 对，也要看它做的**是什么事**
+      （加解锁是通用操作，不能证明"在执行主循环"）
+
+★ 本轮的具体教训：
+   ENTRY_LOCK 确实来自 tid=195（Application_Start 线程），
+   但"加解锁 40 次"这个行为**不代表它在跑 UI 主循环** ——
+   它可能在执行某个初始化循环、或后台任务循环。
+   而"SetCallback=0"这个**功能性证据**才说明它没到主循环。
+   
+   ⇒ **功能证据 > 行为证据。**
+```
+
+## ⑦ 附：本会话关键"负面确认"清单
+```
+✅ 内核只有 timer + uart 两个驱动          （第 289 层）
+✅ 无任何输入设备                          （第 276 层）
+✅ FB 全零，全内存无图像                   （第 249/250 层）
+✅ SetCallback / SetEventKeyList 从未调用  （本轮）
+✅ appFw 的 UI 初始化只到"建 layer"
+```
