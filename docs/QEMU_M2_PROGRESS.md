@@ -14632,3 +14632,83 @@ UI 的 4 个 layer 建好了，但：
    必须**分段扫描**（按地址区间）并核对总数，
    或改用 Python 直接解析 ELF 找 BL 指令，不要依赖 objdump 的长输出。
 ```
+
+---
+
+# ★★★★★★★★★ 2026-11-05 第一百六十层（第 39 轮）：**UI 初始化函数在 createLayer 后立即返回；之后再无任何 UI 操作**
+
+## ① ★★★★ 用 4 个新钩子确认：createLayer 之后引擎什么都没做
+| 接口 | `[AS]` 内次数 | 含义 |
+|---|---|---|
+| `createLayer()` | **4** ✅ | UI 骨架建立，返回递增句柄 |
+| `getGestureAnalyzer()+setConfig` | **8** ✅ | 手势阈值配置成功 |
+| `getLayer()` | **0** | 从未按 ID 取 layer |
+| `getWidget()` | **0** | 从未取 widget |
+| `updateFrame()` | **0** | 从未推进一帧 |
+| `isFrameDelay()` | **0** | 从未做帧延迟判断 |
+| `processEvent()` | **0** | 事件泵未进入 |
+| `processSystemMessage()` | **0** | 系统消息分支未进入 |
+| `notifyDraw()` | **0** | 从未通知绘制 |
+| `drawText()` / `drawFramebuffer()` | **0** | 从未绘制 |
+
+## ② ★★★★★ 反汇编揭示：UI 初始化函数在 createLayer 后**直接返回**
+```asm
+723a48: blx WidgetSystem::createLayer(const ID&)   ← 第 4 个 layer
+723a4c: movs r1, #1
+723a4e: ldr  r3, [r0, #0]                          ; vtable
+723a50: str.w r0, [r9, #12]                        ; 存句柄
+723a54: ldr  r3, [r3, #4]
+723a56: blx  r3                                    ; 虚函数调用 #1
+723a58: ldr.w r0, [r9, #12]
+723a5c: movs r1, #0
+723a5e: ldr  r3, [r0, #0]
+723a60: ldr  r3, [r3, #12]
+723a62: blx  r3                                    ; 虚函数调用 #2
+723a64..723a7a: 把 r6/r5/r4/r8 存到几个全局变量      ; 记录 layer 句柄
+723a7e: ldmia.w sp!, {r3,r4,r5,r6,r7,r8,r9,sl,fp,pc}  ; ★ **函数返回**
+```
+**⇒ 这个 UI 初始化函数的职责就是「建 4 个 layer，存句柄，返回」。
+  它本身不创建 widget、不绘制。**
+**⇒ widget 创建应该在**别的地方**（另一个函数/另一次调用）。**
+
+## ③ 因此阻塞点重新定义（关键）
+```
+不是"UI 初始化失败"——UI 骨架成功建好了。
+不是"引擎卡住"——进程活着，服务线程正常。
+而是：**建完 layer 之后，本该继续创建 widget / 跑主循环的那一步没有发生。**
+⇒ Application_Start 在 site0..site3 中某处调用了这个 UI 初始化函数，
+   然后**没有继续往下走到 0x54f882 的主循环判定**。
+```
+
+## ④ 本层净收益
+```
+✅ 用 4 个新钩子（getLayer/getWidget/updateFrame/isFrameDelay）确认：全 0
+✅ **反汇编证明 UI 初始化函数在 createLayer 后直接返回**（不是卡住）
+✅ 明确了"UI 骨架成功、widget 从未创建"这一状态
+✅ 阻塞点从"某个函数内部"提升到"Application_Start 的控制流分支"
+❌ 帧 = 0
+```
+
+## ⑤ 下一步
+```
+Application_Start 的 site0 是 `blx 0x92559c`（跳转表，不可静态解析），
+而 UI 初始化函数（0x723xxx）很可能就是 site0 间接调用到的。
+⇒ 若 site0 返回后代码继续 → 应该到 site1/site2/site3 → 主循环
+⇒ 但主循环判定（0x54f882）未到达 ⇒ 说明 site0 之后就走岔了
+
+验证手段（零风险）：
+  钩 `ResourceManager::sys_getInstance` / `switchBankEth` 的 caller，
+  反推 UI 初始化函数是被谁调用的（caller = site0 的间接目标之后）。
+```
+
+## 方法论（第 149 条）★★★★
+**"'函数成功返回'与'调用者继续往下'是两件事"：
+```
+UI 初始化函数 4 次 createLayer 全部成功，然后 0x723a7e 正常返回。
+但从调用者（Application_Start）的角度，它返回后**没有继续到主循环**。
+⇒ 判据：分析阻塞时，必须区分三个层次：
+   ① 被调函数内部是否完成（本例：完成）
+   ② 被调函数是否正常返回（本例：返回）
+   ③ **调用者在返回后是否继续**（本例：没有）
+   前两层都 OK 而第三层断了，问题就在调用者的控制流，不在被调函数。
+```
