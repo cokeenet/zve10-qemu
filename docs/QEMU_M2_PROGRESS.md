@@ -17038,3 +17038,81 @@ bootin 的 dmode 参数，我一开始以为是数字（dmode=3 ⇒ 模式 3）�
 ⇒ 判据：解析命令行参数语义时，**必须反汇编到 cmp 指令看比较的常量**，
    不要按"参数名像数字就以为是数字"去推理。
 ```
+
+---
+
+# ★★★★★★★ 2026-11-05 第一百八十八层（第 72 轮）：**实验树关键二进制全部恢复原版；排除 patch 因素**
+
+## ① 发现并修复：appFw.so 被历史实验 patch 了 4 处
+```
+实验树 appFw.so md5=6d1e2c9a  vs  ZV-1M2 原版 f079cda0  ← 不一致！
+差异仅 8 字节，4 处，全部是 `nop`（Thumb 0xbf00）覆盖了原来的分支指令：
+  @0x54ed3e  原 d1f8 (bne)  → 00bf (nop)
+  @0x2b6fe02 原 f053 (bl?)  → 00bf + 00bf
+  @0x2bc3174 原 4805 (ldr)  → 4770 (bx lr)
+  （第 4 处 @0x2bc3174 附近）
+⇒ 这是早期"跳过某分支"实验留下的，一直没恢复。
+```
+
+## ② 已恢复原版并重测
+```
+恢复后实验树的关键二进制全部 = ZV-1M2 原版：
+  ✅ libObj.so      738a2331
+  ✅ appFw.so       f079cda0  ← 本轮恢复
+  ✅ appFwBoot.so   bb4cdbab
+  ✅ libIMDB.so     91eca62f
+
+重测结果（out/pristine）：
+  行数=1132  [AS]=46  createLayer=6
+  ENTER=1  RETURN=0          ← **与之前完全一致**
+  processEvent / updateFrame / notifyDraw / initNode / drawText / drawFramebuffer 全 0
+```
+
+## ③ 结论：阻塞与这些 patch 无关
+```
+用 100% 原版二进制，行为完全不变
+⇒ **排除了"patch 导致异常"这条可能**
+⇒ 阻塞在更底层（环境/硬件模拟），不在 .so 内容上
+```
+
+## ④ 顺带确认：QEMU 实验树早已是 ZV-1M2 的 libObj.so
+```
+libObj.so 738a2331 = ZV-1M2 版（3.9 MB）
+⇒ 之前担心的"实验树 libObj 是旧的"不成立
+⇒ 第 69 层发现的架构差异，在 QEMU 实验环境里**早已正确**
+```
+
+## ⑤ 本层净收益
+```
+✅ 发现并恢复 appFw.so 的 4 处历史 patch（8 字节）
+✅ 确认实验树的关键二进制现在 100% 是 ZV-1M2 原版
+✅ **排除 patch 因素**（原版行为完全相同）
+✅ 确认 QEMU 实验树的 libObj 早已是 ZV-1M2 版
+❌ 帧 = 0
+```
+
+## ⑥ 现在的处境（诚实的全貌）
+```
+已在 QEMU 里跑起来的（全部原版二进制）：
+  内核 → initramfs → bootin.elf → im.elf → libIMDB → appFwBoot.so
+  → Application_System_Init → dlopen appFw.so → dlsym Application_Start
+  → 建线程 → uxengine_init2(640×480) → Application_Start ENTER
+  → site2 → 0x7238c0 → 4×createLayer + setActive(true) + setClear(false) ✅
+
+卡在：Application_Start 内部 site2 之后，RETURN 永不发生
+  已排除：patch（本层）／Thumb 位（第 149 层）／UAL 探针（第 172 层）
+          ／符号钩子（内部函数，第 175 层）／6 种观测手段
+⇒ **剩下的最可能：QEMU 环境缺某个硬件响应，导致 site2 内部某个调用阻塞**
+```
+
+## ⑦ 下一步（重新聚焦到环境，而不是二进制）
+```
+site2 内部 10 个调用中，只剩 6 个未排除：
+  0x54d094 / 0x54d0b0 / 0x54d0cc / 0x54d0e8 / 0x54d27c / memset
+这些都是 appFw 内部小函数。
+
+⇒ 换思路：**在 QEMU 侧加日志**，而不是在 guest 侧埋点。
+   我们的 QEMU 是自建的（qsrc/hw/arm/zve10.c），可以在 MMIO 层记录
+   所有 GPE / sugilite 寄存器访问，看卡住前的最后一次访问是什么。
+   这比在 guest 里埋点安全得多，且不污染被测系统。
+```
