@@ -137,3 +137,101 @@ string_english.uxc 差异：
 3. 对比 ZVE10 一代的 im.elf 与 ZV-1M2 的 im.elf
 4. 决定路线 1 还是 2
 ```
+
+---
+
+## 六、★ 四项确认结果（2026-11-05 第 67 轮）
+
+### 1) `im.elf` **不依赖** `viewUnified*.so`，也不依赖 `appFw.so`
+```
+ZVE10  im.elf (23240 B) md5=f1c746e3…
+ZV1M2  im.elf (23240 B) md5=d2f47a82…
+⇒ 大小相同、内容不同；NEEDED 完全一致（libIMDB/libbackup/libosal_* /libdl/...）
+⇒ 字符串里只提到 **/usr/lib/libObj.so**，完全没提 viewUnified 或 appFw
+⇒ **im.elf 是通用加载器，加载什么由 libIMDB 的清单决定**
+```
+
+### 2) ★★★★ `libIMDB.so` 才是真正的"加载清单"，两代入口名不同
+```
+ZVE10  libIMDB.so  37204 B  md5=7581e5cd…   清单里有: **appFw.so**
+ZV1M2  libIMDB.so  40596 B  md5=91eca62f…   清单里有: **appFwBoot.so**
+⇒ **两代都通过 appFw 加载 UI，只是入口名不同。**
+```
+
+### 3) ★★★★ 但 **ZVE10 一代的 `appFw.so` 文件在所有已知固件里都不存在**
+```
+全盘搜索 appFw.so 结果：
+  ZV1M2      64273528 B   ✅ 存在
+  ZVE10M2    93620512 B   ✅ 存在
+  ZV1F       53189440 B   ✅ 存在
+  ZVE10      —            ❌ **不存在**
+  
+  （另有 port_m2/out、emu/root、port_v2/out 等我们自己的实验产物）
+  
+原始固件 ZVE10_V203_unpacked 全盘搜索：也**没有** appFw.so。
+⇒ **这与 ZV1M2 的情况完全一致**（第 135 层已证：IMDB 清单是模板，
+   191 项里有 118 项在固件中不存在）。
+```
+
+### 4) ZVE10 一代的 UI **确实在 viewUnified*.so 里**
+```
+libObj.so NEEDED（20 项）：
+  libBizFw.so（业务固件，ZVE10 独有）
+  libmprctrl.so / libmpr.so（影像处理）
+  libMWF.so / libsencore.so / libBackupManager.so …
+  ⇒ **不依赖 viewUnified**（说明 viewUnified 是被 IMDB 按需加载的，不是硬依赖）
+
+viewUnified2.so NEEDED（仅 3 项）：
+  CautionConfig.so      ← ★ ZVE10 独有（ZV-1M2 没有）
+  libgcc_s.so.1
+  libc.so.6
+  ⇒ viewUnified 依赖 CautionConfig.so
+
+ZV-1M2 的 libIMDB 清单里**没有** viewUnified*、CautionConfig*
+ZVE10 的 libIMDB 清单里**有** appFw.so、gui.so、libgpe.so、libgrm.so（但文件都不存在）
+```
+
+---
+
+## 七、结论：移植路线明确
+
+### 路线 1（推荐）：把 ZV-1M2 的整个 UI 栈搬过去
+
+```
+必须替换的入口：
+  ZVE10 的 libIMDB.so  → ZV1M2 的 libIMDB.so
+    （因为清单里要 appFwBoot.so 而不是 appFw.so）
+
+必须新增的库（ZV-1M2 独有的 30 个）：
+  appFw.so / appFwBoot.so / AdjChkConfig.so / libuiobserve.so / …
+
+可以删除/保留的（ZVE10 独有 18 个）：
+  viewUnified2..8.so + CautionConfig*.so + libBizFw* + libmprctrl …
+  ⇒ **建议保留**（一代原生功能仍需要 libBizFw/mprctrl），
+     只让新 UI 接管 WidgetSystem 层
+```
+
+### 关键风险点
+
+```
+⚠️ 1. `libIMDB.so` 换掉后，ZVE10 原生的 168 个库里有 18 个不在 ZV1M2 清单里
+      ⇒ 那些原生功能（闪光灯/AF/PAL 等）会失去加载入口
+
+⚠️ 2. ZV-1M2 的 `appFw.so` 是否依赖 `viewUnified*` 里才有的类？
+      已验证：appFw.so 的 15 个 NEEDED 里没有 viewUnified ✅
+
+⚠️ 3. `CautionConfig.so` 只有 ZVE10 有，而 viewUnified2 依赖它
+      ⇒ 若保留 viewUnified，必须保留 CautionConfig
+```
+
+### 推荐的移植顺序
+
+```
+① 备份 ZVE10 的 libIMDB.so
+② 放入 ZV-1M2 的 30 个独有库
+③ 换 libIMDB.so 为 ZV-1M2 版
+④ 保留 ZVE10 的 viewUnified*/CautionConfig*/libBizFw*（避免丢原生功能）
+⑤ 保留 kmod（已证 102/103 同名，78 个字节完全相同）
+⑥ 换 /setting/*（ZV-1M2 同代）
+⑦ 上机测试
+```
