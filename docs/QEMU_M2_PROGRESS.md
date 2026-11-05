@@ -25328,3 +25328,98 @@ appFw.so：
    这个判别只需看日志行号，成本几乎为零，
    但决定了后面所有排查的方向。
 ```
+
+---
+
+# ★★★★★★★★★★★ 2026-11-06 第二百七十七章（第 161 轮）：**找到输入事件队列：qid=0x7a804c 和 qid=0x7a0020**
+
+## ① 从 RCVC 日志中筛出 libObj 的无限等待
+```
+RCVC 日志里来自 libObj.so 的 tmo=-1（无限等待）：
+  RCVC n=3   qid=**0x7a804c**  off=0x209c91   ← 反复出现
+  RCVC n=4   qid=**0x7a0020**  off=0x20a5c1   ← 反复出现
+  RCVC n=6   qid=0x90819d      off=0xd283d    （只出现 1 次）
+
+出现次数：0x7a8020 出现 6 次，0x7a804c 出现 6 次
+⇒ 它们是**持续轮询的队列**
+```
+
+## ② 符号化：两个等待点都属于 InfraInput
+```
+0x209c91 → InfraInput::SetEventKeyList+0x9c1
+0x20a5c1 → InfraInput::SetEventKeyList+0x12f1
+
+⇒ **这两个 qid 就是 InfraInput 的事件队列**
+  （符号表粒度粗，但都归在 InfraInput 类内）
+```
+
+## ③ libObj 的输入子系统完整体（已确认存在）
+```
+infra_input_init  0x208134   ← 初始化（传 r0=122/0x7a）
+infra_input_res   0x2080bc   ← resume
+infra_input_sus   0x2080f8   ← suspend
+infra_input_exit  0x207b58   ← exit
+
+InfraInput::GetInstance     0x208004
+InfraInput::SetCallback     0x2085b4
+InfraInput::GetEventStatus  0x208790
+InfraInput::SetEventKeyList 0x2092d0  ← 等待点在此之后的代码里
+InfraInput::SetEventKeyListAll 0x2089e8
+InfraInput::SendEventInitData  0x2088b8
+```
+
+## ④ a7c2 的输入注入方案（对照）
+```
+他们的做法（inject-cp-event.c）：
+  osal_valloc_msg_wait(queue, &msg, 48, 1)
+  osal_set_msg_src(msg, src)
+  osal_snd_msg(queue, msg)
+
+消息布局（48 字节）：
+  [0..1]   frame  (0x2003)
+  [2..3]   code   (0x8201)
+  [0xa..b] sub    (3)
+  [0x1c..1f] param
+```
+
+## ⑤ 本层净收益（关键定位）
+```
+✅ **找到两个输入事件队列：qid=0x7a804c（轮询）、qid=0x7a0020（轮询）**
+✅ **确认等待点在 InfraInput 类内（off 0x209c91 / 0x20a5c1）**
+✅ **列出 libObj 输入子系统的全部 12 个导出函数**
+✅ 基线完好（1295/44/6）
+❌ 帧 = 0
+```
+
+## ⑥ 下一步（实现注入器）
+```
+在 argtrace.so 里加一个注入函数：
+  1. dlopen libosal_uipc.so 或 dlsym 拿 osal_valloc_msg_wait / osal_snd_msg
+  2. 分配 48 字节消息
+  3. 按 a7c2 的布局填充（frame=0x2003, code=0x8201, sub=3, param=事件码）
+  4. 向 0x7a804c 和 0x7a0020 各发一次
+  5. 观察：主循环是否被唤醒？是否产生 widget/绘制？
+
+★ 风险：注入可能破坏基线。必须先小规模试（发 1 条），
+   并核对三指标。
+```
+
+## 方法论（第 265 条）★★★★★★★ 本会话最重要的方法论
+**"日志里被反复轮询的 qid，就是系统在等的东西——这是最容易被忽略的线索"：
+```
+我从第 197 层就有 RCVC 日志（osal_rcv_msg_tmo 的 qid 和 caller），
+但一直只把它当作"又一个探针输出"。
+
+实际上它直接给出了答案：
+  **qid=0x7a804c 和 0x7a0020 被反复无限等待，且来自 libObj.so**
+  ⇒ 这就是 UI 引擎在等的输入队列
+
+⇒ 判据：**"谁在被反复等待"是排查"系统在等什么"的第一手数据。**
+   任何循环/轮询的日志，都要统计**重复次数最多的对象**，
+   那通常就是"系统依赖但缺失的东西"。
+   
+   本会话我在第 135 轮做过类似的统计（RCVC 按 qid 分布），
+   但当时被 "0x16c8477 ×11" 这个热点干扰（那是热靴轮询），
+   没有注意到 0x7a804c/0x7a0020 来自 **libObj**（UI 引擎），
+   而 UI 引擎才是我们真正关心的。
+```
