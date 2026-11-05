@@ -20496,3 +20496,103 @@ B 组（PRIVATE）： 0x040cf50c / 0x28579d14 / 0x0f676c4c
 
 ⇒ 判据：**样本量不足时不要下结论**，先把捕获窗口拉长到能看出
    "哪些是常态、哪些是异常"。数量本身会带来新的分辨率。
+
+---
+
+# ★★★★★★★★★★★ 2026-11-06 第二百二十五层（第 109 轮）：**照 a7c2 的 mutex-trace 设计，钩子不再破坏启动！**
+
+## ① 用户指引："参照 a7c2-re" —— 找到了关键文件
+```
+/root/fw/a7c2re/report/2026-10-17-qemu-native-camera/runtime/analysis/
+  **mutex-trace.c**         ← ★ 正是我在找的东西
+  test-mutex-trace.c        ← 配套测试
+```
+
+## ② a7c2 的 mutex-trace 设计（三个关键差异）
+```c
+static int (*native_lock)(void *);
+static int (*resolve(void))(void *) {
+    int (*fn)(void *) = dlvsym((void *)-1, "pthread_mutex_lock", "GLIBC_2.17");
+    if (!fn) { write(2, "MUTEX_TRACE_RESOLVE_FAILED\n", 27); _exit(126); }
+    __atomic_store_n(&native_lock, fn, __ATOMIC_RELEASE);
+    return fn;
+}
+__attribute__((constructor)) static void init(void) { resolve(); }   ← ★ ①
+
+int pthread_mutex_lock(void *mutex) {
+    int (*fn)(void *) = __atomic_load_n(&native_lock, __ATOMIC_ACQUIRE);
+    if (!fn) fn = resolve();
+    if ((unsigned long)mutex < 4096) {          ← ★ ③ 只报无效地址
+        ... MUTEX_TRACE_INVALID ...
+    }
+    return fn(mutex);                            ← ★ ③ 热路径零开销透传
+}
+```
+
+**与我第 217 层失败做法的对比：**
+
+| | 我的（失败） | a7c2（成功） |
+|---|---|---|
+| 解析方式 | `dlsym(RTLD_NEXT)` **在钩子体内** | `dlvsym((void*)-1, sym, ver)` **在 constructor 里** |
+| 解析时机 | 每次调用都检查 `if (!ptr)` | **启动时一次** |
+| 日志策略 | **每次调用都 log** | **只在异常时 log** |
+| 热路径开销 | dlsym + logline | **纯尾调用** |
+
+**⇒ 我失败的原因是：①钩子体内调 dlsym 造成递归；②热路径写日志阻塞链接器**
+
+## ③ ★★★★★ 实测：照此设计后，钩子不再破坏启动
+```
+行数=1179  [AS]=38  createLayer=6  **ENTER=1**
+MUTEX_TRACE: 0 条（没有无效锁）
+⇒ **基线完好！**
+```
+
+## ④ 这推翻了第 217 层的结论
+```
+第 217 层我说："禁止用 LD_PRELOAD 钩 libc 同步原语，
+              因为动态链接器自身会用它们 ⇒ 递归/死锁/崩溃"
+
+★ 正确的表述应该是：
+  "**可以钩，但必须**：
+   ① 在 constructor 里用 dlvsym 解析（不在钩子体内 dlsym）
+   ② 热路径零开销（纯尾调用，不写日志）
+   ③ 只在异常时输出"
+  
+  a7c2 的 mutex-trace.c 就是活证据 —— 它在生产环境里用同样的办法。
+```
+
+## ⑤ 本层净收益（重要突破）
+```
+✅ **找到 a7c2 的 mutex-trace.c（第 205 条方法论说的"硬约束"其实是可绕过的）**
+✅ **理解三个关键设计差异（constructor/dlvsym/只报异常）**
+✅ **照此实现后，钩子不再破坏启动（1179/38/6 ENTER=1）**
+✅ **推翻第 217 层的错误结论**
+❌ 没有捕获到无效锁（说明 mutex 地址都合法）
+❌ 帧 = 0
+```
+
+## ⑥ 下一步（改进检测条件）
+```
+a7c2 只报 `mutex < 4096`（无效低地址）。
+我们的情况：Application_Start 在等一个**合法地址**的 futex，
+所以需要扩展检测：
+  · 报告 mutex 地址落在 appFw 数据段范围
+  · 或：记录 tid=195 调用 lock 时的 mutex 地址（不管合法性）
+  · 关键：**只在 tid==g_as_tid 时详细记录**
+```
+
+## 方法论（第 213 条）★★★★★★ 本会话最有价值的一条
+**"'做不到'的结论，往往只是'我没想到正确的做法'"：
+```
+第 205 层我把"不能钩 libc 原语"写成了**硬约束**，
+第 217 层又验证了一次"钩 pthread_mutex_lock 会破坏启动"。
+两轮都确信这条路走不通。
+
+★ 用户一句"参照 a7c2-re"就打破了它：
+  他们用 3 个小技巧（constructor 解析 / dlvsym / 只报异常）
+  就把同样的事做成了生产级工具。
+
+⇒ 判据：把某条路判"不可行"之前，**先找同行是怎么做的**。
+   尤其当对方是"已经在生产环境跑通"的项目时，
+   "我做不到"极可能是"我的做法不对"，而不是"这件事不可能"。
+  这比反复自证"为什么不行"有价值得多。
