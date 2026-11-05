@@ -14157,3 +14157,88 @@ ASSITE about to call real_start
    只有当"运行时值"本身是唯一答案时，才动代码插桩，
    并且插桩必须**先在一个可丢弃的最小程序里验证**（不是在固件进程里首验）。
 ```
+
+---
+
+# ★★★★★★★★★ 2026-11-05 第一百五十四层（第 33 轮）：**引擎执行到帧循环入口，但从未进入事件泵**
+
+## ① ★★★★ 找到了引擎真正的主循环（不是之前以为的 0x54f664 开头）
+```asm
+  54f888: mov  r0, r8
+  54f88a: movw r1, #1014      ; 0x3f6
+  54f88e: blx  0x9245a8
+  54f892: mov  r5, r0
+  54f894: blx  UXEngine::wgtsys()                       ← 取 WidgetSystem 单例
+  54f898: blx  WidgetSystem::processEvent()             ← ★ 泵一个事件
+  54f89c: cmp  r0, #0
+  54f89e: bne  54f894                                   ← ★ 非零则继续循环
+  54f8a0: cbz  r5, 54f8a8
+```
+**引擎的主循环就是 `while (wgtsys()->processEvent()) {}`。**
+
+另一处同样的组合（`0x54ed32`→`0x54ed36`），前面还多了 `updateCurrentTime()`：
+```
+  54ed1e: blx wgtsys()
+  54ed22: blx WidgetSystem::updateCurrentTime()
+  54ed32: blx wgtsys()
+  54ed36: blx processEvent()
+  54ed3a: mov  r5, r0
+```
+
+## ② ★★★★★ 用符号钩子（零风险、LC_PRELOAD）实测得到决定性数据
+```
+UXLOOP wgtsys n=1 -> 0xf064000
+UXLOOP wgtsys n=2 -> 0xf064000
+UXLOOP wgtsys n=3 -> 0xf064000
+UXLOOP processEvent：**0 次**
+```
+
+**`wgtsys()` 被调用 3 次（且返回非零单例 `0xf064000`），
+但 `processEvent()` **一次都没有被调用**。**
+
+## ③ 精确定位到"断点"
+```
+appFw 里 processEvent 只有 2 个调用点：
+  0x54ed36  （updateCurrentTime 之后）
+  0x54f898  （帧循环里）
+两处都**没有触发**。
+
+而 wgtsys 的 3 次调用来自别处（0x54db76 / 0x54dba6 / 0x54dc72 / 0x54de50 / 0x54de80 等），
+那些点后面跟的是别的调用，不是 processEvent。
+⇒ **引擎走到了主循环的"取单例"这一步，却从未走到"泵事件"这一步。**
+⇒ 这是本项目第一次把断点定位到**具体两条指令之间**（wgtsys 返回 → processEvent 调用）。
+```
+
+## ④ 为什么这很重要
+```
+之前所有分析都停在"Application_Start 被进入但没画图"。
+现在精确到：
+  · 主循环结构已知：while (wgtsys()->processEvent()) {}
+  · wgtsys() 可达且返回有效单例 0xf064000
+  · processEvent() 不可达
+⇒ 下一步只需回答一个问题：**为什么 0x54f898 / 0x54ed36 这两条 blx 没执行？**
+  候选：
+    A. 主循环根本没被进入（3 次 wgtsys 来自别处）——需确认调用点
+    B. 进入了，但上一行 blx 0x9245a8 返回后跳走了
+    C. processEvent 的 PLT 桩被解析到错误地址（静默跳过）
+```
+
+## ⑤ 本层净收益（本轮最有价值）
+```
+✅ 找到引擎真正的主循环结构 `while (wgtsys()->processEvent()) {}`
+✅ 用零风险符号钩子拿到运行时数据（不需要改代码、不需要 UIG）
+✅ WidgetSystem 单例有效（0xf064000）
+✅ **把断点定位到 wgtsys 返回与 processEvent 调用之间的两条指令**
+❌ 帧 = 0
+```
+
+## 方法论（第 143 条）★★★★★
+**"导出符号钩子能做到的事，远比想象的多——先用它，再考虑改代码"：
+```
+我用 UDF 代码补丁折腾了 2 轮（失败），
+而挂两个普通的 LD_PRELOAD 符号钩子（wgtsys / processEvent），
+一次运行就得到了"主循环走到哪、断在哪"的决定性数据。
+⇒ 判据：想观测某段固件逻辑时，先列出它**调用的所有导出符号**，
+   逐个挂钩子；只有钩子完全无法回答的问题，才考虑代码补丁。
+   本例中"主循环是否被进入"这个关键问题，两个符号钩子就答完了。
+```
