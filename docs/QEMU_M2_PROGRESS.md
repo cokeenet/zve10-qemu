@@ -22219,3 +22219,115 @@ Application_Start 线程（tid=195）的全部可观测行为：
 
    本轮两者都满足（剩 pthread_mutex/自旋/自定义 futex）。
 ```
+
+---
+
+# ★★★★★★★★★ 2026-11-06 第二百四十六章（第 130 轮）：**读 a7c2 源码：他们的方案是「AP 侧消费者」，不是等固件渲染完**
+
+## ① a7c2 的 headless-osd.h 揭示了完整架构
+```c
+/* AP software consumer, experimental RGBA4444 only; no CP compositor or panel. */
+#define HOSD_CONTROL     0x8280074dU
+#define HOSD_UPDATE      0x8280084dU
+#define HOSD_META_UPDATE 0x8280084eU
+#define HOSD_AP          0x8288076cU     ← ★ AP 通道
+#define HOSD_GUI         0x9088076bU     ← ★ GUI 通道
+#define HOSD_PIXELS      (640U * 480U * 2U)   ← 614400 字节
+#define HOSD_HEADER      128U
+
+struct hosd_ops {
+    int (*receive)(unsigned int, void **, long);     ← 接收帧
+    unsigned int (*size)(void *), (*source)(void *);
+    int (*release)(unsigned int, void *);
+    int (*allocate)(unsigned int, void **, unsigned int, unsigned int);
+    void (*set_source)(void *, unsigned int);
+    int (*send)(unsigned int, void *);
+    int (*frame)(struct hosd_frame *, unsigned char *);
+    ...
+};
+int hosd_step(struct hosd_state *, const struct hosd_ops *, const char *);
+```
+
+## ② ★★★★ 架构上的根本差异
+```
+**我以为的路径：**
+  固件跑完 Application_Start → 构建 widget → 绘制 → 产生帧 → 我去抓
+
+**a7c2 的实际路径：**
+  固件通过 **消息/信号量通道**（HOSD_CONTROL / HOSD_UPDATE / HOSD_AP / HOSD_GUI）
+  把帧**主动推给一个"AP 消费者"**。
+  a7c2 自己实现了这个消费者（hosd_step），
+  **不是等固件自己渲染到屏幕上**。
+
+⇒ 这就是为什么他们能出帧、我们不能：
+   他们**扮演了固件期望的那个消费者**，
+   而我在"等固件自己完成"。
+```
+
+## ③ 我们的固件也有同类基础设施
+```
+appFw.so 里的符号：
+  **scoped_qid::scoped_qid(int)**
+  **create_msg_qid / destroy_msg_qid**
+  infra_wrapper_bluetooth::detail::create_msg_qid()
+  crashed QID:0x%08X
+
+⇒ 固件用 qid（消息队列 id）做进程间通信
+⇒ site3 里注册的 0x870935 / 0x87094e 就是两个 qid
+⇒ **这两个 qid 正是"帧生产者 → 消费者"的通道**
+```
+
+## ④ ResourceManager 已确认正常工作（排除一个怀疑）
+```
+日志：
+  [AS]RM switchBank ENTER n=1 self=0x3b bank=0
+  RM switchBank LEAVE n=1 **ret=1**      ← 成功
+  ...共 12 次，全部 ret=1
+⇒ ResourceManager 不是卡点
+```
+
+## ⑤ 本层净收益（方向性突破）
+```
+✅ **读懂 a7c2 的 headless-osd.h，理解其"AP 消费者"架构**
+✅ **理解我们与他们路线的根本差异（等渲染 vs 扮演消费者）**
+✅ **发现我们的 appFw 也有 qid 消息队列基础设施**
+✅ **定位 site3 注册的两个 qid（0x870935 / 0x87094e）就是这些通道**
+✅ 排除 ResourceManager（12 次 switchBank 全成功）
+❌ 帧 = 0
+```
+
+## ⑥ 下一步（方向明确）
+```
+不再等固件渲染完，而是：
+  1. 查清 site3 注册的 qid 0x870935 / 0x87094e 的用途
+  2. 看固件是否把帧"发送"到某个 qid
+  3. 若是，我们扮演消费者去接
+
+★ 具体：反汇编 0x558a00（注册 0x870935）和 0x558cbc（注册 0x87094e），
+   看它们调用 osal_create_msg_qid 后，谁往这些 qid 发消息。
+```
+
+## 方法论（第 234 条）★★★★★★ 本会话最重要的方法论
+**"读对方源码比反复试错快 10 倍——尤其当对方已经跑通时"：
+```
+我在"等固件渲染完再抓帧"这个假设上投入了约 60 轮，
+尝试了 LD_PRELOAD 钩子、pt_regs、内核栈、gdb 断点、futex 跟踪……
+全部围绕"固件没跑完"这个框架。
+
+读了 a7c2 的 headless-osd.h（200 行）后立刻明白：
+**他们根本不走这条路** —— 他们实现了一个 AP 侧消费者，
+由固件通过 qid 通道主动推帧。
+
+⇒ 判据：**当一条路走了很久都不通时，先花 10 分钟读"已经跑通的人"的代码**，
+   而不是继续在自己的假设框架里找出路。
+   我在第 109 轮用户提示"参照 a7c2-re"时学到了这个教训（mutex-trace），
+   但没把它推广到**架构层面**——只学了单个工具的写法，
+   没有学整体的方案设计。
+```
+
+## ⑦ 附：已排除假设清单（更新）
+```
+❌ 硬件未建模  ❌ 死锁/D状态  ❌ 探针污染  ❌ appFw 补丁
+❌ Thumb 位    ❌ sleep 不可靠  ❌ frame+16 为 NULL  ❌ 线程栈大小
+❌ 分支选择    ❌ 条件变量      ❌ **ResourceManager（本轮新增）**
+```
