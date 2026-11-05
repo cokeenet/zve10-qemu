@@ -23275,3 +23275,97 @@ bootin.elf
    返回值、调用次数。一个参数是文件名的 init，
    十有八九是"加载那个文件"。
 ```
+
+---
+
+# ★★★★★★★ 2026-11-06 第二百五十七章（第 141 轮）：**完整还原 site2 的结构与执行进度**
+
+## ① ENTRY_LOCK 全部来自同一处
+```
+ENTRY_LOCK 的 caller 分布：
+  38 × caller=**appFw.so+0x52abfe**   （std::mutex::lock 内联 thunk）
+   1 × caller=libosal_utm.so+0x99a
+   1 × caller=libosal_utm.so+0x9be
+
+ENTRY_FRAME next 分布：
+  38 × next=0x2e3b3bff
+  ⇒ 换算：0x2e3b3bff - 0x2de89001(appFw基址) = **0x52abfe**
+  ⇒ **栈帧的 next 与 caller 完全一致 ⇒ 帧链未被正确保存（-O2 内联）**
+```
+
+## ② ★★★★ site2 的完整执行结构（已还原）
+```asm
+0x54d2b0  site2 入口：stmdb sp!, {r4-r9,sl,lr} ; sub sp,#8
+  ...
+  0x54d318: **bl 0x54d120**      ← ★ 建 4 个 UI layer 的地方
+              0x54d120:
+                push {r3,r4,r7,lr}
+                0x54d12e: bl 0x7238c0   ← 真正的 UI 初始化
+                0x54d132: pop {r3,r4,r7,pc}  ← 返回
+  0x54d31c: movs r1,#0 ; movs r2,#52 ; mov r0,r6
+  0x54d322: blx memset@plt          ← 清 52 字节
+  0x54d328: bl 0x54d27c
+  0x54d32e: bl 0x79df64
+  0x54d342: r0 = r4+1704
+  0x54d346: **blx 0x923ce0**        ← PLT → appFw+0x167aa85
+  0x54d34a: r0 = r4+2144+20
+  0x54d352: str r3,[r4,#2160]      ← 清零 frame[2160]
+  0x54d356: blx 0x52abc0
+  0x54d35a: mov r0,r4
+  0x54d35c: mov sp,r7
+  0x54d35e: **ldmia.w sp!, {r4-r9,sl,pc}**   ← ★ site2 返回
+```
+
+## ③ ★ 关键：0x54d318 的调用者唯一
+```
+调用 0x54d120 的只有 1 处：**0x54d318**（在 site2 内部）
+⇒ **4 个 UI layer 确实是 site2 通过 0x54d120 → 0x7238c0 建的**
+```
+
+## ④ 已解析的 PLT 桩
+```
+0x923ce0 → target = appFw+**0x167aa85**
+  该处代码：
+    167aa84: add r7,sp,#0 ; mov r4,r0 ; mov r6,r1 ; mov r8,r2 ; mov r9,r3
+    167aa8e: bl 0x165d610
+    ...
+  ⇒ 一个接收 4 个参数的函数（r0..r3），内部再调 0x165d610
+```
+
+## ⑤ 本层净收益
+```
+✅ **确认 38 次 ENTRY_LOCK 全部来自 std::mutex::lock thunk（0x52abfe）**
+✅ **确认帧链 next 与 caller 一致 ⇒ 帧未被保存（-O2 内联）**
+✅ **完整还原 site2 的 20 条指令结构**
+✅ **确认 4 个 UI layer 由 site2 → 0x54d120 → 0x7238c0 创建（唯一调用者）**
+✅ 解析 0x923ce0 的 PLT 目标为 appFw+0x167aa85
+❌ 帧 = 0
+```
+
+## ⑥ 下一步（关键：site2 是否执行到 0x54d35e）
+```
+site2 在 0x54d318 建完 layer 后还有 15 条指令才返回。
+若它卡在中间（例如 0x54d346 的 PLT 调用），
+则 site2 不返回，site3 自然不执行。
+
+★ 验证方法：给 0x54d346 的 PLT 目标（appFw+0x167aa85）
+   加一个观测点 —— 但这需要钩内部函数（不可行）。
+
+⇒ 改用：**QEMU gdbstub 在 0x54d35e（site2 返回点）下断点**，
+   若命中则 site2 正常返回；若不命中则卡在中间。
+   断点需要运行时地址 = appFw基址 + 0x54d35e。
+```
+
+## 方法论（第 245 条）★★★★
+**"把'是否到达某点'变成'在该点下断点'，比追踪中间每一步更有效"：
+```
+我一直试图通过中间调用来推断 site2 是否返回，
+但每个中间调用都有自己的不确定性。
+
+直接的做法：**在 site2 的返回指令（0x54d35e）下断点**。
+  · 命中 ⇒ site2 正常返回，问题在 site3 之前
+  · 不命中 ⇒ site2 卡在中间，问题在 site2 内部
+
+⇒ 判据：**当需要判断"是否到达某点"时，优先在该点设断点**，
+   而不是追踪到达该点所需的每一步。
+   gdbstub 可以在不修改 guest 内存的情况下做到这一点。
