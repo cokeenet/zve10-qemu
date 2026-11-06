@@ -38857,3 +38857,31 @@ ARM 是**小端**：指令 e92d4ff0 在内存中的字节顺序是 **2d e9 f0 4f
 ```
 
 **⚠️ 本轮 2 次 QEMU 运行，已收尾，实例数 0。基线 1454/45/6/FB=1。**
+
+# ★★★★★★★★★ 2026-11-07 第四百零二章（接手第 40 轮）：**按 a7c2 方法完成受控 TB 断点证据，未亮屏**
+
+## ① 做法先对照 a7c2
+- 先读 `menu-observe.c` / `inject-cp-event.c` / `headless-osd.c`，确认参考项目采用的是**有界、精确、可验证**的观察/注入，而不是全量 `-d exec` 日志。
+- 当前 argtrace 源码中的 `inject_input_event()` 只有声明和定义，没有调用点；历史 `INJECT_CP` 日志不能归因于当前源码/当前产物。本轮没有把旧日志当新实验结果。
+- QEMU 追踪只在 `cpu_tb_exec()` 加入可选环境变量 `ZVE10_TB_TRACE`，限制到 appFw 候选低 20 位窗口，且最多 2000 条；完成后已移除该实验代码并用 systemd cgroup 编译。
+
+## ② 新的硬证据
+受控运行目录：`/mnt/build/m2qemu/out/tbtrace39`、`/mnt/build/m2qemu/out/tbwindow40`、`/mnt/build/m2qemu/out/tbbase41`。
+
+- 三次 QEMU 均使用 `systemd-run --unit=zve10-* --collect --property=MemoryMax=4G`，不是直接创建大内存进程。
+- 每次均单实例启动；结束后 `qemu-system-arm` 残留为 0，unit 为 inactive。
+- `tbtrace39` 精确命中低位 `0x4d318` 和 `0x4d5ac`，即 site2 内部与 Application_Start 调用点对应的 TB；未命中 `0x4f664`。
+- `tbwindow40` 显示低位窗口在多个映射对象中反复出现；这证明“只看低 20 位”会产生跨模块假阳性，不能作为 appFw 身份判据。
+- 随后增加了候选基址的整偏移校验：只有当 `(候选基址 + 0x54f664)` 读到 appFw 文件签名 `2d e9 f0 4f` 才接受为 appFw。`tbbase41` 未产生 `ZVE10_APPFW_BASE`，因此当前 TB 采样尚未取得可宣称的 appFw 绝对基址或 site3 精确命中。
+- `tbtrace39` 帧采样仍为 `nonzero=0/unique=1`；历史基准与本轮均没有 640×480、614400 字节、非零>1000 的可验收帧。
+
+## ③ 当前结论
+- 旧的“site2 已执行、site3 未执行”仍由 guest 插桩 `STARTCMP` / `S3REG` 证据支持，但本轮没有把低位 TB 命中误写成 site3 断点证据。
+- `0x1cf60b9` 仍只能称为 `osal_rcv_msg_tmo` 无限等待 receive site；a7c2 风格 48B CP 注入在当前源码没有接入执行路径，历史 alloc/send=0 只能作为旧产物证据。
+- **达成标准仍未完成：帧=0，未记录可验收物理地址/SHA256，不能声称新菜单已在 QEMU 点亮。**
+
+## ④ 本轮收尾
+- QEMU 实例：0。
+- QEMU 试验源码已清理，默认构建不含 TB 追踪逻辑。
+- 报告必须保留上述限制：低位地址跨模块碰撞，必须做整偏移签名校验；没有 `ZVE10_APPFW_BASE` 就不能称为 site3 精确断点。
+
