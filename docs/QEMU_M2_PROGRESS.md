@@ -38468,3 +38468,98 @@ site3 入口（0x54f664）到第一个真调用（0x54f68a）之间：
 ```
 
 **⚠️ 本轮 3 次 QEMU 运行（含 1 次 cpio 损坏重试），已收尾，实例数 0。**
+
+---
+
+# ★★★★★★★ 2026-11-07 第四百一十章（第 294 轮）：**GRM 触发回调节点；矛盾已成铁壁**
+
+## ① ★★★★★★★ 找到一个重要的架构节点：GRM 触发回调注册
+```
+0x54ef74 内部（site3 第一个调用的函数）末尾：
+  54efe2: mov r1, r4
+  54efe4: ldr r3, [pc,#24]
+  54efe6: ldr r0, [r5, r3]
+  54efe8: **blx GRM_fbrmRegisterTriggerFrameworkCb@plt**
+
+libObj 0x115688 = GRM_fbrmRegisterTriggerFrameworkCb
+JUMP_SLOT = appFw+0x377b3e8
+```
+
+**★ 这就是 a7c2 §7.1 说的 `grm::` 机制：固件把"帧触发回调"注册给平台，
+  由平台在合适的时机回调，从而驱动绘制。**
+**★ 这解释了为什么 `onDrawNotice` / `GRM_gpermFillrect` 全为 0：
+   回调**注册了但没有被触发**。**
+**★ 而注册代码在 `0x54ef74` 里 —— 它在 `site3` 入口的 26 字节之后。**
+
+## ② ★★★★★★★ 实测：GRMRegisterTrigger 的 GOT 槽也**未解析**
+```
+GOTS GRMRegisterTrigger slot=0x31b743e8 value=0x2e9219d0 rel=0x5289d0 PLT0(never-called)
+⇒ **0x54efe8 从未执行** ⇒ 0x54ef74 也从未执行
+⇒ 而 S3REG=0 也说 0x54f68a 未执行
+⇒ **site3 连 0x54f674（它的第一个 bl）都没走到**
+```
+
+## ③ ★★★★★★★ 矛盾已成铁壁（所有环节都已用硬证据验证）
+```
+已验证（字节级）：
+  ① Application_Start（0x54d580）严格线性，0x54d5a6→site2，0x54d5ac→site3（BL 目标已手工解码 = 0x54f664）
+  ② site2（0x54d2b0）0 条分支，内部 11 个调用全部不阻塞，UX 初始化（0x7238c0..0x723a7e）0 条分支
+  ③ site3（0x54f664）= 真入口（e92d 4ff0 = stmdb {r4-r11,lr}）
+  ④ site3 的 0x54f6fe 是 b.n 0x54fb3e（无分支直接跳循环头）
+
+已验证（实测）：
+  ⑤ createLayer=6/12、LAYERVT=18、INITSEQ=61 ⇒ **UX 初始化确实执行**
+  ⑥ S3REG=0 ⇒ site3 未到 0x54f68a
+  ⑦ GOTS: gfxeng/psm/drawFB/notifyDraw/updateFrame/initSprite/setParent/GRMRegister **全部 PLT0**
+     ⇒ 这 8 个函数一次都没被调用过（物理证据，不受 hook 影响）
+  ⑧ GOTWATCH 180 秒无变化 ⇒ 排除"读得太早"
+  ⑨ 无任何异常/Abort/Oops 记录 ⇒ 不是崩溃
+
+⇒ 逻辑上 site2 返回 → site3 执行。但实测 site3 未执行。
+⇒ **矛盾。** 且已排除：栈对齐、hook 失效、采样稀疏、崩溃、读时序。
+```
+
+## ④ 本层净收益
+```
+✅ **发现 GRM 触发回调注册机制（0x54efe8 → libObj 0x115688）**
+✅ **理解"注册了但没触发"才是 onDrawNotice=0 的真正机制**
+✅ **确认 GRMRegisterTrigger 的 GOT 也未解析 ⇒ 注册代码从未执行**
+✅ **矛盾已用 9 项硬证据锁死，排除全部常见解释**
+✅ 基线核心指标完好（createLayer=6 / LAYERVT=18 / FB=1）
+❌ 帧 = 0
+```
+
+## 方法论（第 398 条）★★★★★★★★★★★
+**"当矛盾被 9 项硬证据锁死时，错的一定是某个'从未验证的前提'——而不是现象":
+```
+本会话已用硬证据排除：栈对齐、hook 失效、采样、崩溃、时序、选路、UX 初始化。
+★ 剩下的可能只有一个方向：**某个我一直当作"已验证"的前提其实没验证过。**
+
+★ 候选前提清单（需要逐个复核）：
+  ① "site2 返回了"  —— 唯一证据是 createLayer=12，而 caller 归属曾用错误的 base
+  ② "createLayer 由 site2 触发" —— 第 289 轮才发现 caller 计算不可靠
+  ③ "Application_Start 是被 im.elf 正常调用" —— 但我们是 LD_PRELOAD 替换的，
+     且第 290 轮 naked 桩显示 **lr=0x131da53d**（在 im.elf 内），
+     若 im.elf 用的是**静态链接地址**而非 GOT 解析，我们的 hook 从未生效过，
+     那"Application_Start 执行"本身就是假的
+
+⇒ 判据：**先验证"入口是否真的被调用"（用 JUMP_SLOT 或全局写入），
+   而不是依赖 hook 的日志。**
+```
+
+## ⑤ 下一步（复核前提①③）
+```
+★★★ 最关键的一步：**验证 Application_Start 的调用是否经由 PLT**
+  · Application_Start 是 appFw 的唯一导出符号（nm 只有 1 个 T）
+  · im.elf 通过 dlopen+dlsym 取它 ⇒ 必然走 dlsym，我们的 hook 应该生效
+  · 但需要**硬证据**：读某个"只有 Application_Start 会写的全局"
+
+★ 已知 Application_Start 会写：
+   · 0x54d590 blx site0（其真身 0x2c2ed84 会写全局）
+   · site1（0x54d154）写 vtable 到 frame[0]
+
+★★ 若发现 Application_Start 也从未执行 ⇒ 整个 site2/site3 的讨论都是幻觉，
+   真正的问题在 im.elf 如何调用它。
+```
+
+**⚠️ 本轮 2 次 QEMU 运行，已收尾，实例数 0。**
