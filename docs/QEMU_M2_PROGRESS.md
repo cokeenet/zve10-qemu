@@ -28704,3 +28704,110 @@ arm-linux-nm -D appFw.so | grep -E "drawFramebuffer|notifyDraw|updateFrame|proce
 ★★  第 289 条：奇地址=算错了
 ★★  第 292 条：多出口函数要逐条判断
 ```
+
+---
+
+# ★★★★★★★★★ 2026-11-06 第三百零九章（第 193 轮）：**processEvent 在正常路径上根本不会被调用**
+
+## ① 全库搜索 processEvent 的调用点（反向追查）
+```
+扫描 usr/lib/*.so + usr/bin/*.elf：
+  ❌ appFw.so           —— **零 PLT 调用点**（只 import）
+  ❌ AdjChkConfig.so    —— **零 PLT 调用点**（只 import）
+  ❌ 其他所有库          —— 零
+
+libObj 内部引用: 56 处，但**全部是 processEvent 函数体内部的相邻符号**
+（如 `processEvent+0x5c`、`+0x2b0` —— objdump 的符号就近显示，不是调用）
+```
+
+## ② ★★★★★ 决定性：processEvent 零直接调用者
+```
+用 Thumb BL 解码扫描整个 libObj，目标 = 0x107518：
+  **直接调用者: 0 处**
+
+⇒ processEvent 是**纯导出函数**，
+   在 libObj 内部无人调用，在外部也无人通过 PLT 调用。
+```
+
+## ③ 也排除了 dlsym 路径
+```
+strings appFw.so | grep processEvent：
+  只出现 1 次 —— 那是 **.rel.plt 的符号名**，不是 dlsym 的字符串常量
+
+⇒ **没有 dlsym("...processEvent...") 调用**
+⇒ 也不可能通过 dlsym 拿函数指针
+```
+
+## ④ ★★★★★ 结论：processEvent 不可达
+```
+唯一已知的调用点是 site3 的 0x54f894（while 循环）
+—— 而该循环被 `[r7+1728] != 620` 确定性跳过（第 307 层）
+
+★ 除此之外：
+   · libObj 内部零调用者
+   · 外部库零 PLT 调用
+   · 无 dlsym
+⇒ **processEvent 在任何路径上都不可达**（至少在这个固件的启动流程中）
+```
+
+## ⑤ 这解释了一切
+```
+✅ drawFramebuffer / notifyDraw / updateFrame / processEvent 全部从未调用（第 308 层）
+✅ 原因不是"调用了但失败"，而是**这条链在设计上就没被启动**
+✅ FB 全零、无 widget、SetCallback=0 —— 全部一致
+```
+
+## ⑥ 本层净收益（本会话最重要的可达性结论）
+```
+✅ **全库扫描确认 processEvent 无 PLT 调用点**
+✅ **Thumb BL 解码确认 libObj 内部零直接调用者**
+✅ **strings 确认无 dlsym 路径**
+✅ **结论：processEvent 在启动流程中不可达**
+✅ **完整解释"绘制链从未启动"**
+✅ 基线完好（1334/44/6）
+❌ 帧 = 0
+```
+
+## ⑦ 下一步（关键判断）
+```
+★ 一个"不可达"的绘制链，意味着：
+  A. 固件本来就不该在没有输入的情况下绘制（合理设计）
+  B. 或者有一个我们尚未发现的入口（如某个事件回调）
+
+⇒ 必须找：**谁在什么条件下会调用 processEvent**
+   · 可能在 site3 的其他分支（case 620 之外）
+   · 或在 libObj 的事件回调里
+   · 或由硬件中断驱动（我们有 GRM 驱动的 21 个符号）
+
+★ 最直接：**反查 drawFramebuffer 的调用者**（不只是 appFw，
+   而是**所有库**，包括 libObj 内部）
+```
+
+## 方法论（第 297 条）★★★★★★★ 本会话最重要的方法论
+**"'导入了符号'≠'会调用它'——ELF 的 import 表可能包含永不使用的符号"：
+```
+我一直把"appFw 导入了 drawFramebuffer / notifyDraw / processEvent"
+当作"它会调用这些函数"的证据。
+
+★ 实际：
+   · 导入了，但**零调用点**
+   · 这是**链接器的默认行为**（未使用的符号也可能保留在 .rel.plt 中）
+
+⇒ 判据（硬规则）：
+   **判断"某函数是否会被调用"，必须找实际调用点**：
+     ① 反汇编搜 `@plt` 或 `bl <addr>`
+     ② 检查是否有 `dlsym` 字符串
+     ③ 检查是否存入函数指针表
+   **只看 import 表是不够的。**
+
+★ 本会话第 308 层已经怀疑这一点（"导入≠调用"），
+  本轮用三重扫描**确认**了它。
+```
+
+## ⑧ 附：本会话"import ≠ 调用"的验证方法总结
+```
+第 1 层验证：arm-linux-objdump -d | grep "符号@plt"     → 零匹配
+第 2 层验证：strings | grep "符号名"                     → 只有 .rel.plt 的符号名
+第 3 层验证：Thumb BL 解码扫描目标地址                    → 零调用者
+⇒ 三层一致 ⇒ 确证"不可达"
+```
