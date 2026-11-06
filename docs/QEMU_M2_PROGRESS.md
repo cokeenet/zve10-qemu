@@ -33538,3 +33538,74 @@ RCVC   总数: **102**
 ```
 
 **⚠️ 注意：本轮实际只做了 5 次工具调用，未跑 QEMU。QEMU 实例数保持 0。**
+
+---
+
+# ★★★★★★★ 2026-11-06 第三百五十九章（第 243 轮）：**a7c2 的 mutex-trace 不适用；/proc syscall 读不到**
+
+## ① ★ 按铁律1 读 a7c2 的 mutex-trace.c，结论是"不适用"
+```c
+/* a7c2 的完整实现：只在 mutex 指针非法（< 4096）时报告 */
+int pthread_mutex_lock(void *mutex) {
+    if ((unsigned long)mutex < 4096) { ... 记录一条 ... }
+    return fn(mutex);
+}
+```
+
+**★ 它只检测"非法低指针"，不追踪持锁者。**
+**⇒ 说明 a7c2 的固件没有遇到 futex 卡死 ⇒ 我们情况不同，此方案不适用。**
+
+## ② 尝试读 /proc/PID/task/TID/syscall 拿 futex 地址 —— 读不到
+```
+在 dump_thread_state 里加了 SYSCALL 读取（每次 open/read syscall 文件）
+基线完好：1389 / [AS]=44 / createLayer=6 / LOCK=40 ✅
+但 SYSCALL 输出：**0 条**
+
+★ 原因：/proc/PID/task/TID/syscall 对**非自身线程**通常不可读
+  （内核限制：只有同线程组或 ptrace 权限才能读）
+```
+
+## ③ 本层净收益
+```
+✅ **按铁律1 确认 a7c2 的 mutex-trace 方案不适用（它没遇到此问题）**
+✅ **尝试 /proc syscall 路径，实测不可读（0 条）**
+✅ **基线完好（1389/44/6，40/40）**
+❌ 帧 = 0
+```
+
+## 方法论（第 347 条）★★★★★★★
+**"参考实现里没有的东西，比它有的东西更能说明'你的情况和它不同'"：
+```
+a7c2 的 mutex-trace 只查非法指针，说明它**从未遇到锁竞争卡死**。
+
+★ 而我们在 futex_wait 上卡了 8/8 次。
+
+⇒ 判据：**当参考实现没有处理某个问题时，
+   先假设"它没遇到"，而不是"它解决了但没写"。
+   然后问：**为什么它没遇到？**
+   本例可能的答案：
+     · 它的固件线程模型不同（launch 阶段更少线程）
+     · 它用 --observe 的"ordinary test thread scheduling"（普通调度）
+       —— 而我们的 64 线程可能因为调度差异导致锁竞争
+
+★ 关键线索（a7c2 的 --observe 帮助文本）：
+  "log library loads and **use ordinary test thread scheduling**"
+  ⇒ 它**显式改过线程调度**！
+```
+
+## ④ 下一步（新方向：线程调度）
+```
+★★★ a7c2 用 --observe 启用 "ordinary test thread scheduling"
+   它有 real_attr_policy / real_attr_param / real_thread_param / real_scheduler
+   —— 四个 sched_* 的 dlsym！
+
+★ 这说明：它**覆盖了固件的线程调度策略**，
+  让固件不要用实时/高优先级调度，而是普通调度。
+  ⇒ 这正好能解释：我们的 30 个线程卡在 futex_wait
+    （若固件设了实时优先级，可能造成优先级反转 ⇒ 持锁线程饿死）
+
+★ 下一步：在 argtrace 里 hook pthread_setschedparam / sched_setscheduler，
+  把实时策略改成 SCHED_OTHER
+```
+
+**⚠️ 本轮 5 次工具调用，QEMU 跑 1 次，实例数 0。**
