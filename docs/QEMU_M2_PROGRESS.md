@@ -38936,3 +38936,27 @@ ARM 是**小端**：指令 e92d4ff0 在内存中的字节顺序是 **2d e9 f0 4f
 - 输入注入未启动 UI 绘制，不能把 `send=0` 或 `UPDATERES=1` 当作成功。
 - **达成标准仍未完成：帧=0，尚无物理地址/SHA256 的合格新菜单帧。**
 
+# ★★★★★★★★★ 2026-11-07 第四百零四章（接手第 42 轮）：**补充接收返回诊断，发现诊断 API 不足，未宣称消费成功**
+
+## ① 诊断改动
+- 继续沿用 a7c2 的判据，只在 `osal_rcv_msg_tmo` 返回后记录两个目标 qid 的返回码、消息指针、尝试读取的 size/source 和前 32 字节。
+- 该诊断没有修改消息内容、没有 ACK、没有直接调用 handler。
+- 结果暴露出当前树中 `osal_get_msg_size` 的解析并不成立：返回的消息 size/source 均为 0，不能把它当成真实消息头解释。
+
+## ② input43 受控运行
+输出目录：`/mnt/build/m2qemu/out/input43`
+
+- 使用 `systemd-run --unit=zve10-input43 --collect --property=MemoryMax=4G`。
+- 运行结束后 QEMU 实例为 0，unit inactive。
+- 目标接收点确实返回了 `result=0`，例如：
+  ```text
+  RCVC_RET qid=0x7a0020 result=0 msg=0x47c4c4c size=0 source=0 bytes= tid=129
+  RCVC_RET qid=0x7a804c result=0 msg=0x4930fcc size=0 source=0 bytes= tid=127
+  ```
+- 但由于 size/source getter 不适用于当前 OSAL ABI，以上只能证明 receive API 返回，不能证明返回的是本轮注入消息。
+
+## ③ 当前结论
+- `send=0` 不能证明消费；`RCVC_RET result=0` 也不能证明消费的是注入消息。
+- 本轮没有新的 `onDrawNotice`、GRM 绘制调用或合格 framebuffer；没有物理地址/SHA256 验收帧。
+- 下一步必须先从当前固件实际导出的 OSAL ABI/消息头布局确定正确的 size/source 读取方式，再重复单变量注入；不能继续使用错误 getter 推导消息内容。
+
