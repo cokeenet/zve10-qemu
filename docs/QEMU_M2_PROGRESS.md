@@ -36356,3 +36356,101 @@ a7c2 的做法是**主动制造执行**：
 ```
 
 **⚠️ 本轮 0 次 QEMU 运行（纯读参考），实例数 0。**
+
+---
+
+# ★★★★★★★★★★★★ 2026-11-06 第三百九十章（第 274 轮）：**突破：a7c2 手法成功驱动 updateResource（首次非零）**
+
+## ① ★★★★★★★ 照抄 a7c2 的时机，首次成功
+```c
+/* argtrace.c 新增 */
+int osal_snd_msg(unsigned int id, void *message) {
+    ... drive_once("snd");     /* 等 cl_n >= 4，且 tid == 入场线程 */
+}
+static void drive_once(const char *why) {
+    if (g_cl_n < 4) return;                        /* UI 构造完成 */
+    if (syscall(SYS_gettid) != g_as_tid) return;   /* UI 线程 */
+    gfxinst(); updateResource(gi);                 /* ★ */
+    wgtsys();  notifyDraw(wg);                     /* ★ */
+}
+```
+
+## ② ★★★★★★★ 实测结果：**首次成功驱动**
+```
+DRIVE_AT_SEND why=snd gfxinst=0xaa77e71 updres=0x408ce80 wgtsys=0xaa7b7d1 nd=0x408a66c cl_n=6
+DRIVE_AT_SEND gfxeng=0x4c3eb8
+DRIVE_AT_SEND updateResource=923330420      ← ★★ 返回 0x3708e774
+DRIVE_AT_SEND wgtsys=0x4c4818
+DRIVE_AT_SEND notifyDraw=923330460          ← ★★ 返回 0x3708e79c
+
+SND_DRIVE 触发 10 次（id=0x11006e9, 0x8f013a ×9），全部 tid=115 = UI 线程 ✅
+
+基线完好：1422 / [AS]=46 / createLayer=6 / LOCK=40 ✅
+```
+
+## ③ ★★★★★★★ 绘制链计数（对比之前）
+```
+入口               之前   本轮
+──────────────────────────────────
+UPDATERES          0   →  **1**   ★ 首次非零！
+DRAW_PROBE         1   →  1
+DRAWNOTICE         0   →  0
+GRMFILL            0   →  0
+GRMBLIT            0   →  0
+FRAMEAPI           0   →  0
+UPDTIME            0   →  0
+FB nonzero         1   →  1
+```
+
+## ④ ★ 返回值分析：不是错误，是结构指针
+```
+updateResource 返回 0x3708e774
+notifyDraw     返回 0x3708e79c
+差 = 0x28（40 字节）
+
+★ 这不是"成功/失败"语义
+★ 而是**同一个结构的两个字段指针**（+0 与 +0x28 偏移）
+⇒ 说明两个调用**都执行到了返回**，且返回了合法对象指针
+⇒ **调用是成功的**，只是内部没有产生 GRM 填充
+```
+
+## ⑤ 本层净收益（本会话第一次"被驱动的绘制函数"）
+```
+✅ **a7c2 的时机手法在 6 次尝试后首次成功**
+✅ **UPDATERES 0→1（首次非零）**
+✅ **SND_DRIVE 10 次全部在 UI 线程（tid=115）**
+✅ **返回值是合法结构指针，调用本身成功**
+✅ 基线完好（1422/46/6，40/40）
+❌ GRMFILL 仍为 0，FB 仍全零
+```
+
+## 方法论（第 378 条）★★★★★★★★★★★ 本会话最重要的方法论
+**"被驱动 ≠ 有产出——函数执行了但内部条件不满足，仍无输出"：
+```
+UPDATERES 从 0 变成 1，证明**驱动成功**。
+★ 但 GRMFILL 仍为 0 ⇒ updateResource 内部没有走到平台填充。
+
+⇒ 判据：**"函数被调用"与"函数产生效果"是两个独立的测量点。
+   前者用计数验证（已做到），后者必须**深入函数内部**验证。**
+
+★ 这是本会话第一次把"驱动"这一层打通，
+  下一层的目标明确了：**updateResource 内部为什么不产生 GRM 调用**。
+```
+
+## ⑥ 下一步（范围明确）
+```
+★★★ updateResource (libObj+0x102730) 内部：
+  · 遍历 widget 树 → 对每个 widget 调 onDrawNotice → 产生 GRM 填充
+  · 但 onDrawNotice=0 ⇒ **树是空的** 或 **遍历条件不满足**
+
+★ 这条链现在完全清晰：
+  updateResource (✅ 已执行)
+    → 遍历 widget 树 (❓)
+      → onDrawNotice (0 次)
+        → GRM_gpermFillrect (0 次)
+          → GPE → FB (全零)
+
+★ 下一轮：反汇编 updateResource，看它的遍历条件
+```
+
+**⚠️ 本轮 1 次 QEMU 运行，已收尾，实例数 0。**
