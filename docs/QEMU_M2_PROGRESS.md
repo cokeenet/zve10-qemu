@@ -34957,3 +34957,89 @@ DRAW_PROBE=1 来自 UX_RENDER_TRIGGER（第 239 轮加的主动调用）：
   ⇒ 改用**在 site 内部打插桩**（但需要能 hook 的符号）
 ```
 
+
+---
+
+# ★★★★★★★★ 2026-11-06 第三百七十五章（第 259 轮）：**关键发现：onDrawNotice 是 vtable 项，有 150 个 widget 类**
+
+## ① ★★★★★ appFw 的 .rel.plt 里 onDrawNotice 有 ~150 个 R_ARM_ABS32
+```
+0x353d86c  R_ARM_ABS32  _ZN2ux6wgtsys10WidgetBase12onDrawNoticeEv
+0x353d94c  R_ARM_ABS32  同上
+0x353da44  R_ARM_ABS32  同上
+...（共 ~150 处，范围 0x353d86c .. 0x35463a4）
+
+★ R_ARM_ABS32 = **绝对地址重定位，运行时填入**
+★ 且这些地址全在 .data.rel.ro（0x3449ab0..0x377aa70）
+  ⇒ **这就是 vtable 表项**
+★ 150 个 ⇒ **约 150 个 widget 派生类，每个 vtable 都有一项指向 onDrawNotice**
+  ⇒ 说明 onDrawNotice 是 **WidgetBase 的虚函数**（或者被大量类继承的接口）
+
+★ 文件里这些槽的值是 0（我在第 259 轮初验证），
+  因为 R_ARM_ABS32 的 addend 也是 0，运行时才写成实际地址
+```
+
+## ② ★★★★★ 对比：其他函数只有一个 JUMP_SLOT
+```
+0377acec  R_ARM_JUMP_SLOT  processSystemMessage   ← 1 个（PLT 槽）
+0377acf8  R_ARM_JUMP_SLOT  createLayer             ← 1 个
+0377afe0  R_ARM_JUMP_SLOT  drawFramebuffer         ← 1 个
+0377b440  R_ARM_JUMP_SLOT  notifyDraw              ← 1 个
+0377b480  R_ARM_JUMP_SLOT  updateFrame             ← 1 个
+
+★ 这些是 appFw **调用** libObj 的入口（JUMP_SLOT）
+★ 而 onDrawNotice 是 appFw **持有**的 vtable 项（ABS32）
+  ⇒ **appFw 里有 150 个 widget 类，它们的 vtable 都含 onDrawNotice 槽**
+```
+
+## ③ ★★★ 这改变了"绘制链"的理解
+```
+之前的理解：appFw → notifyDraw(libObj) → 内部 → 绘制
+★ 实际：appFw 自己有 150 个 widget 类（vtable 在 appFw 内），
+  每个类的 onDrawNotice 槽在运行时被填成 **libObj 的 WidgetBase::onDrawNotice**
+
+⇒ 绘制流程可能是：
+   某处虚调用 widget->onDrawNotice()
+   → 落到 libObj 的 WidgetBase::onDrawNotice
+   → 我们 hook 了它 ⇒ 但计数为 0
+   ⇒ **说明没有任何 widget 被绘制**
+
+★ 而 150 个 vtable 存在 ⇒ widget 的**类型**都在，只是**实例**没被创建/遍历
+```
+
+## ④ 本层净收益
+```
+✅ **发现 onDrawNotice 有 ~150 个 R_ARM_ABS32 vtable 引用（appFw 内）**
+✅ **确认它是 widget 虚函数，不是普通成员函数**
+✅ **理解 appFw 有 150 个 widget 派生类**
+✅ 基线不受影响
+❌ 帧 = 0
+```
+
+## 方法论（第 363 条）★★★★★★★★★
+**"重定位类型说明用途：JUMP_SLOT 是'调用'，ABS32 大量出现是'vtable'：
+```
+同一个符号在重定位表里：
+  · R_ARM_JUMP_SLOT × 1  ⇒ 通过 PLT 调用一次（appFw → libObj）
+  · R_ARM_ABS32 × 150    ⇒ 150 个 vtable 槽持有它（多态）
+
+⇒ 判据：**判断一个符号的用途，先看它的重定位分布。
+   1 个 JUMP_SLOT ⇒ 单向调用
+   多个 ABS32    ⇒ vtable / 函数指针表
+   0 个任何      ⇒ 死代码 或 只在当前模块内部使用**
+
+★ 这条判据零成本（readelf -r 一次），但能立刻区分
+  "被调用" / "被多态持有" / "死代码" 三种情况。
+```
+
+## ⑤ 下一步
+```
+★★★ 既然 150 个 widget vtable 都在，而 onDrawNotice 计数为 0
+  ⇒ 问题在"widget 实例是否被创建并加入绘制树"
+
+★ 用导出符号插桩测 widget 的**构造**与**注册**：
+  · WidgetBase 的构造函数有符号吗？
+  · 或者测 createLayer 之后 widget 是如何加入的
+
+★ 具体：查 libObj 里 WidgetBase 相关的导出符号
+```
