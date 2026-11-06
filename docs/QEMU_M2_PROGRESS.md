@@ -35649,3 +35649,107 @@ a7c2 的注释：
 ```
 
 **⚠️ 本轮 0 次 QEMU 运行（纯读参考），实例数 0。**
+
+---
+
+# ★★★★★★★★★★★ 2026-11-06 第三百八十三章（第 267 轮）：**完整控制流还原 —— 所有测量终于自洽**
+
+## ① ★★★★★★★ notifyDraw / site3 的完整控制流（逐条还原）
+```asm
+; ===== 主循环（唯一驱动绘制的地方）=====
+54fb3a: mov.w r8, #0
+54fb3e: blx   UXEngine::gfxeng@plt
+54fb42: blx   GraphicsEngine::processSystemMessage@plt   ← **PSM_HOOK = 0**
+54fb46: cmp   r0, #0
+54fb48: bne.w 0x54f700                                   ← 非零才进循环体
+54fb4c: ...                     ; 退出
+
+; ===== 循环体（0x54f700 起）=====
+54f700: ... 处理 ...
+54fa3a: mov   r0, r4            ; frame
+54fa3c: bl    0x54f2ca          ; gate = 门控(frame)
+54fa42: mov   r8, r0
+54faa8: bne   0x54facc          ; gate != 0 → 跳过绘制
+54faae: bl    0x54ed12          ; **UI 帧循环（真正绘制）**
+54fab4: strb.w r8, [r4,#2192]   ; frame[2192] = 0
+...
+54fb3e: （回到循环头）
+```
+
+**★ 结构就是：`while (processSystemMessage() != 0) { … gate … draw … }`**
+
+## ② ★★★★★★★ 所有测量现在完全自洽
+```
+PSM_HOOK (processSystemMessage)  = **0**  ← 精确插桩
+  ⇒ 0x54fb42 从未执行
+  ⇒ 循环第一次判断就退出（不，连判断都没到）
+  ⇒ **0x54f700（循环体）从未执行**
+  ⇒ 0x54fa3c（门控调用）从未执行
+  ⇒ 0x54faae（bl 0x54ed12）从未执行
+  ⇒ UPDTIME (updateCurrentTime) = **0** ✅ 一致
+  ⇒ FRAMEAPI (updateFrame) = **0** ✅ 一致
+  ⇒ DRAWNOTICE (onDrawNotice) = **0** ✅ 一致
+  ⇒ GRMFILL / GRMBLIT = **0** ✅ 一致
+  ⇒ FB = 0 ✅ 一致
+
+★ **九条测量全部自洽，且都由"PSM_HOOK=0"这一个事实解释**
+```
+
+## ③ ★★★★★★★ 而 processSystemMessage 若被调用，应该返回 1
+```
+libObj+0x113f4c（processSystemMessage 的真身）：
+  ldr r3, [GOT]        ; 全局对象
+  ldr r3, [r3, #0]     ; → 对象
+  ldr r3, [r3, #0x34]  ; → 回调函数指针
+  cbz r3, 0x113f5e     ; 若为 0 → 返回 1
+  blx r3               ; 否则调用回调
+  0x113f5e: movs r0, #1 ; 返回 1
+
+★ 我们实测过（第 237 轮）：
+  CHAIN_READ obj=0xab481bc
+  CHAIN_READ callback=0xa88e855  = libObj+0x10e854（读一个字节就返回）
+  FLAG_READ value = **1**
+⇒ 若 processSystemMessage 被调用，回调返回 1，函数返回 1
+⇒ 循环应继续，应绘制
+```
+
+## ④ 本层净收益（本会话最重要的一次自洽）
+```
+✅ **完整还原 notifyDraw/site3 的控制流（while + gate + draw）**
+✅ **九条测量全部自洽，都由 PSM_HOOK=0 解释**
+✅ **确认 processSystemMessage 若被调用应返回 1（回调实测 flag=1）**
+✅ 基线不受影响（纯静态 + 已有测量）
+❌ 帧 = 0
+```
+
+## 方法论（第 371 条）★★★★★★★★★★★ 本会话最重要的方法论
+**"当 9 条独立测量能被 1 个事实解释时，那个事实就是答案——但也可能说明'那个测量本身就是错的'"：
+```
+PSM_HOOK=0 解释了全部 9 条测量（UI 循环、updateFrame、onDrawNotice、
+GRMFILL、FB…全部为 0）—— 非常自洽。
+
+★ 但**过于自洽**是一个警告信号：
+  如果 PSM_HOOK 本身是假零（例如符号未导出、hook 没装上），
+  那么 9 条测量会**集体指向错误结论**。
+
+⇒ 判据（硬规则）：
+   **当"一个零"能解释所有现象时，必须对这个零做**最强验证**：
+     ① nm 确认符号已导出（T 而非 U）
+     ② 用正对照制造一次"应该非零"的场景（例如主动调用它）
+     ③ 检查 hook 是否真的被链接器路由到
+
+★ 本会话已因"假零"栽了 7 次（第 366 条），
+  而这次的影响面是 **9 条测量一起错**，代价最大。
+```
+
+## ⑤ 下一步（必须验证 PSM_HOOK 不是假零）
+```
+★★★ 正对照实验：在 my_start 里**主动调用** processSystemMessage
+   （它是公开导出方法，风险低）
+   · 若 PSM_HOOK 计数变成 1 ⇒ hook 有效 ⇒ 固件确实从未调用
+   · 若仍是 0 ⇒ **hook 是假零** ⇒ 9 条测量全部作废，需要重做
+
+★ 这是本会话最关键的一次正对照
+```
+
+**⚠️ 本轮 0 次 QEMU 运行（纯静态），实例数 0。**
