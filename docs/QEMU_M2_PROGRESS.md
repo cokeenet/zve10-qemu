@@ -39170,6 +39170,30 @@ bl  0x115917c
 
 M2 等价 manager/apply 入口仍未定位；合格 framebuffer 仍为 0；没有物理地址/SHA256 的新菜单帧；QEMU 实例为 0。
 
+# ★★★★★★★★★ 2026-11-07 第四百一十五章（接手第 51 轮）：**公开 UX API 只有绘制/输入接口，没有可证实的 M2 screen apply API**
+
+## ① 静态接口盘点
+M2 `libObj.so` 导出并确认存在：
+
+```text
+WidgetSystem::processEvent()
+WidgetSystem::postMousePress()
+WidgetSystem::postMouseRelease()
+WidgetSystem::postMouseMove()
+WidgetSystem::notifyDraw()
+WidgetSystem::updateFrame()
+GraphicsEngine::drawFramebuffer()
+```
+
+这说明输入和绘制公开 API 都在，但不代表调用它们会创建/切换菜单 screen；a7c2 也把 `notifyDraw` 作为 render trigger，而不是 menu lifecycle。
+
+## ② 结论
+- 公开 `postMouse*` 适合验证输入路径；公开 `notifyDraw/updateFrame/drawFramebuffer` 适合观察绘制链。
+- 当前没有发现公开的 screen-manager/apply API；不能用公开 UX API 替代 a7c2 的 manager lifecycle。
+- 继续保持：不调用未知 M2 内部偏移，不宣称仅凭导出符号存在即可完成菜单切换。
+
+合格 framebuffer 仍为 0；没有物理地址/SHA256 的新菜单帧；QEMU 实例为 0。
+
 # ★★★★★★★★★ 2026-11-07 第四百一十四章（接手第 50 轮）：**确认通用 request-builder 的宿主函数，不等于菜单生命周期**
 
 ## ① 静态结果
