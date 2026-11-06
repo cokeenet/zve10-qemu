@@ -39263,3 +39263,28 @@ M2 的 onDrawNotice 槽调用者仍未形成 `notifyDraw → frame loop → onDr
 
 合格 framebuffer 仍为 0；没有物理地址/SHA256 的新菜单帧；QEMU 实例为 0。
 
+# ★★★★★★★★★ 2026-11-07 第四百二十章（接手第 56 轮）：**M2 screen table 结构与生命周期入口仍是两层机制**
+
+## ① 静态发现
+M2 `appFw.so` 的 `0x56b500..0x56c000` 是连续 screen/model 表构造区：
+
+```text
+0x2c6, 0x2c7, 0x2c8, 0x2c9, 0x2ca, 0x2cb, 0x2cc, 0x2cd, ...
+```
+
+每个条目都通过同一组结构 helper：
+
+```text
+5592d2
+5592e6
+```
+
+写入局部/栈表，再复制到相邻记录；`0x2ca` 是菜单 request 表的一部分，`0x346` 在其他表族中同样采用该模式。
+
+M2 `.text` 全范围扫描仍未找到将这些 screen table 与 manager current/controller guard 连接起来的唯一代码块；`0x1e78870` 已确认为全局 copy/setter，不能套用 A7C2 apply。
+
+## ② 结论
+该区域证明 M2 有完整 screen/model 描述表，但仍属于数据/请求构造层，不是 manager current/controller 生命周期层。不能从 screen table 直接推导可调用 apply ABI。
+
+继续保持只读分析和高风险调用禁用。合格 framebuffer 仍为 0；无物理地址/SHA256 的新菜单帧；QEMU 实例为 0。
+
