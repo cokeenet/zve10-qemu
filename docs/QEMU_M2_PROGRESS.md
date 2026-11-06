@@ -32640,3 +32640,77 @@ NOTIFY_PATCH slot=0x30f03440 before=0x2dcb09d0 expect=0x41aa0dc written=0x41a6dc
    检查方法：读槽值，若它等于"PLT0 地址"或"模块内偏移"，
    说明尚未重定位，此时绝不能写。
 ```
+
+---
+
+# ★★★★★★★★★ 2026-11-06 第三百四十九章（第 233 轮）：**找到 GOT patch 崩溃的真因：dlsym 返回了我们自己的 wrapper**
+
+## ① ★★★★★ 关键纠正：before 不是"重定位未完成"
+```
+槽原值 before = 0x2dcb09d0
+推导 base    = 0x30f02fe0 - 0x377afe0 = 0x2d788000
+before - base = **0x5289d0**
+
+★ 查 appFw 段表：.plt 起始 = **0x5289d0**
+⇒ 槽里存的是 **PLT0 地址**，这是 **lazy binding 的正常未调用状态**
+⇒ **不是"重定位未完成"（第 348 层的判断错了）**
+```
+
+## ② ★★★★★ 崩溃真因：dlsym 返回的是我们自己的 wrapper
+```
+第 348 层日志：
+  DRAWFB_PATCH slot=0x30f02fe0 before=0x2dcb09d0 expect=0x41a700c
+
+★ expect（dlsym 返回值）= **0x41a700c**
+  而 libObj base = 0xa79b000（GE_PROBE 报的）
+  ⇒ 0x41a700c << 0xa79b000 ⇒ **不在 libObj 里**
+
+★ argtrace 在第 408 行 hook 了 drawFramebuffer（返回 my_draw）
+  ⇒ dlsym(RTLD_DEFAULT, "drawFramebuffer") 返回 **my_draw**（我们的 wrapper）
+  ⇒ g_real_drawfb_got = my_draw
+  ⇒ 槽被改成 drawfb_wrapper
+  ⇒ 固件调用 → drawfb_wrapper → 调 my_draw → my_draw 调 real_draw（可能 nil）
+  ⇒ **递归 / 崩溃**
+
+★ 实测后果：行数 1102（vs 1395）、[AS]=0、createLayer=4（vs 12）
+```
+
+## ③ 正确方案（下一轮实现）
+```
+★ 不用 dlsym 取真实地址（会被自己的 hook 干扰）
+★ 用 **libObj base + 符号偏移**：
+    libObj base = dlsym(h_libobj, "processSystemMessage") - 0xe5610
+    drawFramebuffer 真实地址 = libObj_base + 0xe565a
+    notifyDraw      真实地址 = libObj_base + 0x106524
+
+★ 验证（libObj base=0xa79b000）：
+    drawFramebuffer = 0xa88065a
+    notifyDraw      = 0xa8a1524
+```
+
+## ④ 本层净收益
+```
+✅ **纠正第 348 层误判（before 是 PLT0，不是未重定位）**
+✅ **找到崩溃真因：dlsym 返回我们自己的 wrapper ⇒ 递归**
+✅ **给出正确方案：libObj base + 符号偏移**
+✅ 基线完好（1395/48/6，40/40，0 残留）
+❌ 帧 = 0
+```
+
+## 方法论（第 337 条）★★★★★★★★★
+**"hook 一个符号后，dlsym 拿回来的可能是你自己的 hook——这会静默造成递归"：
+```
+我在 argtrace 里 hook 了 drawFramebuffer（my_draw）。
+然后在 patch_drawfb_slot 里 dlsym(RTLD_DEFAULT, "drawFramebuffer") 想拿"真实地址"。
+
+★ 拿回来的是 **my_draw**（因为我们 hook 生效了）。
+  ⇒ 槽 → drawfb_wrapper → my_draw → real_draw（未初始化）⇒ 崩溃
+  ⇒ 日志上"written=正确地址"看起来完全正常
+
+⇒ 判据（硬规则）：
+   **在同一个进程里既 hook 某符号、又 dlsym 它时，
+     必须确认拿回的是原始实现，不是自己的 hook。**
+   检查方法：比较返回值是否落在"自己的 .text 范围"内。
+
+★ 本会话同类：第 296 层（钩子链断了导致拿错符号）。
+```
