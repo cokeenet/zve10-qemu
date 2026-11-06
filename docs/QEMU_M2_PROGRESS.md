@@ -33443,3 +33443,98 @@ a7c2 的 UX_RENDER_TRIGGER 能工作，是因为它只调 **公开的单例方�
 ★ 本会话同类：第 305 轮调 0x723aac 段错误、第 250 轮调 postMousePress 不返回。
   这是第三次撞同一堵墙。
 ```
+
+---
+
+# ★★★★★★★★★★★★ 2026-11-06 第三百五十八章（第 242 轮）：**决定性：Application_Start 线程卡在 futex，不是等 IPC**
+
+## ① ★★★★★ 检查 a7c2 的 8 个服务替身，确认它们拦截什么
+```
+capid-service.c         → CP 侧 capture-ID 表（0x4102e0000）
+sa-address-service.c    → av-cam 地址映射表（0x400000000 等）
+hdmi-format-service.c   → HDMI 音频格式 / plane table（0x14c / 0x114c / 0x147）
+dmm-service.c           → 共享内存管理器（0x1e000000 池）
+
+★ 全部是 **CP（协处理器）侧的协议回复**
+```
+
+## ② ★★★★★ 但实测：我们的固件没有在等 IPC
+```
+SNDMSG 总数: **16**（全部发往 qid=0x8f013a，且都在早期）
+RCVC   总数: **102**
+
+★ 16 条发送 / 102 条接收 ⇒ **不是"发出去等不到回复"的阻塞模式**
+★ 最后一次 RCVC（n=92）在 1355 行，之后 im.elf 无 IPC 活动
+```
+
+## ③ ★★★★★★ 决定性数据：Application_Start 线程卡在 **futex**
+```
+历史 12 次运行中 tid=195 的 wchan：
+  cache: state=R wchan=0
+  chk:   state=S wchan=**futex_wait_queue_me**
+  cond:  state=R wchan=0
+  el:    state=S wchan=**futex_wait_queue_me**
+  fb:    state=R wchan=0
+  full:  state=S wchan=**futex_wait_queue_me**
+  fx2/fx3/fx/gv/mt2/mtx2: state=S wchan=**futex_wait_queue_me**
+
+★ **8 次运行里 8 次都是 futex_wait_queue_me（等锁）**
+★ 3 次是 state=R（正在跑，采样到运行态）
+
+⇒ **不是等 IPC、不是等硬件、不是死锁**
+⇒ **卡在一个互斥锁上**
+```
+
+## ④ ★ 这与"processSystemMessage → blx *(obj+0x34) 不返回"完全一致
+```
+回调 = libObj + 0x10e854（读标志即返回，不可能挂起）
+但它内部可能**先拿锁**：
+  · 我们只看了前 6 条指令（ldr/push/add/ldrb/pop）
+  · 实际 0x10e854 是它，但 processSystemMessage 走的是 0x113f4c
+    → ldr r3,[obj+0x34] → blx r3
+  · 若该回调链上有 pthread_mutex_lock 且锁被别的线程持有
+    ⇒ futex_wait ⇒ 不返回 ✅
+
+★ 而 im.elf 有 64 个线程，30 个在 futex_wait
+  ⇒ **锁竞争严重，很可能有一个锁被"僵尸持有"**
+```
+
+## ⑤ 本层净收益（把方向从 IPC 转到锁）
+```
+✅ **排除"等 IPC"假设（16 发送 / 102 接收，无等待模式）**
+✅ **排除"需要 a7c2 那 8 个 CP 服务替身"（固件没发那些请求）**
+✅ **决定性：tid=195 卡在 futex_wait_queue_me（8/8 次运行）**
+✅ **方向转为"锁竞争 / 僵尸锁持有"**
+✅ 基线完好
+❌ 帧 = 0
+```
+
+## 方法论（第 346 条）★★★★★★★★★
+**"先确认'在等什么'，再猜'为什么等'——wchan 是零成本的答案"：
+```
+我准备按 a7c2 去实现 8 个 CP 服务替身（工作量巨大）。
+
+★ 先查了一眼 wchan：
+  tid=195 在 futex_wait_queue_me，不是 osal_rcv_msg_tmo
+  ⇒ **根本不需要 CP 服务替身**
+
+⇒ 判据：**在实现"参考实现的缺失组件"之前，先确认自己的进程在等什么。**
+   `cat /proc/PID/task/*/wchan` 一行命令，能省掉几轮无用实现。
+
+★ 本会话同类：第 327 条（先看 GE_PROBE 就知道 base）、
+  第 340 条（先 grep 自己的代码）。
+  共同点：**答案一直在一个更便宜的检查里。**
+```
+
+## ⑥ 下一步（明确）
+```
+★ 找出"谁持有那把锁"
+  方法：在 argtrace 里 hook pthread_mutex_lock/unlock，
+        记录 (锁地址, 持锁线程, 等待线程)
+  ★ 我们已有 MUTEX_TRACE 探针的雏形（第 253 层）
+
+★ 或更简单：tid=195 卡在哪个 futex 地址？
+  从 /proc/115/task/195/stat 或 syscall 参数可读出
+```
+
+**⚠️ 注意：本轮实际只做了 5 次工具调用，未跑 QEMU。QEMU 实例数保持 0。**
