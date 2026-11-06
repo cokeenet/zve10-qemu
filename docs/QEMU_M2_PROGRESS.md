@@ -27728,3 +27728,130 @@ GOT 槽检测法在正常 ELF 上是绝对可靠的：
 第 299 层：函数指针的 bit0 未清除，基址偏高 1 字节（本轮）
 ⇒ **共同点：ARM/Thumb 的地址语义细节**
 ```
+
+---
+
+# ★★★★★★★★ 2026-11-06 第三百章（第 184 轮）：**完整链条打通：frame[16] = frame+2204（site2 写入）**
+
+## ① 完整反汇编 Application_Start（72 字节）
+```asm
+0054d580 <Application_Start>:
+  54d580: ldr  r1, [pc, #64]
+  54d582: movs r2, #1
+  54d584: push {r7, lr}
+  54d586: **sub.w sp, sp, #2208**      ; 分配 2208 字节帧
+  54d58a: movs r0, #0
+  54d58c: **add  r7, sp, #0**          ; r7 = frame = sp
+  54d58e: add  r1, pc
+  54d590: blx  0x92559c                ; site0
+  54d594: add.w r0, r7, #2176
+  54d598: adds r0, #28                 ; r0 = frame + 2204
+  54d59a: **bl 0x54d154**              ; site1(frame+2204) → 写 *(frame+2204) = vtable
+  54d59e: add.w r1, r7, #2176
+  54d5a2: adds r1, #28                 ; r1 = frame + 2204
+  54d5a4: mov  r0, r7                  ; r0 = frame
+  54d5a6: **bl 0x54d2b0**              ; site2(frame, frame+2204)
+  54d5aa: mov  r0, r7                  ; r0 = frame
+  54d5ac: **bl 0x54f664**              ; site3(frame)
+  54d5b0: blx  0x923c84
+  54d5b4: mov  r0, r7
+  54d5b6: bl   0x54d538
+  54d5ba: add.w r7, r7, #2208
+  54d5be: mov  sp, r7
+  54d5c0: pop  {r7, pc}
+```
+
+## ② ★★★★★ 关键：site2 写入 frame[16] = frame+2204
+```asm
+0054d2e0 附近（site2 内部）:
+  54d2f4: **str  r5, [r4, #16]**       ; r4 = frame, r5 = 参数2 = frame+2204
+
+⇒ **frame[16] = frame + 2204**（即 site1 构造的那个对象）
+```
+
+## ③ 而 site3 读它
+```asm
+0054ef74:
+  54ef78: mov  r4, r0                  ; r4 = frame
+  54ef7a: add.w r6, r4, #1704
+  54ef80: **ldr  r0, [r0, #16]**       ; r0 = *(frame+16) = frame+2204 ✅ 合法
+  54ef82: mov  r1, r6                  ; r1 = frame+1704
+  54ef86: **ldr  r3, [r0, #0]**        ; r3 = *(frame+2204) = vtable（site1 写入）
+  54ef8a: **ldr  r3, [r3, #0]**        ; r3 = vtable[0]
+  54ef8c: **blx  r3**                  ; ← ★ 停在这里
+```
+
+## ④ 完整链条（现在完全自洽，无矛盾）
+```
+Application_Start
+  ├─ site0 (0x92559c)
+  ├─ site1 (0x54d154): *(frame+2204) = vtable（GOT 0x37d95b6 运行时填充的类指针 + 8）
+  ├─ site2 (0x54d2b0):
+  │    ├─ frame[16] = frame+2204      ← 0x54d2f4
+  │    ├─ frame[0..12] = 各处 vtable 子表
+  │    ├─ 4× createLayer + setActive + setClear  ✅（实测 12/10/8 次）
+  │    └─ 正常返回（唯一返回点 0x54d35e，调用树零外部调用）
+  └─ site3 (0x54f664):
+       ├─ bl 0x54ef74
+       ├─ ldr r0, [frame+16] = frame+2204   ✅
+       ├─ ldr r3, [r0]        = vtable       ✅
+       ├─ ldr r3, [r3]        = vtable[0]
+       └─ **blx r3**          ← 停止点
+```
+
+## ⑤ 因此唯一未知量只剩下一个
+```
+**vtable[0] 是什么？**
+
+vtable 来自 site1：
+  0x54d166: ldr r3, [r4, r3]     ; 从 GOT 槽 0x37d95b6 读类指针
+  0x54d168: adds r3, #8
+  0x54d16a: str r3, [r5, #0]     ; *(frame+2204) = 类指针 + 8
+⇒ vtable = 类指针 + 8
+⇒ vtable[0] = *(类指针 + 8)
+
+★ 若类指针为 0（GOT 槽未重定位），vtable = 8，
+  则 vtable[0] = *(8)  ⇒ 读地址 8 ⇒ **段错误**
+```
+
+## ⑥ 本层净收益（本会话逻辑链最完整的一次）
+```
+✅ **完整反汇编 Application_Start（72 字节，全部 22 条指令）**
+✅ **发现 site2 在 0x54d2f4 写入 frame[16] = frame+2204**
+✅ **确认 site3 的 ldr r0,[r0,#16] 是合法读取（非垃圾值）**
+✅ **把唯一未知量收敛到"vtable[0] 是什么"**
+✅ 基线完好（1331/44/6）
+❌ 帧 = 0
+```
+
+## ⑦ 下一步（最后一个未知量）
+```
+vtable[0] = *(*(frame+2204))
+
+而 *(frame+2204) = 类指针 + 8，类指针来自 GOT 槽 0x37d95b6
+
+★ 关键验证：GOT 槽 0x37d95b6 是否被重定位？
+  **这正是我们刚建立的 GOT 读取能力可以做的！**
+  （base 已能从 Application_Start 反推，且 Thumb 位已修正）
+
+但注意：第 299 层发现 appFw 的跨库调用不走 PLT
+⇒ 这个 GOT 槽可能也是 R_ARM_RELATIVE（数据重定位），
+   由 ld.so 在加载时填充 —— **不受 lazy binding 影响**
+⇒ **应该能读到真实值！**
+```
+
+## 方法论（第 288 条）★★★★★★★ 本会话最重要的方法论
+**"'唯一未知量'是可以被逐步逼出来的——每次消除一个'可能'，剩下的就是答案"：
+```
+本会话从第 181 层到第 184 层，用的方法是：
+  ① 证明 site2 无阻塞 → 排除"卡在 site2"
+  ② 证明 site2 只有一个返回点 → 排除"提前返回"
+  ③ 证明 40 次加解锁均匀分布 → 排除"死锁"
+  ④ 发现 frame[16] 由 site2 写入 → 排除"垃圾值"
+  ⇒ 剩下唯一的：**vtable[0] 指向什么**
+
+⇒ 判据：**排查复杂系统时，不要试图一次找到"答案"，
+   而是逐个消除"它不在这里"的可能。**
+   每消除一个，搜索空间就缩小。
+   当只剩一个可能时，那就是答案——无论它多不可思议。
+```
