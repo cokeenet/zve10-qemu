@@ -58,9 +58,8 @@ __attribute__((constructor)) static void init(void)
 
     sapp(out, &p, "PATCH_CAUTION_START\r\n");
 
-    /* 1) /usr 改可写 */
-    rc = s5(SYS_mount, (int)"none", (int)"/usr", (int)"ext2", MS_REMOUNT, (int)"rw");
-    logk(out, &p, "REMOUNT_RW_RC=", rc);
+    /* 1) 不再自行 remount：由调用方用 shell 完成 mount -o remount,rw /usr */
+    rc = 0;
 
     /* 2) 打开既有文件：flags=2 (O_RDWR)，不带 O_CREAT/O_TRUNC/O_APPEND */
     int fd = s3(SYS_open, (int)"/usr/lib/CautionConfig.so", 2, 0);
@@ -99,9 +98,7 @@ __attribute__((constructor)) static void init(void)
         s1(SYS_close, fd);
     }
 
-    /* 3) /usr 恢复只读 */
-    rc = s5(SYS_mount, (int)"none", (int)"/usr", (int)"ext2", MS_REMOUNT | MS_RDONLY, 0);
-    logk(out, &p, "REMOUNT_RO_RC=", rc);
+    /* 3) 不恢复只读：由调用方负责 */
 
     sapp(out, &p, "PATCH_CAUTION_END\r\n");
 

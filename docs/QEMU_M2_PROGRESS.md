@@ -38664,3 +38664,98 @@ LAYERGLB 扫 0x3d55000..0x3d57000 得到 nonzero=897
 ```
 
 **⚠️ 本轮 3 次 QEMU 运行，已收尾，实例数 0。基线 6/18/FB=1。**
+
+---
+
+# ★★★★★★★★★★★★ 2026-11-07 第四百一十二章（第 296 轮）：**决定性检验完成 —— hook 完全正确，矛盾确凿**
+
+## ① ★★★★★★★ STARTCMP：hook 地址完全正确
+```
+STARTCMP captured=0x2e430580 appfw=0x2dee3000 expect=0x2e430580 **match=1**
+⇒ dlopen hook 拿到的 real_start **正是** appFw+0x54d580（真入口）
+⇒ hook 完全正确，不是"hook 失效"
+```
+
+## ② ★★★★★★★ 基线完好 + 全部关键探针同时有效
+```
+行数=1467   [AS]=45   ENTRY_LOCK=40   createLayer=6   LAYERVT=18   FB nonzero=1
+MY_TID Application_Start pid=115 tid=195          ← my_start 执行了
+STARTCMP ... match=1                              ← hook 地址正确
+S3REG slot=0x31c36a64 value=**0**                 ← site3 未执行
+GOTS gfxeng/processSystemMessage/GRMRegisterTrigger 全部 rel=0x5289d0 PLT0
+```
+**⇒ 所有探针同时有效，基线完好，结论可信。**
+
+## ③ ★★★★★★★ 矛盾确凿（三重独立证据）
+```
+证据链 A（正向）：
+  Application_Start 执行 ✅（STARTCMP match=1 + MY_TID）
+  → site2 执行到 0x54d318 ✅（createLayer=6，反推链唯一）
+  → site2 其后全部非阻塞、无分支 ⇒ **site2 必然返回**
+  → site3 应执行
+
+证据链 B（反向）：
+  S3REG=0 ⇒ site3 未到 0x54f68a（site3 第一个被调函数写的全局）
+  9 个 GOT 槽全部 PLT0 ⇒ 这些函数一次都没被调用（物理证据）
+
+⇒ **A 说 site3 应该执行，B 说 site3 没有执行。矛盾确凿。**
+```
+
+## ④ 已系统排除的全部解释（15 项）
+```
+1. 栈对齐（naked 桩 sp 完全一致，第 291 轮否证）
+2. hook 失效（STARTCMP match=1，本轮否证）
+3. 采样稀疏（改用 S3REG/GOT 硬证据）
+4. 崩溃（无异常/Abort/Oops）
+5. 读时序（GOTWATCH 180 秒无变化）
+6. 选路错误（收到 "AppConfig.so"，正确选普通 App）
+7. UX 初始化（createLayer=6 / LAYERVT=18）
+8. site1/site2/site3 是否真入口（字节级验证 e92d 4ff0 等）
+9. 调用目标（手工解码 BL 0x54d5a6→site2、0x54d5ac→0x54f664）
+10. site2 内部阻塞（11 个调用逐个验证：纯构造/memset/拷贝）
+11. UX 初始化内分支（0 条分支）
+12. site3 入口虚调用（vtable[0]=0x54d05c 空 stub）
+13. 0x54f674 之前的 26 字节（无其它调用）
+14. GRM 注册（0x54efe8 从未执行，与 site3 未执行一致）
+15. frame+16（= frame+2204，栈地址非 NULL）
+```
+
+## ⑤ 本层净收益
+```
+✅ **STARTCMP 决定性检验完成：hook 地址 100% 正确（match=1）**
+✅ **全部探针同时有效、基线完好（1467/45/6/40/FB=1）**
+✅ **矛盾确凿：正向证据说 site3 应执行，反向证据说未执行**
+✅ **系统排除 15 项解释**
+❌ 帧 = 0
+```
+
+## 方法论（第 400 条）★★★★★★★★★★★ 本会话最重要的方法论
+**"当正向与反向证据都无懈可击却相互矛盾时，说明'某个环节的观测对象'与
+   '我以为的观测对象'不是同一个东西"：
+```
+本轮：A（Application_Start 执行 + site2 执行）与 B（site3 未执行）
+      都有硬证据，却矛盾。
+
+★ 唯一可能：**"site3"这个符号（0x54f664）与实际执行的代码不是同一处。**
+  候选：
+  ① appFw.so 在运行时的 0x54f664 与我们磁盘上的 appFw.so 不同
+     ⇒ 但我们用 md5 验证过移植树一致
+  ② `0x54d5ac` 的 BL 在**运行时被重定位/改写**（appFw 是 ET_DYN，
+     0x54d5ac 是相对偏移；若某处 R_ARM_RELATIVE 指向这里……）
+  ③ site3 执行了但**立即崩溃**，而崩溃被吞掉（无日志）
+     ⇒ 但 kernel 会打印 Data Abort，除非 guest 无 console 输出
+
+⇒ 判据：**矛盾不可调和时，去验证"磁盘上的字节"是否等于"运行时内存里的字节"。
+   最直接：在 guest 内读 appFw+0x54f664 处的 4 字节，与文件比对。**
+```
+
+## ⑥ 下一步（验证运行时字节）
+```
+★★★ 在 guest 内读 appFw + 0x54f664 处的原始字节，与磁盘文件比对：
+  · 若相同（e92d 4ff0 = stmdb {r4-r11,lr}）⇒ 代码未被改写，矛盾需新解释
+  · 若不同 ⇒ 运行时被改写/重定位 ⇒ 找到真正执行的位置
+
+★ 这是本会话最后一个可做的确定性检验，零成本、零风险。
+```
+
+**⚠️ 本轮 2 次 QEMU 运行，已收尾，实例数 0。基线 1467/45/6/40/FB=1。**
