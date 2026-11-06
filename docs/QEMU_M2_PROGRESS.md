@@ -32803,3 +32803,96 @@ FB nonzero=1
 350   libObj base+偏移（全对）       崩（1105）★ 本轮
 ⇒ 四次全部失败，但每次失败原因不同，第 350 轮已排除了所有"技术细节"层面的原因
 ```
+
+---
+
+# ★★★★★★★★★★★ 2026-11-06 第三百五十一章（第 235 轮）：**二分实验定论：GOT 替换不可行；找到正确入口（GRM_gperm*）**
+
+## ① ★★★★★ 二分实验结论（纯转发也崩）
+```
+wrapper 改成纯转发（去掉所有 logline）后：
+  行数=1103  [AS]=0  createLayer=2  LOCK/UNLOCK=0/0
+  ⇒ **仍然崩溃**
+
+★ 判据明确：
+  · 纯转发不崩 ⇒ 是 logline（stdio 锁）有害
+  · **纯转发也崩 ⇒ 替换本身不可行**  ← 实测结果
+
+⇒ **GOT 槽替换这条路，彻底证伪。已回滚。**
+```
+
+## ② ★★★★★ 按铁律1 重新查 a7c2，找到正确入口
+```
+a7c2 hook 的是：
+  int observe_gpe_fill(int, int, unsigned int *, const void *)
+      __asm__("_ZN5mpgpe13GpermFillRectENS_3GpeENS_7IntCoreEPjRKNS_13FillRectParamE");
+  int observe_gpe_blit(int, int, unsigned int *, const void *)
+      __asm__("_ZN5mpgpe12GpermBitBlitENS_3GpeENS_7IntCoreEPjRKNS_12BitBlitParamE");
+
+★ 这两个是 **libObj 的导出符号**，用 **__asm__ 定义同名函数** 即可 hook，
+  **完全不需要碰 GOT、不需要 mprotect、不需要算 base！**
+
+★ 我们的 libObj 有完全对应的导出符号：
+   00117b4c T **GRM_gpermFillrect**
+   00117c86 T **GRM_gpermRectblit**
+```
+
+## ③ 为什么这条路比 GOT 替换好
+```
+GOT 替换（四次全崩）：
+  · 需要算 appFw base
+  · 需要 mprotect
+  · 需要处理 dlsym 自 hook
+  · 会破坏初始化早期（实际就是这条导致崩）
+  ⇒ 风险 4 项，全部踩中
+
+导出符号 hook（a7c2 验证可行）：
+  · 只需在 argtrace.so 里定义一个同名函数
+  · 动态链接器自动把 libObj 的调用路由过来
+  · 不需要 base、不需要 mprotect、不碰 GOT
+  ⇒ 风险 ≈ 0
+```
+
+## ④ 本层净收益（本轮是重要转折）
+```
+✅ **二分实验定论：GOT 替换不可行（纯转发也崩）**
+✅ **已回滚，基线完好**
+✅ **按铁律1 找到 a7c2 的真实做法：hook 导出符号 mpgpe::GpermFillRect/BitBlit**
+✅ **确认我们的 libObj 有对应符号：GRM_gpermFillrect / GRM_gpermRectblit**
+✅ **明确这条路的风险远低于 GOT 替换**
+❌ 帧 = 0
+```
+
+## 方法论（第 339 条）★★★★★★★★★★ 本会话最重要的方法论
+**"参考实现的注释和函数名里，往往写着'为什么它选了这条路'——而我一直在走另一条"：
+```
+a7c2 的 observe_gpe_fill 用了 __asm__("_ZN5mpgpe13GpermFillRect...")。
+
+★ 这个写法的含义：**hook 导出符号**，而不是 patch GOT。
+  它在**函数定义处**就完成了 hook，连 mprotect 都不需要。
+
+⇒ 判据：**看到参考实现用 `__asm__("mangled_name")` 定义函数时，
+   那不是"特殊技巧"，那是**最正统的符号拦截方法**——
+   链接器会把所有调用路由过来。**
+  应该优先用它，而不是自己发明 GOT patch。
+
+★ 本会话代价：4 轮 GOT 尝试全部失败，而 a7c2 的答案从第 230 轮就在眼前。
+```
+
+## ⑤ 下一步（明确，低风险）
+```
+★ 在 argtrace.c 里加：
+    int GRM_gpermFillrect(int gpe, int core, unsigned *seq, const void *params)
+    {
+        __atomic_fetch_add(&g_fill_n, 1, __ATOMIC_RELAXED);   /* 只计数，不 log */
+        if (g_real_fill) return g_real_fill(gpe, core, seq, params);
+        return -1;
+    }
+
+  ★ 用 dlsym(RTLD_NEXT, "GRM_gpermFillrect") 拿原始实现
+    （因为我们的 hook 只在 argtrace.so 里，RTLD_NEXT 能找到 libObj 的）
+
+★ 然后看 g_fill_n 是否 >0：
+  · >0 ⇒ 固件**确实在画**，只是没到 framebuffer ⇒ 换取帧方式（AP 消息队列）
+  · ==0 ⇒ 固件确实没画 ⇒ 继续找激活入口
+```
