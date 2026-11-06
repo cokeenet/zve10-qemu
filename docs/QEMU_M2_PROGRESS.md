@@ -36257,3 +36257,102 @@ site0 执行 ✅、site1 是纯构造 ✅、site2 内部全不阻塞 ✅、site3
 ```
 
 **⚠️ 本轮 0 次 QEMU 运行（纯静态），实例数 0。**
+
+---
+
+# ★★★★★★★★★★★ 2026-11-06 第三百八十九章（第 273 轮）：**a7c2 的决定性手法：在 osal_snd_msg 钩子里等 UI 构造完成后强制初始化**
+
+## ① ★★★★★★★ a7c2 的核心手法（第 2263 行）
+```c
+int osal_snd_msg(unsigned int id, void *message) {
+    if (!real_send_msg) __builtin_trap();
+    /* Force-dispatch from the application's own message loop, i.e. after its
+       UI construction stack has unwound: calling the dispatcher from inside
+       create_screen **re-entered the manager and aborted**. */
+    if (create_screen_calls >= 1 && !getenv("MENU_FORCE_IN_FACTORY"))
+        force_screen_set("in_message_loop");
+    if (create_screen_calls >= 1 && !getenv("MENU_FORCE_IN_FACTORY")) {
+        int right_thread = 1;
+        if (getenv("MENU_UI_THREAD_ONLY") && ui_thread_id && syscall(178) != ui_thread_id)
+            right_thread = 0;
+        if (right_thread) {
+            **try_menu_init();**                 ← ★★★ 强制初始化菜单
+            if (getenv("MENU_ACTIVATE_MODE")) try_activate_mode();
+            ...
+        }
+    }
+    ...
+}
+```
+
+## ② ★★★★★★★ 关键洞察
+```
+a7c2 **不是等 UI 自然启动**，而是：
+  ① hook osal_snd_msg（消息发送入口，应用频繁调用）
+  ② 等 create_screen_calls >= 1（UI 构造完成）
+  ③ 在 **UI 线程上**强制调用 try_menu_init()
+  ④ 注释明确："从 create_screen 内部调用会 re-enter manager 并 abort"
+     ⇒ **必须在构造栈展开之后**
+
+★ 而我们的情况：
+  · site2（UI 构造）已执行（createLayer=12 来自 site1，但 site2 的 vtable 构造…）
+  · site3（消息循环）从未执行
+  · **我们从未尝试"在 osal_snd_msg 里强制驱动"**
+```
+
+## ③ ★★★★★★ 这对我们意味着什么
+```
+我们一直在**追查"为什么不执行"**（272 轮）。
+a7c2 的做法是**主动制造执行**：
+  · 不等 site3 自然执行
+  · 而是从 osal_snd_msg 钩子里，在正确的线程上，主动调菜单初始化
+
+⇒ **这就是"主动调用固件切屏/激活函数"（goal 铁律 3 第 5 条）的具体实现**
+
+★ 我们做过"主动调 notifyDraw"（第 239 轮），但那是在 my_start 里、时机太早。
+★ a7c2 的时机是 **osal_snd_msg 里、create_screen 之后**——即 UI 构造完成后。
+```
+
+## ④ 本层净收益（找到 a7c2 真正的启动手法）
+```
+✅ **读到 a7c2 的 osal_snd_msg 强制分派实现**
+✅ **理解时机：必须在 UI 构造栈展开之后（否则 re-enter abort）**
+✅ **理解线程：必须在 UI 线程上**
+✅ **这是 goal 铁律 3 第 5 条"主动调用切屏/激活"的具体写法**
+✅ 基线不受影响
+❌ 帧 = 0
+```
+
+## 方法论（第 377 条）★★★★★★★★★★★ 本会话最重要的方法论
+**"'等它自己执行'与'在正确时机主动驱动'是两种完全不同的策略——后者才是参考实现的核心"：
+```
+272 轮：我一直在问"为什么 site3 不执行"。
+★ a7c2 的答案：**不等它执行，而是在 osal_snd_msg 钩子里主动驱动。**
+
+⇒ 判据：**当"等"的策略迟迟不成功时，看参考实现是不是在"主动驱动"。
+   而"主动驱动"的关键不是"调用什么"，而是**"在什么时机、什么线程上调用"**。
+   a7c2 的注释明确否定了"从 create_screen 内部调用"（re-enter abort），
+   这正是我第 239 轮失败的原因（在 my_start 里调，时机太早）。**
+
+★ 本会话的教训链：
+   第 239 轮：my_start 里调 notifyDraw → 无绘制（时机早）
+   第 345 轮：调内部函数 → 破坏基线（层级错）
+   第 273 轮：**读到正确时机 = osal_snd_msg 里 + UI 构造之后 + UI 线程**
+```
+
+## ⑤ 下一步（照抄 a7c2 的时机）
+```
+★★★ 在 argtrace 的 osal_snd_msg 钩子里：
+  ① 计数 osal_snd_msg 调用次数
+  ② 等"UI 构造完成"的标志（我们的等价物：
+     · createLayer 计数 >= 4（site1 建了 4 个 layer）
+     · 或 createLayer hook 里设置标志）
+  ③ 在 UI 线程上（tid == g_as_tid）调用 WidgetSystem::notifyDraw
+  ④ 或调用 GraphicsEngine::updateResource
+
+★ 这与第 239 轮的区别：
+  · 第 239 轮：my_start 开头（site1/site2 都没执行）
+  · 本轮：osal_snd_msg 里 + createLayer>=4 之后（UI 已构造）
+```
+
+**⚠️ 本轮 0 次 QEMU 运行（纯读参考），实例数 0。**
