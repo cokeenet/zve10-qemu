@@ -39170,6 +39170,18 @@ bl  0x115917c
 
 M2 等价 manager/apply 入口仍未定位；合格 framebuffer 仍为 0；没有物理地址/SHA256 的新菜单帧；QEMU 实例为 0。
 
+# ★★★★★★★★★ 2026-11-07 第四百一十六章（接手第 52 轮）：**request-builder host 由函数表间接引用，仍非菜单 apply 证据**
+
+## ① 新静态事实
+- M2 `0x1100da8` 前没有可直接解码的 BL caller；其 Thumb 地址以 `0x1100da9` 形式出现在 `.data/.rel` 的函数指针表（文件偏移附近 `0x37a2e7c`）。
+- 这解释了为什么全 `.text` 直接搜 `bl 0x1100da8` 找不到 caller：该 host 通过间接函数表分发。
+- 函数本体仍是 0x84 字节 frame + screen request switch + `0x115917c` submit，未出现 manager current/controller guards。
+
+## ② 结论
+函数表间接引用只补充了 request-builder 的调用方式，不改变其语义；不能把函数表项或 `0x1100da8` 当作 screen lifecycle apply。没有运行 QEMU 或调用该函数。
+
+合格 framebuffer 仍为 0；无物理地址/SHA256 的新菜单帧；QEMU 实例为 0。
+
 # ★★★★★★★★★ 2026-11-07 第四百一十五章（接手第 51 轮）：**公开 UX API 只有绘制/输入接口，没有可证实的 M2 screen apply API**
 
 ## ① 静态接口盘点
