@@ -37811,3 +37811,106 @@ ab85064 docs: map complete factory boot and WBI loading paths
 ```
 
 **⚠️ 本轮 0 次 QEMU 运行（纯文档阅读），实例数 0。基线 1416/45/6/40-40。**
+
+---
+
+# ★★★★★★★★★★★★ 2026-11-06 第四百零四章（第 288 轮）：**"有画布、没内容"——完整证据链**
+
+## ① ★★★★★★★ 4 个 layer 的 ID 解出来了
+```
+0x7239aa: ldr r0,[pc,#224] → genID("AAA")   ← 字符串 @0x2f26487
+0x7239d8: ldr r0,[pc,#180] → genID("BBB")   ← @0x2d18dad
+0x723a08: ldr r0,[pc,#136] → genID("CCC")   ← @0x2d18db1
+0x723a36: ldr r0,[pc,#96]  → genID("DDD")   ← @0x2d18db7
+
+（原始字节 0x2d18da0: '...cons/view_widget.def\0BBB\0CCC\0DDD\0...'）
+
+★ 4 个 layer 的完整序列（**全部执行了**）：
+   genID → wgtsys() → createLayer(ID) → vtable[1](layer,1)=setActive(true)
+                                      → vtable[3](layer,0)=setClear(false)
+★ 日志：createLayer=12 / LAYERVT=18 ⇒ **这 4 个 layer 建好并激活了**
+```
+
+## ② ★★★★★★★ 但 widget 侧全部为 0
+```
+· WIDGET_CTOR（Widget::Widget() 累计所有运行）= **0**
+· WNODE ctor                                  = 0
+· **Widget::setParent @plt (0x529914) 调用点 = 0 处**  ← ★ 决定性
+· Widget::initSprite @plt (0x529008) 调用点 = 5 处：
+    0x738882 / 0x73ba1a / 0x74154a / 0x741cee / 0x771120  （全未执行）
+· Widget::setLayerID 有 **150+ 个 ABS32 vtable 项**（与 onDrawNotice 相同模式）
+   ⇒ widget 类都有 vtable，但从未构造实例
+```
+
+## ③ ★★★★★★★ 完整证据链（本会话最终版）
+```
+① kernel → bootin → im.elf → dlopen appFw              ✅
+② Application_Start 进入，site0/site1 执行              ✅
+③ 4 个 layer 创建 + setActive(true) + setClear(false)   ✅（createLayer=12）
+④ **widget 从未构造**（WIDGET_CTOR=0，已正对照）        ❌
+⑤ **setParent 从未调用**（0 处调用点）                  ❌
+⑥ **initSprite 5 处调用点全未执行**                      ❌
+⑦ ⇒ widget 树为空 ⇒ updateResource 遍历无对象
+⑧ ⇒ 无 onDrawNotice ⇒ 无 GRM_gpermFillrect
+⑨ ⇒ GPE 无请求 ⇒ **FB 全零**
+
+★ **一句话：有画布（4 个 layer），没内容（0 个 widget）。**
+```
+
+## ④ ★★★★★ 与 a7c2 的对照（现在完全对齐）
+```
+a7c2：apply(manager, 0x4b7, 0x346, ...) 会
+      "保留退出、析构、清槽、**构造**、**登记**、**虚 init** 与后续请求泵"
+
+★ 其中 **构造 / 登记 / 虚 init** 正是我们缺的第 ④⑤⑥ 步！
+★ 而 a7c2 的 apply 是"九参数生命周期入口"，在我们固件里的等价物
+  就是"构造 widget + setParent 登记 + initSprite 虚 init"的那段代码。
+
+★ 我们的这段代码在 0x72xxxx：
+   · 0x726b78 / 0x72b6a8 = 两个 widget 派生类 ctor（共 140 个调用点）
+   · 0x738882 / 0x73ba1a / 0x74154a / 0x741cee = initSprite 的 5 个调用点
+   全部未执行。
+```
+
+## ⑤ 本层净收益
+```
+✅ **解出 4 个 layer 的 ID（AAA/BBB/CCC/DDD）及其完整创建序列**
+✅ **确认 layer 创建 + setActive + setClear 全部执行**
+✅ **确认 Widget::Widget() = 0（已正对照）**
+✅ **确认 Widget::setParent = 0 处调用点**
+✅ **确认 Widget::initSprite 5 处调用点全未执行**
+✅ **完成"有画布、没内容"的完整证据链**
+✅ 基线不受影响（纯静态）
+❌ 帧 = 0
+```
+
+## 方法论（第 392 条）★★★★★★★★★★★
+**"把 UI 拆成'画布'和'内容'两层分别计数，一句话就说清了 288 轮的问题"：
+```
+· layer（画布）：createLayer=12 / LAYERVT=18  ⇒ 有
+· widget（内容）：WIDGET_CTOR=0 / setParent=0 / initSprite=0  ⇒ 没有
+
+⇒ 判据：**排查"界面不显示"时，先分开数"容器"和"内容"：
+   容器有 + 内容无 ⇒ 缺"填充"步骤
+   容器无          ⇒ 缺"创建"步骤
+   都有但无像素    ⇒ 缺"提交/绘制"步骤**
+
+★ 本会话 288 轮里，直到现在才把这两层分开数清楚。
+  之前一直在追"绘制链"，而绘制链的前提是"有内容可画"。
+```
+
+## ⑥ 下一步（唯一且明确）
+```
+★★★ 找"谁应该调用 0x72xxxx 的 widget 构造与 initSprite"
+
+★ 已知（第 279-280 轮）：
+   0x726c84（widget 构造顶层）← 0x74cc7c ← 0x74cb74 ← **0x74d9c4（56KB 容器工厂）**
+   0x74d9c4 通过 .got 槽 0x3799504 注册为回调
+   → 0xfd9a44 存入结构 → 0xfd8d04 ← 0x14bf8d8 ← **0x14c0000（事件 0x182 handler）**
+   0x14c0000 的 r0 需要 ≥17664 字节的对象
+
+★ 关键：a7c2 说"不要直接调私有 callback"（我们第 283 轮已验证崩溃）
+★ 所以必须找到"谁正常调用这条链" = 那个"九参数生命周期入口"
+```
+
+**⚠️ 本轮 0 次 QEMU 运行（纯静态），实例数 0。基线 1416/45/6/40-40。**
