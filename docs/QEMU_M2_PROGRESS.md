@@ -39476,3 +39476,15 @@ M2 的 frame/event loop 静态存在，当前关键未知已收窄为：运行�
 
 本轮只读，无 QEMU 运行、无内部调用、无 patch。合格 framebuffer 仍为 0；QEMU 实例为 0。
 
+# ★★★★★★★★★ 2026-11-07 第四百三十一章（接手第 65 轮）：**processEvent 静态循环已闭合，但当前日志没有运行时命中**
+
+## ① 现状核对
+- M2 静态存在两处 `processEvent` 循环（`0x54ed32/0x54ed36` 和 `0x54f894/0x54f898`）。
+- 当前 `argtrace.c` 已有 `processEvent` 导出插桩（`UXLOOP processEvent`），没有新增 patch。
+- 对现有历史 `out/*/serial0.log` 搜索 `UXLOOP processEvent` 没有命中；这些旧运行也不能替代一次与当前 Image/argtrace SHA 绑定的新实验。
+
+## ② 结论
+静态 frame-loop 证据已闭合，运行时是否进入仍未知。下一次真实运行必须同时记录 Image、argtrace SHA、`UXLOOP`、基线哨兵和 framebuffer；在此之前不能从静态循环存在推导 UI 已启动。
+
+合格 framebuffer 仍为 0；QEMU 实例为 0。
+
