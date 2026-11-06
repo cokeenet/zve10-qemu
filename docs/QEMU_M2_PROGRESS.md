@@ -32486,3 +32486,76 @@ $ arm-linux-readelf -rW appFw.so | grep -E "drawFramebuffer|notifyDraw"
   因为它让我在之后的 40+ 轮里完全不敢改内存，
   而 a7c2 证明改内存（正确地改）才是唯一出路。
 ```
+
+---
+
+# ★★★★★★★ 2026-11-06 第三百四十七章（第 231 轮）：**按 a7c2 做法装 GOT 替换，两处时机都失败，已回滚**
+
+## ① 按铁律1：照抄 a7c2 的 install_frame_observers
+```c
+/* a7c2 原版 */
+mprotect(base + 0x5bc2000, 4096, 3);
+*(base + 0x5bc2098) = observe_notify_draw;
+*(base + 0x5bc2370) = observe_draw_framebuffer;
+
+/* 我们的等价实现 */
+mprotect(appFw + 0x377a000, 4096, 3);   // drawFramebuffer 槽所在页
+*(appFw + 0x377afe0) = drawfb_wrapper;
+mprotect(appFw + 0x377b000, 4096, 3);   // notifyDraw 槽所在页（不同页！）
+*(appFw + 0x377b440) = notify_wrapper;
+```
+
+**槽地址用 `readelf -rW` 确认：**
+```
+0377afe0  R_ARM_JUMP_SLOT  _ZN2ux6gfxeng14GraphicsEngine15drawFramebufferEv
+0377b440  R_ARM_JUMP_SLOT  _ZN2ux6wgtsys12WidgetSystem10notifyDrawEv
+```
+
+## ② 两次尝试都失败在"拿不到 appFw base"
+```
+尝试 A（在 libObj dlopen 分支里调用）：
+  DRAWFB_PATCH skip entry=0x40cffa4 base=(nil)
+  ⇒ lib_text_base("appFw.so") 返回 nil（maps 里该库的段格式不同）
+
+尝试 B（在 Application_Start hook 里调用，用 g_real_start_off 推导）：
+  DRAWFB_PATCH skip entry=0x413400c base=(nil) start=(nil)
+  ⇒ hook 时 g_real_start_off 还没赋值（或插错了分支）
+  ★ 并且基线崩溃（1167/[AS]=0/createLayer=2）⇒ 插入位置有害
+
+★ 两次都已回滚，基线完全恢复：1386/44/6，40/40，0 残留 ✅
+```
+
+## ③ 本层净收益
+```
+✅ **按 a7c2 找到真实 GOT 槽地址（readelf 确认）**
+✅ **发现两个槽在不同页，需分别 mprotect**
+✅ **确认 lib_text_base("appFw.so") 失效的原因方向**
+✅ **两次尝试均回滚，基线完好**
+❌ 帧 = 0，GOT 替换未生效
+```
+
+## ④ 下一步（关键：先解决 base）
+```
+★ appFw base 的可靠来源（三选一）：
+  A. dladdr(entry_for_appFw_symbol) —— 但 appFw 无导出符号
+  B. 在 my_start 里（g_real_start_off 已赋值后）调用 patch
+     ⇒ 但 my_start 是 Application_Start 本身，此时已进入固件
+  C. **从 libObj base 反推 appFw base 不行（不同库）**
+  D. 用 /proc/self/maps 但放宽条件：不只找 r-xp，找**任何**含 appFw.so 的行
+     ⇒ 最直接
+
+★ 推荐 D：改 lib_text_base 的匹配规则，打印所有 appFw.so 行
+```
+
+## 方法论（第 335 条）★★★★★★★
+**"'同一个函数在 A 状态可用、B 状态不可用'，要查的是它依赖的**前置条件**，不是函数本身"：
+```
+lib_text_base 对 libObj 可用（GE_PROBE 一直在打印 base），
+对 appFw 返回 nil。
+
+★ 不是函数 bug，是 **appFw 的映射格式与 libObj 不同**。
+  而"打印所有匹配行"这个零成本诊断，我一直没做。
+
+⇒ 判据：**一个已知可用的工具对 A 成功、对 B 失败时，
+   第一步是打印 B 的原始输入，而不是修改工具逻辑。**
+```
