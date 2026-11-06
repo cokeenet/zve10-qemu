@@ -38885,3 +38885,54 @@ ARM 是**小端**：指令 e92d4ff0 在内存中的字节顺序是 **2d e9 f0 4f
 - QEMU 试验源码已清理，默认构建不含 TB 追踪逻辑。
 - 报告必须保留上述限制：低位地址跨模块碰撞，必须做整偏移签名校验；没有 `ZVE10_APPFW_BASE` 就不能称为 site3 精确断点。
 
+# ★★★★★★★★★ 2026-11-07 第四百零三章（接手第 41 轮）：**a7c2 风格输入注入已接入当前源码，但未打通绘制**
+
+## ① 当前源码改动
+- 先按 a7c2 `inject-cp-event.c` 的做法实现了一个**显式环境变量控制、一次性、原 OSAL API** 的输入注入路径。
+- 仅当 `INJECT_INPUT_QUEUES=1` 且已创建至少 4 个 layer 时执行。
+- 向当前 M2 InfraInput 等待点 `0x7a804c`、`0x7a0020` 各投递一次 48 字节消息：
+  - frame=`0x2003`
+  - code=`0x8201`
+  - sub=`3`
+  - param=`1`
+  - `osal_valloc_msg_wait` → 清零/填充 → `osal_set_msg_src` → `osal_snd_msg`
+- 没有直接调用内部 handler，也没有写 GOT 或修改固件代码。
+
+## ② 受控实验
+输出目录：`/mnt/build/m2qemu/out/input41`
+
+- QEMU 使用 `systemd-run --unit=zve10-input41 --collect --property=MemoryMax=4G`。
+- 单实例运行，结束后 unit inactive，`qemu-system-arm` 残留为 0。
+- 实验镜像 SHA256：`e1214e5440bd7268d58b5e90f2fea68be06796651de4efb41977cc555ce7e6de`
+- 注入库 SHA256：`4521a92b500e7a02dee9f79cbcf108b25fd460c665247b71cbcb7a463548d932`
+- 注入日志确认：
+  ```text
+  INJECT_INPUT_QUEUES begin tid=195 cl_n=6
+  INJECT_INPUT n=1 qid=0x7a804c frame=0x2003 code=0x8201 sub=3 param=0x1 send=0
+  INJECT_INPUT n=2 qid=0x7a0020 frame=0x2003 code=0x8201 sub=3 param=0x1 send=0
+  INJECT_INPUT_QUEUES done
+  ```
+- 注入后仍看到：
+  ```text
+  [AS]RCVC n=88 qid=0x7a804c tmo=-1
+  [AS]RCVC n=89 qid=0x7a0020 tmo=-1
+  ```
+  因此 `send=0` 只证明 OSAL 接口接受投递，不能证明消息被 InfraInput 消费；这与 a7c2 的判据一致。
+
+## ③ 绘制结果
+- 基线结构仍在：`STARTCMP match=1`、`createLayer=6`、`LAYERVT=18`、`ENTRY_LOCK` 正常。
+- 注入前已有的主动正控仍产生一次 `UPDATERES` 与第二次 `notifyDraw`，但不是输入注入导致的证据：
+  ```text
+  DRIVE_AT_SEND ...
+  UPDATERES call=1 ...
+  DRAW_PROBE notifyDraw n=2 ...
+  ```
+- 输入注入后没有新的 `onDrawNotice`、`GRM_gpermFillrect`、`GRM_gpermRectblit` 或真正的 frame-loop 证据。
+- `FB_SAMPLE` 仍为 `nonzero=0`，唯一颜色为 1；没有合格的 614400 字节非噪声帧。
+
+## ④ 当前结论
+- 已排除“当前源码根本没有注入调用点”这一问题；现在注入路径确实被执行。
+- 尚未证明两个输入队列消费了消息；receive 日志仍显示随后无限等待，需下一轮在 `osal_rcv_msg_tmo` 返回后记录返回码、消息指针、source 和前 32 字节。
+- 输入注入未启动 UI 绘制，不能把 `send=0` 或 `UPDATERES=1` 当作成功。
+- **达成标准仍未完成：帧=0，尚无物理地址/SHA256 的合格新菜单帧。**
+
