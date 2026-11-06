@@ -32896,3 +32896,106 @@ a7c2 的 observe_gpe_fill 用了 __asm__("_ZN5mpgpe13GpermFillRect...")。
   · >0 ⇒ 固件**确实在画**，只是没到 framebuffer ⇒ 换取帧方式（AP 消息队列）
   · ==0 ⇒ 固件确实没画 ⇒ 继续找激活入口
 ```
+
+---
+
+# ★★★★★★★★★★★ 2026-11-06 第三百五十二章（第 236 轮）：**a7c2 方案的 hook 早已存在——实测 0 次调用**
+
+## ① ★★★★★ 按铁律1 找到 a7c2 的方案后，发现我们早就实现了
+```c
+/* argtrace.c 第 963-984 行（早已存在） */
+int GRM_gpermFillrect(unsigned a, unsigned b, void *c, void *d)
+{
+    if(!g_real_fillrect) g_real_fillrect =
+        (int(*)(unsigned,unsigned,void*,void*))dlsym(RTLD_NEXT,"GRM_gpermFillrect");
+    unsigned n = __atomic_fetch_add(&g_fill_n, 1, __ATOMIC_RELAXED);
+    if(n < 20) logline("GRMFILL n=%u a=%u b=%u c=%p\n", n+1, a, b, c);
+    return g_real_fillrect ? g_real_fillrect(a,b,c,d) : -1;
+}
+/* GRM_gpermRectblit 同理 */
+```
+
+**★ 这正是 a7c2 的 `observe_gpe_fill` 等价物，而且导出正常。**
+
+## ② ★★★★★ 但实测：所有运行中调用次数都是 0
+```
+扫描 out/*/serial0.log 全部运行：
+  GRMFILL 总计: **0 条**
+  GRMBLIT 总计: **0 条**
+
+★ 这个 hook 存在已久，且导出正确（nm 显示 T GRM_gpermFillrect）
+★ 但从未被调用
+⇒ **固件从未调用过平台的绘制入口**
+```
+
+## ③ ★★★★★ 这是本会话最直接的证据
+```
+此前三条间接证据：
+  · UI 帧循环 0x54ed12 零 PC 采样
+  · drawFramebuffer 零调用
+  · GPE 只收到 19 个 fence（无绘图命令）
+
+现在加上第四条**直接证据**：
+  · **GRM_gpermFillrect / GRM_gpermRectblit 零调用**（平台级绘制入口）
+
+★ 四条独立证据，全部指向同一结论：
+  **固件在 QEMU 环境下从未发起任何绘制请求。**
+
+⇒ 不是"画了但没到 framebuffer"，不是"GPE 没执行光栅"，
+  而是 **固件根本没有走到绘制这一步**。
+```
+
+## ④ 与 goal 中"已打通"的矛盾点（必须诚实记录）
+```
+goal 说：site3 → 0x54f6fe → 0x54fb3e：while(processSystemMessage() != 0)
+        → 0x113f4c → blx *(obj+0x34)，**不返回**
+
+★ 若主循环第一次调用就不返回，则：
+  · 0x54f700（循环体）永不执行 ✅ 与 STATQ 实测一致
+  · UI 帧循环 0x54ed12 永不执行 ✅ 与 PC 采样一致
+  · 绘制入口零调用 ✅ 与本轮一致
+  ⇒ **完全自洽**
+
+★ 因此：**唯一阻塞点是 `*(obj+0x34)` 这个回调内部挂起。**
+  它是 libObj 里的一个函数指针，指向某处，调用后不返回。
+```
+
+## ⑤ 本层净收益
+```
+✅ **按铁律1 确认 a7c2 的方案我们早已实现（第 963 行）**
+✅ **实测确认 GRM_gpermFillrect/Rectblit 零调用（第 4 条独立证据）**
+✅ **四条证据完全自洽，锁定唯一阻塞点**
+✅ 基线完好
+❌ 帧 = 0
+```
+
+## 方法论（第 340 条）★★★★★★★★★ 本会话最重要的方法论
+**"参考实现的方案可能你早就实现了——先查自己有没有，再决定要不要抄"：
+```
+我花 4 轮尝试 GOT 替换（全崩），然后按铁律1 去查 a7c2 的做法。
+
+★ 查完发现：a7c2 的 observe_gpe_fill 对应我们的 GRM_gpermFillrect，
+  **这个 hook 在我自己的代码第 963 行，早就写好了，而且一直在跑。**
+
+⇒ 判据：**"照抄参考实现"的第一步，是先 grep 自己的代码有没有。
+   有 ⇒ 直接看它的实测数据（本轮：0 次）
+   没有 ⇒ 再照抄**
+
+★ 本会话代价：4 轮 GOT + 1 轮查证 = 5 轮，
+  而正确答案是"我的 hook 一直在，结果是 0"。
+```
+
+## ⑥ 下一步（唯一剩下的方向）
+```
+★ 阻塞点：*(obj+0x34) 回调内部挂起
+★ 需要知道：obj 是什么、0x34 处是什么函数
+
+★ 可行方案（已排除三条读取路径）：
+  · 从 libObj 的 .bss+0x3c82d0 读 obj —— 需要读用户态内存（三条路已排除）
+  · 但从 **hook 内部**读！argtrace 运行在 guest 用户态，
+    可以直接读任意虚拟地址（同进程）！
+    ★ 这是本会话从未试过的最简单方法：
+      在 my_start 里，obj = *(void**)(libobj + 0x3c82d0)
+      这是**同进程内的普通内存读取**，不需要 MMU、不需要页表、不会 SIGSEGV
+      （只要能确认地址有效）
+```
