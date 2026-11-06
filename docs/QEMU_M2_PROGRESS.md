@@ -39314,3 +39314,21 @@ M2 `.text` 全范围扫描仍未找到将这些 screen table 与 manager current
 ## ② 结论
 M2 当前可复现实验路径仍只有已明确接入的导出符号插桩和显式输入注入；内部 `0x723aac` 菜单 builder 未接入，禁止直接调用。合格 framebuffer 仍为 0；QEMU 实例为 0。
 
+# ★★★★★★★★★ 2026-11-07 第四百二十三章（接手第 57 轮）：**M2 公开 UX API 盘点完成，未发现公开 screen-manager**
+
+## ① 静态 API 结果
+M2 appFw/libObj 的公开/未定义接口包括：
+
+```text
+WidgetSystem::processEvent
+WidgetSystem::postMousePress/postMouseRelease/postMouseMove
+WidgetSystem::notifyDraw/updateFrame
+GraphicsEngine::drawFramebuffer
+WidgetSystem::createLayer/getLayer
+```
+
+这些分别覆盖输入、绘制和 layer 操作，但没有公开的 screen manager/apply/current transition API。
+
+## ② 结论
+继续区分：公开 UX API 可用于观察/验证输入和绘制，不能替代 a7c2 manager lifecycle。没有运行 QEMU、没有内部调用、没有合格 framebuffer。
+
