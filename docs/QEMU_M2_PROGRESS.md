@@ -38033,3 +38033,150 @@ site2（0x54d2b0）：
 ```
 
 **⚠️ 本轮 4 次 QEMU 运行，已收尾，实例数 0。基线 1448/47/6。**
+
+---
+
+# ★★★★★★★★★★★★ 2026-11-06 第四百零六章（第 290 轮）：**读完 a7c2 的 apply；GOT 全槽扫描；栈对齐假设与回滚**
+
+用户第二次强调："是不是我们没有主动调用菜单，让菜单显示？参考 a7c2-re！认真参考！"
+
+## ① ★★★★★★★ 读完 a7c2 的 apply **完整实现**（menu-observe.c:2645-2675）
+```c
+static void try_apply_menu_after_frame(void) {
+    static unsigned int attempted;
+    /* 前置条件：开关、只试一次、已捕获 manager、create_screen 已返回、不在其内部 */
+    if (!getenv("MENU_APPLY_MENU") || attempted || !captured_manager
+        || !create_screen_returned || create_screen_active) return;
+    if (syscall(178) != ui_thread_id) return;        /* 必须在 UI 线程 */
+    attempted = 1;
+    unsigned long manager    = captured_manager;
+    unsigned long controller = *(unsigned long *)(manager + 0x330);
+    unsigned int  current    = *(unsigned int  *)(manager + 0x348);
+    /* 严格校验：vtable / 当前屏 == 0x308 / controller vtable / p30 / p10 / selector */
+    if (*(unsigned long *)manager != appfw_base + 0x5b0c480UL || current != 0x308 ||
+        controller != appfw_base + 0x7603190UL ||
+        *(unsigned long *)controller != appfw_base + 0x5b0e298UL ||
+        !p30 || !p10 || selector > 2) { record("MENU_APPLY_SKIPPED ", ...); return; }
+    record("MENU_APPLY_ENTER ", ...);
+    unsigned int from = 0x4b7, to = 0x346, restore = 0x4b7;
+    typedef void (*apply_t)(void *, const unsigned int *, const unsigned int *,
+                            const unsigned int *, unsigned, unsigned, unsigned,
+                            unsigned, unsigned);
+    ((apply_t)(appfw_base + 0x1e78870))((void *)manager, &from, &to, &restore,
+                                        0, 1, 0, 0, 0);
+    record("MENU_APPLY_RETURN ", "current=%#x controller=%#lx",
+           *(unsigned int *)(manager + 0x348), *(unsigned long *)(manager + 0x330));
+}
+```
+
+**★ 三个必须照抄的要点：**
+```
+1. **时机**：在 observe_draw_framebuffer **之后**（第一帧绘制完成）
+2. **参数是**指针**：&from, &to, &restore（不是值）
+3. **验收**：*(manager+0x348) 必须从 **0x308** 变成 **0x346**
+```
+
+## ② ★★★★★★★ GOT 全槽扫描（本轮最有价值的一次测量）
+```
+用 JUMP_SLOT 状态判断"该函数是否被调用过"（PLT0 = 从未调用）：
+
+GOTS gfxeng               rel=0x5289d0  **PLT0(never-called)**
+GOTS processSystemMessage rel=0x5289d0  **PLT0(never-called)**
+GOTS createLayer          rel=0xd5c52ebc resolved   ← 只有它被调用过
+GOTS drawFramebuffer      rel=0x5289d0  **PLT0(never-called)**
+GOTS notifyDraw           rel=0x5289d0  **PLT0(never-called)**
+GOTS updateFrame          rel=0x5289d0  **PLT0(never-called)**
+GOTS initSprite           rel=0x5289d0  **PLT0(never-called)**
+GOTS setParent            rel=0x5289d0  **PLT0(never-called)**
+
+⇒ **除 createLayer 外，所有 UI 函数从未被调用过。**
+⇒ 特别是 **drawFramebuffer 从未调用 ⇒ 一帧都没画过**。
+⇒ 而 a7c2 的 apply 时机正是"首帧之后" —— 说明**连 a7c2 的前置条件我们都不满足**。
+```
+
+## ③ ★★★★★★★ GOTWATCH：180 秒连续监视，槽始终未解析
+```
+新增后台线程每 2 秒读一次 psm / drawfb 的 GOT 槽：
+  GOTWATCH psm    0x...9d0 rel=0x5289d0
+  GOTWATCH drawfb 0x...9d0 rel=0x5289d0
+  总变化次数: **2**（即初始两次，之后 180 秒内**无任何变化**）
+
+⇒ 排除"我读得太早"的可能，**确证从未调用**。
+```
+
+## ④ ★★★★★★ 找到的根因假设（照 a7c2 §5）与它的失败
+```
+a7c2 BOOT-TROUBLESHOOTING §5 原文：
+  "**入口桩保存 x0..x8/x30/q0..q7/NZCV、对齐栈、重放原指令并同步 icache**"
+
+★ 推理：Application_Start 用 **自己的 sp 作 frame**：
+    54d586: sub.w sp, sp, #2208
+    54d58c: add  r7, sp, #0        ; frame = sp
+  而 site2 写 frame[2160]（0x54d352）。
+  **我的 my_start 是普通 C 函数，有自己的栈帧 ⇒ real_start 的 sp 偏移
+    ⇒ frame 偏移 ⇒ site2 写 frame[2160] 写到错误位置 ⇒ 破坏栈**
+  ⇒ 这能解释"site2 执行了（createLayer=4）但 site3 从未执行"。
+
+★ 实现：naked 函数 + 保存 r0-r3/r12/lr + `bx` 尾调用（sp 不变）
+
+★ **实测失败**：
+  行数=349  [AS]=0  createLayer=0  LOCK/UNLOCK=0/0  **FB nonzero=0**（前所未见）
+  START_ENTER 零输出 ⇒ naked 桩根本没被调用到，或 target 解析失败
+
+★ 原因：桩内用 dlsym(RTLD_NEXT, "Application_Start") 取 target，
+  但真正的地址是 **dlopen hook 捕获的 r**，RTLD_NEXT 从本库看找不到它。
+  ⇒ 桩没有 target ⇒ 启动整体失败
+```
+
+## ⑤ ★★★★★ 回滚并恢复基线（铁律 4）
+```
+已回滚 naked 桩，恢复 C hook。
+回滚时误把 `g_as_phase=0` 放到了 real_start **之前**，导致 [AS] 标签消失
+（行数=1443 / [AS]=**0** / createLayer=6 / LOCK=40-40 / FB=1）。
+已删除那两行，[AS] 恢复。
+
+最终基线：**1443 / createLayer=6 / LOCK=40-40 / FB nonzero=1 / QEMU 残留=0** ✅
+```
+
+## ⑥ 本层净收益
+```
+✅ **完整读到 a7c2 的 apply 实现（时机/指针参数/验收判据三要点）**
+✅ **GOT 全槽扫描：只有 createLayer 被调用过，其余 7 个全部从未调用**
+✅ **GOTWATCH 180 秒监视，排除"读得太早"**
+✅ **确证 drawFramebuffer 从未调用 ⇒ 一帧都没画过 ⇒ 不满足 a7c2 的 apply 前置条件**
+✅ **验证了"栈对齐"假设的失败方式（naked 桩丢失 target）**
+✅ 基线恢复（1443/6/40-40/FB=1）
+❌ 帧 = 0
+```
+
+## 方法论（第 394 条）★★★★★★★★★★★
+**"JUMP_SLOT 的三种状态就是三种结论——这是判断'函数是否被调用'的最强手段"：
+```
+· 值 == .plt 起点（PLT0） ⇒ **从未被调用过**（物理证据，不受 hook 有效性影响）
+· 值 == 本库 hook 地址     ⇒ hook 有效，计数是真实测量
+· 值 == 实现地址           ⇒ hook 无效，计数是假零
+
+★ 本会话用它在一次运行里同时判定 8 个函数，成本极低。
+★ 加上"定时重复读"，还能排除"读取时机太早"。
+
+⇒ 判据：**凡"某函数从未被调用"的结论，都应先用 JUMP_SLOT 状态确认，
+   而不是只看计数器。**
+```
+
+## ⑦ 下一步（修正后的 a7c2 路线）
+```
+★★★ naked 桩的方向是对的（a7c2 明确要求"对齐栈"），但 target 必须用
+   **dlopen hook 捕获的 r**，不能用 dlsym(RTLD_NEXT)。
+
+★ 下次实现：
+  · 在 dlopen hook 里（已有 `r`）把真实现地址写入 g_start_target
+  · naked 桩只做：保存寄存器 → bl 记录 → 恢复 → ldr ip,[g_start_target] → bx ip
+  · 这样 sp 不变且 target 正确
+
+★★ 但更前置的问题：a7c2 的 apply 需要 **首帧 drawFramebuffer**，
+   而我们 drawFramebuffer 从未调用。所以即便修好栈，也可能只是
+   让 site3 跑起来 → processSystemMessage → 主循环 → 但 widget 树仍为空。
+   ⇒ 真正的顺序是：修好栈 → site3 执行 → 主循环 → 才有机会调 apply。
+```
+
+**⚠️ 本轮 6 次 QEMU 运行（含 1 次崩溃 + 回滚验证），已收尾，实例数 0。**
