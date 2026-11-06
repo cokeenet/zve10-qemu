@@ -39442,3 +39442,37 @@ M2 screen dispatch 仍需运行时对象/vtable 捕获才能确认语义。静�
 
 合格 framebuffer 仍为 0；没有物理地址/SHA256 的新菜单帧；QEMU 实例为 0。
 
+# ★★★★★★★★★ 2026-11-07 第四百三十章（接手第 64 轮）：**直接确认 M2 有两处 processEvent 帧循环**
+
+## ① 静态证据
+M2 `appFw.so` 的 `processEvent` PLT 槽为：
+
+```text
+appFw+0x377b334 → WidgetSystem::processEvent()
+```
+
+存在两处明确调用循环：
+
+```asm
+0x54ed32: wgtsys()
+0x54ed36: processEvent()
+0x54ed3c: cmp r0,#0
+0x54ed3e: bne 0x54ed32
+```
+
+以及：
+
+```asm
+0x54f894: wgtsys()
+0x54f898: processEvent()
+0x54f89c: cmp r0,#0
+0x54f89e: bne 0x54f894
+```
+
+这与当前 `argtrace.c` 已有的 `UXLOOP processEvent` 导出插桩完全对应；无需新增机制或 patch。
+
+## ② 结论
+M2 的 frame/event loop 静态存在，当前关键未知已收窄为：运行时是否到达两处、返回值是否非零、以及何时进入 `notifyDraw/onDrawNotice/GRM`。不能仅凭静态存在声称 UI 已启动。
+
+本轮只读，无 QEMU 运行、无内部调用、无 patch。合格 framebuffer 仍为 0；QEMU 实例为 0。
+
