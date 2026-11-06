@@ -37914,3 +37914,122 @@ a7c2：apply(manager, 0x4b7, 0x346, ...) 会
 ```
 
 **⚠️ 本轮 0 次 QEMU 运行（纯静态），实例数 0。基线 1416/45/6/40-40。**
+
+---
+
+# ★★★★★★★★★★★★ 2026-11-06 第四百零五章（第 289 轮）：**GOT 未解析 = 最强证据；但暴露 caller 计算可疑**
+
+## ① ★★★★★★★ Hook 有效性验证（本轮最重要的方法改进）
+```
+问题：LD_PRELOAD 定义的符号只对"跨模块 PLT 调用"生效。
+     若 GOT 槽已解析到实现地址，或固件直接 bl 内部地址，hook 就是假零。
+
+验证方法：**读固件的 GOT 槽，看它指向谁**
+  · gfxeng@plt 的 JUMP_SLOT = appFw+0x377ac9c
+  · psm@plt    的 JUMP_SLOT = appFw+0x377acec
+
+实测（在 drive_once 里，至少一次调用之后）：
+  PSM_GOT_AFTER    value=0x2e1909d0  ourhook=0x413ad80  real=0xa8b5611
+  GFXENG_GOT_AFTER value=0x2e1909d0  ourhook=0x413b7ec
+
+★ 两个槽值**相同** ⇒ 都是 **PLT0 桩**
+★ 验证：0x2e1909d0 - appFw_base(0x2dc68000) = **0x5289d0** = .plt 起点 = PLT0 ✅
+⇒ **两个 GOT 槽从未被解析**
+⇒ **appFw 从未调用过 gfxeng 和 processSystemMessage**
+```
+
+## ② ★★★★★★★ 这既是坏消息也是最强证据
+```
+坏：gfxeng 的 hook 从一开始就是**假零**（我第 288 轮用它判断 site3 未执行，无效）
+好：**"GOT 从未解析"是物理证据**，比计数器更强 ——
+    它证明这两个函数**一次都没被调用过**，无论 hook 怎么装。
+
+⇒ 这是第 11 条独立证据，且强度最高。
+⇒ site3 从未执行，确证。
+```
+
+## ③ ★★★★★★★ 但矛盾变得无法回避
+```
+site3 入口结构（重新验证）：
+  54f664: stmdb sp!, {r4,r5,r6,r7,r8,r9,sl,fp,lr}
+  ...
+  54f6fe: b.n 0x54fb3e          ← **无分支，直接跳**
+  54fb3e: blx UXEngine::gfxeng@plt
+  54fb42: blx processSystemMessage@plt
+
+⇒ site3 一旦进入，0x54fb3e **必然**执行
+
+Application_Start（0x54d580）：
+  54d5a6: bl 0x54d2b0   ; site2
+  54d5ac: bl 0x54f664   ; site3
+  （只隔 6 字节，**无分支**；字节已直接解码验证 target=0x54f664）
+
+site2（0x54d2b0）：
+  **0 条分支指令**（本轮扫描确认）
+  0x54d318: bl 0x54d120 → bl 0x7238c0（UX 初始化）
+  UX 初始化（0x7238c0..0x723a7e）：**0 条分支指令**（本轮扫描确认）
+  0x723a7e: ldmia → 返回
+
+∴ site2 只要被调用，就必然返回；site3 就必然执行；gfxeng 就必然被调用
+∴ 但 GOT 证明 gfxeng 从未被调用
+⇒ **矛盾**
+```
+
+## ④ ★★★★★★★ 矛盾的可能来源：caller 计算不可靠
+```
+"site2 执行了"的唯一证据是 createLayer=12，而它的 caller 记为
+  caller=appfw+0x7239c0
+该值由 `lib_text_base("appFw.so")` 计算。
+
+★ 第 253 轮曾明确记录：**lib_text_base("appFw.so") 返回 nil**
+★ 而且历史日志里还有 12 处 caller=appfw+0xdcc61978 之类**明显是垃圾**的值
+  （0xdcxxxxxx 远超 appFw 大小 0x3d4bc78）
+
+⇒ **0x7239c0 很可能也是错的**
+⇒ 若 caller 错，则"UX 初始化由 site2 触发"的结论不成立
+⇒ 则 createLayer=12 可能来自**完全不同的路径**
+```
+
+## ⑤ 本层净收益
+```
+✅ **建立"Hook 有效性 = 读 GOT 槽"的通用验证法（本会话最有价值的方法）**
+✅ **确认 gfxeng hook 是假零（第 288 轮结论作废）**
+✅ **获得第 11 条独立证据：GOT 从未解析 ⇒ 两个函数从未被调用**
+✅ **确认 site2/UX初始化/site3 入口**全部线性无分支**
+✅ **定位矛盾，并指向可疑的 caller 计算**
+✅ 基线完好（1448/47/6）
+❌ 帧 = 0
+```
+
+## 方法论（第 393 条）★★★★★★★★★★★ 本会话最重要的方法论
+**"验证 LD_PRELOAD hook 是否有效，唯一可靠的方法是把固件的 GOT 槽读出来看它指向谁"：
+```
+本会话 8 次"假零"里，至少 3 次是 LD_PRELOAD 没拦到：
+  · __dis__ 前缀（第 366 条）
+  · 内部 bl 绕过 PLT（第 381 条）
+  · **GOT 已解析/未解析（本轮）**
+
+⇒ 判据（硬规则）：
+   **任何"导出符号 hook"的零，必须先读该符号在目标模块里的 JUMP_SLOT，
+     确认它指向 hook 而不是 PLT0 或实现地址：**
+     · 指向 PLT0（.plt 起点）⇒ 该函数**从未被调用过**（这本身就是证据！）
+     · 指向实现地址        ⇒ hook **无效**，零是假零
+     · 指向我们的 hook     ⇒ hook 有效，零是真实测量
+
+★ 这一步只需一次 guest 内读 + 一次减法，成本极低，
+  但能立刻判定"零"的性质。本会话用了 289 轮才建立这个方法。
+```
+
+## ⑥ 下一步（验证 caller 计算）
+```
+★★★ 先修好 caller 计算：在 createLayer hook 里用**可靠方式**输出 caller
+  · 不再用 lib_text_base（它返回 nil）
+  · 改用 dlsym(Application_Start) 反推 appFw base（与 libObj base 同样的手法）
+  · 然后重跑，看 createLayer 的真实 caller 是哪
+
+★ 这能判定："site2 执行了"这个前提是否成立
+  · 若 caller 真是 0x7239c0 ⇒ site2 执行 ⇒ 矛盾（需新解释）
+  · 若 caller 是别处 ⇒ site2 可能从未执行 ⇒ 整个链重新定位
+```
+
+**⚠️ 本轮 4 次 QEMU 运行，已收尾，实例数 0。基线 1448/47/6。**
