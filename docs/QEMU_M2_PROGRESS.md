@@ -39230,3 +39230,23 @@ GraphicsEngine::drawFramebuffer()
 
 合格 framebuffer 仍为 0；无物理地址/SHA256 的新菜单帧；QEMU 实例为 0。
 
+# ★★★★★★★★★ 2026-11-07 第四百一十八章（接手第 54 轮）：**找到多类真实 slot31 虚调用，但确认它们不是绘制触发者**
+
+## ① 静态结果
+对 M2 `libObj.so` 做了只读 slot31 模式扫描并用 objdump/符号归属核对：
+
+- `DDSUserSus@@Base`：`0x87e7a` 通过对象 vptr+0x7c 调用；
+- `AnimationTriggerParts::setTimeTranslatorType`：`0xdb78c` 通过 vptr+0x7c 调用；
+- `TextSprite::getRotation`：`0xfe53e`；
+- `TextSprite::getLineGap`：`0x100b1a`；
+- `GraphicsImage::sys_getInternalObject`：`0x110084`；
+- 多个 `LayoutAttributeWriter` 路径：`0x190556/0x193b80/0x19a840`；
+- `ObjAvAdjCtrl_UnregisterCommand`：`0x245344`。
+
+这些命中说明槽索引 31 被多个 WidgetBase 派生/相关对象复用，但其函数语义是属性、动画、图像、控制对象操作，不是统一的 frame draw loop。
+
+## ② 结论
+本轮把“槽存在”推进到“真实调用者类别”层面，同时排除了若干明显非绘制调用者。尚未找到能把 `notifyDraw → onDrawNotice → GRM` 串起来的 M2 调用者；不 patch、不直接调用虚槽。
+
+合格 framebuffer 仍为 0；无物理地址/SHA256 的新菜单帧；QEMU 实例为 0。
+
