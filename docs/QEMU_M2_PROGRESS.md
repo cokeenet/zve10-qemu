@@ -39366,3 +39366,30 @@ vtable[0] == lifecycle apply
 
 没有进行高风险调用；合格 framebuffer 仍为 0；QEMU 实例为 0。
 
+# ★★★★★★★★★ 2026-11-07 第四百二十五章（接手第 59 轮）：**screen-ID dispatch 进一步归类为注册/序列化循环**
+
+## ① 静态核对
+`0x7a2000..0x7a2a50` 连续遍历大量 screen IDs：
+
+```text
+0x2c0..0x2ca、0x2cc、0x2c7、0x2c5、0x346、0x306、...
+```
+
+调用形状重复为：
+
+```text
+r0 = object
+r1 = screen_id
+r2 = shared context
+r3 = 4
+ldr r6,[object vptr]
+blx r6
+```
+
+它更像“注册/枚举每个 screen model”的初始化循环，而非一次性的 `current 0x308 → menu 0x346` lifecycle transition。没有发现该循环读取 manager current 或 controller guard。
+
+## ② 结论
+M2 已确认有 `screen table`、`screen-ID request builder`、`screen-ID vtable dispatch loop`，但这些仍未闭合到 a7c2 manager apply ABI。不能直接调用该 vtable 槽或伪造对象；保持只读分析。
+
+合格 framebuffer 仍为 0；没有物理地址/SHA256 的新菜单帧；QEMU 实例为 0。
+
