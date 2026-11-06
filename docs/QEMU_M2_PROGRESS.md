@@ -39170,3 +39170,15 @@ bl  0x115917c
 
 M2 等价 manager/apply 入口仍未定位；合格 framebuffer 仍为 0；没有物理地址/SHA256 的新菜单帧；QEMU 实例为 0。
 
+# ★★★★★★★★★ 2026-11-07 第四百一十四章（接手第 50 轮）：**确认通用 request-builder 的宿主函数，不等于菜单生命周期**
+
+## ① 静态结果
+- `0x1100da8` 是一个 0x84 字节栈帧的通用 request-builder 宿主函数。
+- 它从 `frame+0x7c` 读取上下文，随后在 switch 中构造 0x346/0x348 等请求类型，汇合到 `0x115917c`。
+- 该函数及其 continuation 只表现为请求构造、校验和 vtable 提交；没有 manager current/controller guard。
+
+## ② 结论
+已把 M2 request-builder 的宿主边界闭合，但仍不能把它当作 a7c2 的九参数 apply 或直接切屏入口。继续保持禁止内部调用策略。
+
+合格 framebuffer 仍为 0；无物理地址/SHA256 的新菜单帧；QEMU 实例为 0。
+
