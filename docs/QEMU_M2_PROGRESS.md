@@ -31252,3 +31252,95 @@ cpu_memory_rw_debug 文档上完美，但 127 次全部失败。
    · 第 331 层：MMU 读取在内核态（时机）
    · 第 332 层：tick 采样永远内核态（时机，本轮）
 ```
+
+---
+
+# ★★★★★★★ 2026-11-06 第三百三十三章（第 217 轮）：**页表遍历实现完成，但 TTBR0 读取值可疑**
+
+## ① 实现：手工 ARMv7 页表遍历（约 45 行）
+```c
+static int zve10_va_to_pa(CPUARMState *env, uint32_t va, uint32_t *pa)
+{
+    uint32_t ttbr0 = (uint32_t)env->cp15.ttbr0_ns;
+    uint32_t l1_base = ttbr0 & 0xffffc000u;
+    /* 支持 Linux 实际使用的两种情况：
+     *   - 一级 section（1 MiB）
+     *   - coarse table + 4 KiB small page / 64 KiB large page
+     * 其他一律返回失败，不猜测。 */
+}
+```
+
+**基线完好：1391 行 / [AS]=45 / createLayer=6 ✅**
+
+## ② 结果：TTBR0 读取值可疑
+```
+WALK ttbr0=0x2da2806a walk-failed
+```
+
+**分析：**
+```
+ttbr0 = 0x2da2806a
+  理论位域（ARMv7 short descriptor）：bits[31:14] = 页表基址
+  ⇒ 基址 = 0x2da28000
+
+★ 但 bits[6:0] = 0x6a —— 对 ARMv7 的 TTBR0 应为 0（或 ASID 在 bits[7:0]）
+  ⇒ 0x6a 不像合法 ASID
+
+★ 更可疑：0x2da28000 恰好等于**本次运行的 appFw base**（0x2da28001）
+  ⇒ 这不可能是页表基址（页表在高端内存，不在模块加载区）
+  ⇒ **读到了错误的内容**
+```
+
+## ③ 可能原因
+```
+A. `env->cp15.ttbr0_ns` 不是正确的字段
+   ⇒ QEMU 11 里 ARM 的 cp15 union 有多个别名
+   ⇒ 也许该用 `ttbr0_el[0]` 或通过 helper 函数
+
+B. wt_lib 猜错了（p & 0xfff00000）
+   ⇒ PC 落在 0x2da2xxxx，& 0xfff00000 = 0x2da00000
+   ⇒ 但真实 base 是 0x2da28000
+   ⇒ **偏移算错，所以 walk 的是错误地址**
+```
+
+## ④ 本层净收益
+```
+✅ **实现完整的 ARMv7 页表遍历（section / coarse / small / large 四种）**
+✅ **基线完好（1391/45/6），未引入污染**
+✅ **读到 ttbr0 值（0x2da2806a）并发现它可疑**
+✅ **定位两个可能的 bug（字段名 / wt_lib 猜测）**
+❌ 帧 = 0
+```
+
+## ⑤ 下一步
+```
+★ 修正 wt_lib 计算：应该用"从 PC 反推 base"
+  已知 Application_Start 在 base+0x54d580
+  但我们只有 PC，不知道它在哪个函数
+  ⇒ **改用可靠的 base 来源**：
+     a. 从 guest 侧 argtrace 记录的 Application_Start（但 host 拿不到）
+     b. 用 GOT 槽的特征地址（base+0x37d95b8）反查
+     c. **打印 base 的候选值，人工确认**
+
+★ 修正 ttbr0 字段
+   ⇒ 试 `env->cp15.ttbr0_el[0]`
+```
+
+## 方法论（第 321 条）★★★★★★★★ 本会话最重要的方法论
+**"实现了一个完整算法却失败时，先检查'输入'而不是'算法'"：
+```
+我实现了完整的 ARMv7 页表遍历（45 行，覆盖四种页表类型），
+基线也完好（1391/45/6）。
+
+★ 但失败。原因不在算法，而在**两个输入都有问题**：
+   · ttbr0 = 0x2da2806a（值可疑）
+   · wt_lib = 0x2da00000（猜错，真实是 0x2da28000）
+
+⇒ 判据：**算法实现完成后失败，优先怀疑输入数据，而不是算法本身。**
+   检查方法：把每个输入的值打印出来，逐个确认其合理性。
+
+★ 本例的"合理性检查"很简单：
+   · TTBR0 的 bits[6:0] 应为 0（ARMv7）→ 实测 0x6a ⇒ 可疑
+   · 页表基址应在高端内存，不在模块区 → 实测等于模块 base ⇒ 可疑
+  两个检查都是**零成本**的，只靠看数值就能发现。
+```
