@@ -33798,3 +33798,86 @@ goal 中记录：
 ```
 
 **⚠️ 本轮 1 次 QEMU 运行，已收尾，实例数 0。**
+
+---
+
+# ★★★★★★★ 2026-11-06 第三百六十二章（第 246 轮）：**site3 的 8 个调用逐个核对；0x910042 不是卡点**
+
+## ① 先做零成本核查：现有探针在日志里留下什么
+```
+out/psm/serial0.log 探针前缀统计：
+  SSM 219 / RCVC 85 / INITSEQ 61 / REG 51 / GV_PROBE 41
+  SEM 40 / ENTRY_UNLOCK 40 / ENTRY_LOCK 40 / ENTRY_FRAME 40
+  U_VALLOC 35 / STK 32 / BLK 28 / BACKUP_ 26 / U_SYNC 24
+  LIBOBJ_SYM 24 / STATQ 19 / SNDMSG_PROBE 16
+
+★ CREATELAYER=12 / LAYERVT=18 / ENTRY_LOCK=40 ⇒ **site2 完整执行**
+★ 但 PSM_HOOK=0（第 361 轮）⇒ **site3 的主循环没进入**
+```
+
+## ② ★ 逐个核对 site3 的 8 个调用目标
+```
+0x54ef74  → vtable[0] 空函数，已确认返回（第 212 轮）
+0x54833c  → appFw 内部（0x1370 区域附近）
+0x925fb0  → **ARM PLT thunk → appFw off=0x1c7e6a5**（不是 libObj！）
+0x9256a8  → appFw off=0x1c7e6b5
+0x9246b8  → appFw off=0x1c7e6b5
+memset    → libc
+0x9240f8  → appFw off=0x1d5a3e1
+0x54e8f0  → appFw 内部，会向 qid=0x910042 发同步 IPC
+```
+
+## ③ ★★★★★ 0x910042 的真相（不是卡点）
+```
+日志里 0x910042 出现 29 次：
+  BLK ssd n=2 tid=115 qid=0x910042 w0=0x20 mod=/usr/lib/libMWF.so off=0x207b1
+  FAKETS qid=0x910042 -> 31.676837
+  BLK ssd n=5 tid=115 qid=0x910042 w0=0x20 mod=**/usr/lib/libObj.so** off=0x3d255
+  FAKETS qid=0x910042 -> 34.665769
+
+★ BLK = 阻塞同步调用，但每次都被 **FAKETS**（我们伪造的时间戳）满足
+★ 且调用者主要是 **libMWF.so / libObj.so**，不是 appFw 的 site3
+⇒ **0x910042 不是卡点**
+```
+
+## ④ 本层净收益
+```
+✅ **用零成本核查（探针前缀统计）确认 site2 完整、site3 主循环未进入**
+✅ **逐个核对 site3 的 8 个调用目标（4 个是 appFw 内部 thunk，不是 libObj）**
+✅ **确认 0x910042 被 FAKETS 满足，不是卡点**
+✅ **基线完好**
+❌ 帧 = 0
+```
+
+## 方法论（第 350 条）★★★★★★★★★
+**"grep -c 统计的是'行数'，不是'出现次数'——用它判断'有没有'会出错"：
+```
+我用 `grep -ac '910042'` 得到 0，就断言"从未出现"。
+实际 `grep -ac` 数的是匹配**行数**，而且我那次用的文件/模式有误。
+
+★ 正确做法：`grep -o | wc -l` 数出现次数，
+  或 `grep -aoE` 提取后 `sort | uniq -c`。
+
+⇒ 判据：**用 grep 做"存在性"判断时，
+   先确认它统计的是什么（行/次），并在同一文件上做正对照。**
+
+★ 本会话同类：第 285 条（检测器必须先标定）。
+  本轮的错误只花了 1 次调用就发现，因为立刻做了正对照（0x8f013a=160）。
+```
+
+## ⑤ 剩余 10 轮的判断
+```
+本会话已 246 轮 / 362 层。移植交付完整，但 QEMU 亮屏未达成。
+
+★ 已排除 19 项假设
+★ 最后一轮的关键发现：**PSM_HOOK=0 ⇒ processSystemMessage 从未被调用**
+★ 卡点在 site3 的 0x54f664..0x54f6fe（约 0x9A 字节，8 个调用）
+
+★ 剩余 10 轮不足以完成：
+  · 8 个调用逐个 hook（每个 1-2 轮）
+  · 找到卡点后的修复
+  · 修复后的验证
+  ⇒ 约需 15-20 轮
+
+⇒ **建议收尾：把 19 项排除清单 + 全部实测数据 + "距亮屏还差什么"写入最终文档。**
+```
