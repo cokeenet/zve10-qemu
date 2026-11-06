@@ -33609,3 +33609,95 @@ a7c2 的 mutex-trace 只查非法指针，说明它**从未遇到锁竞争卡死
 ```
 
 **⚠️ 本轮 5 次工具调用，QEMU 跑 1 次，实例数 0。**
+
+---
+
+# ★★★★★★★ 2026-11-06 第三百六十章（第 244 轮）：**照抄 a7c2 的调度覆盖 —— 基线彻底崩塌，已回滚**
+
+## ① ★★★★★ a7c2 的调度覆盖实现（完整照抄来源）
+```c
+/* a7c2 menu-observe.c 第 3137-3159 行，四个 API 全部强制 policy=0, priority=0 */
+int pthread_attr_setschedpolicy(void *attr, int policy) {
+    (void)policy; return real_attr_policy(attr, 0);        /* SCHED_OTHER */
+}
+int pthread_attr_setschedparam(void *attr, const void *parameter) {
+    int normal_priority = 0; (void)parameter;
+    return real_attr_param(attr, &normal_priority);
+}
+int pthread_setschedparam(pthread_t thread, int policy, const void *parameter) {
+    int normal_priority = 0; (void)policy; (void)parameter;
+    return real_thread_param(thread, 0, &normal_priority);
+}
+int sched_setscheduler(int pid, int policy, const void *parameter) {
+    int normal_priority = 0; (void)policy; (void)parameter;
+    return real_scheduler(pid, 0, &normal_priority);
+}
+```
+
+## ② ★★★★★ 我们的实现（4 个都覆盖，基线彻底崩塌）
+```
+★ 哨兵: 行数=**485** [AS]=**0** createLayer=**0**  LOCK/UNLOCK=0/0
+★ **FB nonzero=0** ← 这是本会话**从未出现过**的情况（连帧缓冲都没初始化）
+
+⇒ 固件**依赖它自己请求的实时调度优先级**
+⇒ 强制普通调度 ⇒ 关键线程拿不到 CPU ⇒ boot 都起不来
+```
+
+## ③ 已回滚，基线完全恢复
+```
+★ 哨兵: 行数=1399 [AS]=45 createLayer=6
+  LOCK/UNLOCK=40/40  FB nonzero=1  QEMU 残留=0  ✅
+```
+
+## ④ 本层净收益（重要的负面结论）
+```
+✅ **完整照抄 a7c2 的 4 个调度 API 覆盖**
+✅ **实测：基线彻底崩塌（485 行，FB=0，连 boot 都不完整）**
+✅ **确认：本固件依赖实时调度（与 a7c2 的固件不同）**
+✅ **已回滚，基线完好（1399/45/6，40/40）**
+❌ 帧 = 0
+```
+
+## 方法论（第 348 条）★★★★★★★★★
+**"'参考实现做的事'可能是**为它的环境**做的，而不是**为你的问题**做的"：
+```
+a7c2 覆盖调度，是因为**它的 QEMU 用 TCG 单线程模拟，实时调度会饿死模拟器**。
+（它启用 --observe 时明确说 "use ordinary test thread scheduling"）
+
+★ 而我们的固件在**同样的单线程 TCG** 下，
+  恰恰**需要**实时调度才能让关键线程跑起来。
+
+⇒ 判据：**照抄一个做法前，要问"它解决的是什么问题"。
+   若它解决的是"模拟器自身的调度问题"，照抄会让你更糟。**
+
+★ 本会话"照抄但不适用"的完整清单（4 项）：
+   · 0x0051004a seed-power-on（我们的固件不用该 key）
+   · mutex-trace（只查非法指针，我们不是那个问题）
+   · GOT 槽替换（a7c2 的库布局不同，我们会崩）
+   · 调度覆盖（本轮，反向有害）
+```
+
+## ⑤ 本会话已排除的完整假设清单（18 项）
+```
+1. 死锁                    7. key=0x30143/0x30131    13. 内部函数手动调用
+2. 0x7a804c 输入队列        8. 等 IPC 消息             14. 需要 CP 服务替身
+3. 0x924127 按键队列        9. 需要 vmlinux           15. /proc syscall 读取
+4. 远程快门 MSGID          10. init_task 地址          16. mutex-trace 方案
+5. 绘制链不可达            11. GOT 槽替换              17. seed-power-on
+6. isFrameDelay            12. cpu_memory_rw_debug    18. **调度覆盖（本轮）**
+```
+
+## ⑥ 下一步
+```
+★ 剩余唯一线索：tid=195 的 wchan = futex_wait_queue_me（8/8 次运行）
+  但不是实时调度问题（本轮排除）
+
+★ 需要一个能真正看到"谁持有锁"的方法：
+  · 在 argtrace 里 hook pthread_mutex_lock，记录 (锁地址, 获取成功的 tid)
+  · 分析 tid=195 等的锁，最后一次成功 lock 它的是谁
+  · 若那个 tid 已退出 ⇒ 僵尸锁
+
+★ 这是最后一个可测的方向
+```
+
+**⚠️ 本轮 3 次 QEMU 运行，全部收尾，实例数 0。**
