@@ -28592,3 +28592,115 @@ memset 之后：[r7+1728] = **0**
 4. 只搜 str 漏了 memset（本轮）
 ⇒ 共同点：**静态分析必须多角度交叉，单一模式搜索会漏**
 ```
+
+---
+
+# ★★★★★★★★★ 2026-11-06 第三百零八章（第 192 轮）：**反向追查确认：4 个绘制函数从未被调用**
+
+## ① 从绘制端反查（本会话第一次）
+```
+★ 之前 190 轮都是从 Application_Start 正向追。
+本轮改为：**从"谁调用 drawFramebuffer"反推**。
+```
+
+## ② appFw 导入的 5 个绘制相关符号
+```
+arm-linux-nm -D appFw.so | grep -E "drawFramebuffer|notifyDraw|updateFrame|processEvent|createLayer"
+
+  ✅ _ZN2ux6wgtsys12WidgetSystem11createLayerERKNS_4core2IDE      —— 被调用 12 次
+  ❌ _ZN2ux6gfxeng14GraphicsEngine15drawFramebufferEv              —— **从未调用**
+  ❌ _ZN2ux6wgtsys12WidgetSystem10notifyDrawEv                     —— **从未调用**
+  ❌ _ZN2ux6wgtsys12WidgetSystem11updateFrameEv                    —— **从未调用**
+  ❌ _ZN2ux6wgtsys12WidgetSystem12processEventEv                   —— **从未调用**
+```
+
+## ③ 验证方式（三重交叉）
+```
+1. 反汇编全库搜 `@plt` 调用点：
+   notifyDraw@plt     —— **零匹配**
+   updateFrame@plt    —— **零匹配**
+   drawFramebuffer@plt —— **零匹配**
+
+2. 日志搜 dlsym 解析记录：
+   grep "notifyDraw|drawFramebuffer|updateFrame" —— **零匹配**
+
+3. 我们的钩子输出：
+   DRAW_PROBE / ">>> drawFramebuffer" / ">>> updateFrame" —— **零匹配**
+
+⇒ **三重证据一致：这 4 个函数从未被调用过（连符号都没解析）**
+```
+
+## ④ ★★★ 这彻底改变了问题的性质
+```
+不是"绘制失败"（调用了但没产生像素）
+而是 **"从未尝试绘制"**（连函数都没调用）
+
+⇒ 缺失的是**整个绘制链的启动**
+```
+
+## ⑤ 与已知事实的一致性
+```
+✅ createLayer 12 次 —— 初始化成功
+✅ setActive / setClear —— 成功
+✅ processEvent 从未调用 —— 与第 304 层"主循环被跳过"一致
+✅ notifyDraw / updateFrame 从未调用 —— 因为它们由 processEvent 驱动
+✅ FB 全零 —— 从未尝试绘制
+
+⇒ **完整自洽**
+```
+
+## ⑥ 本层净收益（本会话最重要的方向确认）
+```
+✅ **首次从绘制端反向追查**
+✅ **确认 4 个绘制函数从未被调用（三重交叉验证）**
+✅ **确认问题是"从未尝试绘制"，不是"绘制失败"**
+✅ **完整自洽地解释全部现象**
+✅ 基线完好（1334/44/6）
+❌ 帧 = 0
+```
+
+## ⑦ 下一步（明确）
+```
+绘制链的驱动者是 **processEvent**（它处理事件并触发重绘）。
+
+★ 而 processEvent 只在一个地方被调用：
+   site3 的 0x54f894（while 循环）
+   —— 而该循环被 `[r7+1728] != 620` 确定性跳过
+
+⇒ **必须找到 processEvent 的另一个调用点**
+   或：找到把 620 写进 [r7+1728] 的路径
+
+★ 方法：全库搜 processEvent 的调用点
+   （不只 appFw，还有 AdjChkConfig.so）
+```
+
+## 方法论（第 296 条）★★★★★★★★ 本会话最重要的方法论
+**"从结果端反向追查，比从入口端正向追查更有效"：
+```
+★ 正向（190 轮）：Application_Start → site0/site1/site2/site3 → ... 
+  每一步都有分支，每一步都可能走错，累积了大量误判。
+
+★ 反向（本轮）：drawFramebuffer 从未被调用 → 绘制链未启动
+  一步就得到了确定结论，且三重交叉验证。
+
+⇒ 判据：**当正向追查陷入困境时，改从"期望的结果"反查**
+   · 期望看到帧 ⇒ 查"谁写帧缓冲"
+   · 期望看到绘制 ⇒ 查"谁调用 drawFramebuffer"
+   · 期望看到 widget ⇒ 查"谁调用 createWidget"
+   
+   反向追查的优势：
+     ① 起点是确定的事实（帧=0、函数未调用）
+     ② 不需要猜测分支
+     ③ 每一步都能用"零匹配"来验证
+```
+
+## ⑧ 附：本会话方法论演进（按价值排序）
+```
+★★★ 第 296 条：反向追查 > 正向追查（本轮）
+★★★ 第 290 条：未验证的假设要及时测量
+★★★ 第 293 条：读也可以是段错误
+★★★ 第 295 条：memset 掩盖"从未写入"
+★★  第 285 条：检测器要先标定
+★★  第 289 条：奇地址=算错了
+★★  第 292 条：多出口函数要逐条判断
+```
