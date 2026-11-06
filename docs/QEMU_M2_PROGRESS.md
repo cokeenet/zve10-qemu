@@ -35568,3 +35568,84 @@ GVFLAG addr=0x1158a420 value=0
 ```
 
 **⚠️ 本轮 1 次 QEMU 运行，已收尾，实例数 0。**
+
+---
+
+# ★★★★★★★★★★★★★★ 2026-11-06 第三百八十二章（第 266 轮）：**找到 a7c2 的根因注释：7 个 key-processing 状态门**
+
+## ① ★★★★★★★ a7c2 的代码注释直接点明根因
+```c
+/* Force the 7 key-processing state gates to their ready values.
+   The callback at appFw+0x18768b4 reads these globals
+   (getters 0x2879804/0x286766c/0x286cfc8/0x288badc/0x286ae5c/0x285f658/0x286af4c).
+   **In the QEMU cold boot they stay at 0 or 0x1000000
+     because the CP never sends the ready events.**
+   This is a test-environment override, documented as a divergence. */
+volatile unsigned int *g1 = (void*)(appfw_base + 0x7e814f0);
+volatile unsigned int *g2 = (void*)(appfw_base + 0x7e6e7f0);
+volatile unsigned int *g3 = (void*)(appfw_base + 0x7e73770);
+volatile unsigned int *g4 = (void*)(appfw_base + 0x7ede5c0);
+volatile unsigned int *g5 = (void*)(appfw_base + 0x7e71a70);
+volatile unsigned int *g6 = (void*)(appfw_base + 0x7e5d9e8);
+volatile unsigned int *g7 = (void*)(appfw_base + 0x7e71b50);
+*g1 = 1; *g2 = 1; *g3 = 1; *g4 = 1; *g5 = 2; *g6 = 1; *g7 = 0;
+```
+
+**★ 这是 a7c2 明确标注的"因为 CP 从不发送 ready 事件"**
+**★ 而这正是本会话 260 多轮在找的东西**
+
+## ② ★ 为什么这对我们极其重要
+```
+a7c2 的固件：key-processing 状态门 → 卡住 → 不处理输入 → 不绘制
+我们的固件：门控 0x54f2ca 返回非零 → UI 帧循环不执行 → 不绘制
+
+★ 两者的**根本原因可能完全一样**：
+  **固件在等 CP 的 ready 事件，而 QEMU 里 CP 从不发送**
+
+★ 而我们一直在追"门控的 5 个出口"，没追"固件在等什么事件"
+```
+
+## ③ 本层净收益（本会话最重要的外部发现）
+```
+✅ **读到 a7c2 的根因注释："CP never sends the ready events"**
+✅ **理解了一个完整机制：7 个状态门 + 1 个 callback + 6 个 getter**
+✅ **明确了我们的问题可能同源**
+✅ 基线不受影响（纯读参考实现）
+❌ 帧 = 0
+```
+
+## 方法论（第 370 条）★★★★★★★★★★★ 本会话最重要的方法论
+**"参考实现里带'because … never …'的注释，就是它踩过的坑的完整答案"：
+```
+a7c2 的注释：
+  "In the QEMU cold boot they stay at 0 or 0x1000000
+   **because the CP never sends the ready events.**"
+
+★ 一句话给出：
+  · 现象（状态门停在 0）
+  · 原因（CP 从不发 ready 事件）
+  · 后果（key 处理不工作 → 不绘制）
+
+⇒ 判据：**读参考实现时，优先 grep 这些词：
+   "because" / "never" / "cold boot" / "override" / "divergence"
+   它们标出了作者验证过的"环境缺失项"，而这正是移植最难的部分。**
+
+★ 本会话代价：260 轮后才发现这句话。
+   而它从第 230 轮读 menu-observe.c 时就在文件里。
+```
+
+## ④ 下一步（明确）
+```
+★★★ 在我们自己的 appFw 里找对应的 7 个状态门：
+  a7c2 的地址：0x7e814f0 / 0x7e6e7f0 / 0x7e73770 / 0x7ede5c0
+               0x7e71a70 / 0x7e5d9e8 / 0x7e71b50
+  全部在 0x7exxxxx 区间 = a7c2 appFw 的 .bss
+
+★ 我们的 appFw .bss = 0x3d536e8 .. 0x85f2a78
+  ⇒ 需要找**我们**的对应全局（不能套用偏移）
+
+★ 方法：反汇编我们的 appFw，找"读一个全局 + 比较 + 分派"的模式
+  或：从 a7c2 的 callback (appFw+0x18768b4) 在我们这边的对应物入手
+```
+
+**⚠️ 本轮 0 次 QEMU 运行（纯读参考），实例数 0。**
