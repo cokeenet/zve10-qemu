@@ -37697,3 +37697,117 @@ a7c2 的 §16 标题是"退出菜单仍无主界面"，看起来是失败章节�
 ```
 
 **⚠️ 本轮 0 次 QEMU 运行（纯文档阅读 + 静态分析），实例数 0。基线 1416/45/6/40-40。**
+
+---
+
+# ★★★★★★★★★★★ 2026-11-06 第四百零三章（第 287 轮）：**a7c2-re 有 6 个新提交，读了最新内容**
+
+用户指示："看看他仓库有没有更新，然后再读其他内容"。
+
+## ① ★★★★★ 远程确实有 6 个新提交（本地 d0bc267 → 远程 e4beb50）
+```
+（为避免写禁止目录，clone 到 /mnt/build/m2qemu/ref/a7c2-latest）
+
+e4beb50 docs: explain A7C2 WBI markers and cold boot conditions
+dc44566 docs: investigate A7C2 boot watchdog and reset paths
+**a866e10 feat: restore A7C2 native pixel shift menu**   ← feat！
+9dbd85d docs: investigate A7C2 pixel shift and hidden menus
+43305a8 docs: investigate service boot without MSC and normal UI coexistence
+ab85064 docs: map complete factory boot and WBI loading paths
+```
+
+## ② ★★★★★★★ 新读的三份关键文档
+
+### (a) `2026-11-06-a7c2-pixel-shift-menu/`（今天的 feat）
+```
+方法："产品门 + 原回调"（参考 FX30）
+· 只改 **28 字节**：22 个菜单产品字段低字节 + 3 个函数指针低字节 + 3 个 RELA addend
+· 三个参数支持门：descriptor = appFw + 0x56c4118 + PID * 0x18
+  whole_supported = descriptor.function != appFw + 0x28bbb68
+  value_supported = descriptor.function(value, data, count)
+· 原拒绝函数 0x28bbb68；原允许函数 0x28bbb60（`mov w0,#1; ret`）
+· **必须同时改 RELA addend**，否则动态链接器会恢复原拒绝指针
+
+⇒ 这是"改二进制开放被禁菜单"的方法，不是我们需要的"让 UI 起来"。
+   但它证明了：**同一个固件里存在"产品门"机制，可静态定位并开放。**
+```
+
+### (b) `2026-11-05-service-mode-without-msc/UI-COEXISTENCE.md`（★ 与本任务直接相关）
+```
+· im 选普通/调整界面的条件：
+    argv 以 "cho" 开头 → OR 0x4000      （0x4051ec..0x405214）
+    argv 以 "normal" 开头 → 清 0x4000/0x8000（0x405218..0x40523c）
+    ctx.4000 != 0 → IMDB+0x38 → AdjChkConfig.so（调整界面）
+    ctx.4000 == 0 → IMDB+0x40 → AppConfig.so   （普通界面）
+· appFw 线程 0x1796dec **精确比较 "AppConfig.so"**：
+    相等 → 走内置普通 App；不匹配 → 走导入的调整 main_loop
+
+★ **我们的实测（历史日志）：**
+    ARGTRACE init enter arg=0x412d601 str="**AppConfig.so**"
+  ⇒ **我们正确地选了普通 App 路径，选路不是问题**（已排除）
+★ 但我们只有 `AdjChkConfig.so`，**没有 AppConfig.so** ——
+  而 a7c2 说"相等走**内置**普通 App"，所以 AppConfig.so 不需要外部文件 ✅
+```
+
+### (c) `2026-11-06-wbi-boot-guide/README.md`（★ 一条关键判据）
+```
+**"事件表存在，不等于事件可触发。"**
+  本 SHA 的 ontimer@0xfe0516ac、ontimrz@0xfe0516b4、cldboot@0xfe05152c
+  **都是 `mov w0,wzr; ret`（空函数）**。
+  "mode9 的冷资源装载分支确实存在，但不能由此推导当前选择器能通过 ontimer 进入它。"
+
+⇒ **这正是我们第 277 轮发现的现象：事件表 0x395bbb4 有 150+ 个注册项，
+   但 handler 可能全是空桩。a7c2 独立印证了这个模式。**
+```
+
+## ③ ★★★★★★★ 与本任务最相关的对照（合并新旧文档）
+```
+| a7c2（AArch64，固件 2.01） | 我们（ARM32，ZV-E10） |
+|----------------------------|------------------------|
+| 卡在 model_future::wait(0x2e07044) | 卡在 processSystemMessage=0 |
+| 事件 0x01000090 已发送但完成条件未满足 | CP 事件从未到达 |
+| 解法：**主动调九参数 apply(0x1e78870) 切屏** | **← 我们缺的就是这一步** |
+| boot screen 0x4b7 → menu screen 0x346 | **同样的 ID：0x4b7(67处) / 0x346(21处)** |
+| 调用后：MENU_APPLY → 菜单 ctor → 请求泵创建 0x2ca | 我们 0x2ca 有 532 处字面量 |
+| 明确警告："不要补发内部事件、直接调私有 callback、强制兑现 promise" | 第 283 轮我直接调 handler 崩溃 ✓ 印证 |
+```
+
+## ④ 本层净收益
+```
+✅ **发现远程 6 个新提交并 clone 到工作区（不写禁止目录）**
+✅ **读了 a866e10（今天的 feat）：28 字节"产品门+原回调"开放菜单**
+✅ **读了 UI-COEXISTENCE.md：排除"选路错误"（我们收到 AppConfig.so）**
+✅ **读了 wbi-boot-guide：得到"事件表存在≠可触发"的独立印证**
+✅ 基线不受影响（纯文档阅读）
+❌ 帧 = 0
+```
+
+## 方法论（第 391 条）★★★★★★★★★★★
+**"先 git ls-remote 看远程，再 clone 到自己的可写区 —— 既守规矩又不漏更新"：
+```
+本地 HEAD=d0bc267，远程 HEAD=e4beb50，**差 6 个提交**，其中一个是 feat。
+
+★ 做法：`git ls-remote origin`（纯读，不写本地）→ 发现差异
+        → `git clone` 到 /mnt/build/m2qemu/ref/（自己的可写区）
+        → 在 clone 里随意读，不碰禁止目录
+
+⇒ 判据：**读第三方仓库前先比对远程 HEAD。
+   若本地是 detached HEAD，很可能已经落后。**
+   本会话用了 285 轮才发现本地落后 6 个提交，其中一个正是今天的新成果。
+```
+
+## ⑤ 下一步
+```
+★★★ 唯一方向：在我们固件里找"九参数生命周期入口"（a7c2 的 0x1e78870 等价物）
+
+★ a7c2 的特征：
+  · 是"固件自身 boot 已调用过"的函数
+  · 九参数：manager, from, to, restore, 0, 1, 0, 0, 0
+  · 调用后：MENU_APPLY_ENTER/RETURN → 菜单 ctor → 请求泵创建 0x2ca/count44
+
+★ 我们的候选：Application_Start 的 site0（0x92559c，ARM thunk）
+  ⇒ 是 boot 时第一个调用的
+  ⇒ 需 ARM 模式反汇编确定真身
+```
+
+**⚠️ 本轮 0 次 QEMU 运行（纯文档阅读），实例数 0。基线 1416/45/6/40-40。**
