@@ -39418,3 +39418,15 @@ M2 的 screen dispatch 是对象 vtable 驱动的批量注册/枚举机制；`0x
 
 合格 framebuffer 仍为 0；无物理地址/SHA256 的新菜单帧；QEMU 实例为 0。
 
+# ★★★★★★★★★ 2026-11-07 第四百二十八章（接手第 62 轮）：**screen dispatch 函数也由大规模 RELATIVE 表间接组织**
+
+## ① 静态边界
+- 对 M2 `appFw.so` 的 relocation 表搜索 screen dispatch 相关区域，发现 `0x37a0b00` 一带是密集的 `R_ARM_RELATIVE` 指针表。
+- 直接搜 `0x7a0b4c/0x7a2750` 原始地址没有命中；这与运行时重定位/表驱动调用一致。
+- 未写入 relocation 表，未 patch function pointer，也未运行 QEMU。
+
+## ② 结论
+screen-ID dispatch 的入口/对象需要通过运行时只读捕获，而不是静态硬编码调用。a7c2 的“先捕获对象、校验 vtable、再驱动生命周期”原则仍适用；当前还没有 M2 的完整 guard 证据。
+
+合格 framebuffer 仍为 0；无物理地址/SHA256 的新菜单帧；QEMU 实例为 0。
+
