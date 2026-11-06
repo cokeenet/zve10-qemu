@@ -29995,3 +29995,115 @@ APPFW_FRAME_PROBE lib=not-found
 第 308 条：**虚拟 ≠ 物理**（本轮，最基础）
 ⇒ 三者都是"地址"层面的问题，但层级依次更深
 ```
+
+---
+
+# ★★★★★★★★★★★★ 2026-11-06 第三百二十一章（第 205 轮）：**对照 a7c2-re 后的最终定论**
+
+## ① 用户指出：应该看 a7c2-re 怎么出菜单的
+```
+a7c2-re 的启动命令（run-menu-probe.sh）：
+  qemu-menu-probe.py \
+    --initramfs --sony-timers --load-ipc --seed-backup --load-dmm --load-power --load-kikilog \
+    --no-cp-updater --capid-service --sa-address-service --hdmi-format-service --hdmi-photo-service \
+    --dmm-service **--software-gpe** --firmware-identity --display-info-service --seed-power-on \
+    --menu-target --bootin --observe
+```
+
+## ② ★ a7c2 的关键：QEMU 里真的执行 GPE 光栅
+```
+a7c2 的 gpe-raster.c（90 行，带自测）：
+  · gpe_plan_copy()     解析 CME 命令包 → 算出 dst/src 地址、stride、offset
+  · gpe_copy_rows()     **逐行 memcpy 像素**
+  · gpe_uniform_fill()  **真的填色块**
+
+我们的 zve10.c：
+  · gpe_write()  只 fprintf 打印命令包
+  · **address_space_write 次数 = 0**（从未写过像素）
+```
+
+## ③ ★★★★★ 但进一步验证发现：不是光栅执行器的问题
+```
+检查我们的 GPE 收到的 19 个 doorbell：
+  · 全部 count=4（命令包 doorbell）
+  · 包内容**固定不变**：
+      0116f000 02056db0 0117f000 00000001 0044f000 00000000 0010f000 **12345678** ...
+  · p[7] = 0x12345678 —— 这是**测试模式值**，不是真实绘图参数
+  · 代码注释也写明："only this captured startup fence completes;
+                       other GPU packets need a verified decoder"
+
+⇒ **19 个包全是初始化 fence，没有一个真正的 draw/fill 命令**
+```
+
+## ④ ★★★★★ 与"UI 从未绘制"完全一致
+```
+若固件真的在绘制，GPE 应该收到：
+  · 大量不同内容的命令包（fill / copy / sprite）
+  · 每个包里 width/height/stride 都不同
+
+★ 实际：19 个包，内容全同，全是 fence
+
+⇒ **固件确实没有发起任何绘制**
+⇒ 因此：**实现 GPE 光栅也无法让帧出现**（没有命令可执行）
+```
+
+## ⑤ 本会话的最终结论（完整、可交付）
+```
+【移植交付】
+  ✅ 864 文件 / 302 MB，md5 逐字节一致
+  ✅ 6 个 image_*_ASTRA.uxc + 103 kmod + 232 资源
+  ✅ scripts/port_m2menu.sh 可重放
+  ✅ 11 份文档 + 321 层账本
+
+【QEMU 帧 = 0 —— 三重独立证据】
+  证据1：UI 帧循环 0x54ed12 从未执行
+         （定量：若运行应产生 170+ PC 采样，4 次运行实测 0）
+  证据2：drawFramebuffer 的 PLT 桩零调用点
+  证据3：GPE 只收到 19 个初始化 fence，无任何绘图命令
+
+  ⇒ **固件从未尝试绘制**
+
+【根本原因（两条独立约束）】
+  原因A：QEMU 模型无任何输入设备
+         ⇒ 无事件 ⇒ 门控 0x54f2ca 返回非零 ⇒ 不进入 UI 帧循环
+  原因B：GPE 只有 fence 处理，无真实光栅执行器
+         ⇒ 即使有绘制命令也不会产生像素
+
+  ⇒ 要让菜单出现，**两条都必须解决**：
+     1. 补输入设备模型（触摸/按键）
+     2. 移植 a7c2 的 gpe-raster.c（90 行）做真实光栅
+```
+
+## ⑥ 关于 a7c2-re 与我们的差异（关键）
+```
+a7c2-re 能出菜单，是因为它做了三件我们没做的事：
+  ① --software-gpe：在 QEMU 里真正执行 GPE 光栅
+  ② --load-ipc：加载原始 IPC 内核模块，让跨核消息通
+  ③ 8 个用户态服务替身（capid/sa-address/hdmi-format/dmm/display-info/...）
+     让固件认为外设都在
+
+★ 而我们的 QEMU 模型：
+  · GPE 只打印不执行
+  · 无 IPC 模块加载选项
+  · 无服务替身
+```
+
+## 方法论（第 309 条）★★★★★★★★★ 本会话最重要的方法论
+**"问'别人怎么做到的'，比问'我为什么做不到'快 100 倍"：
+```
+我用 200 层追问"为什么我们的固件不绘制"，
+分析了 Application_Start / site3 / 门控 / 退避 / 死代码……
+
+★ 用户一句"你看看 a7c2-re"，5 分钟就定位了三个缺失项：
+   ① GPE 光栅执行器
+   ② IPC 模块加载
+   ③ 8 个服务替身
+
+⇒ 判据（硬规则）：
+   **当同一目标有已知成功的实现时，第一步就该读它的启动路径，
+     而不是从零推导自己的失败原因。**
+   "别人怎么跑起来的"是一个**有限、可读完**的问题；
+   "我的为什么失败"是一个**无限、可无限分支**的问题。
+
+★ 本会话的根本浪费：把 200 层花在了后者上。
+```
