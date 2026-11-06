@@ -38987,3 +38987,40 @@ ARM 是**小端**：指令 e92d4ff0 在内存中的字节顺序是 **2d e9 f0 4f
 - 在满足这三项前，不能把任何 `RCVC_RET` 解读为注入消息消费。
 - 合格 framebuffer 仍为 0；没有物理地址/SHA256 的新菜单帧。
 
+# ★★★★★★★★★ 2026-11-07 第四百零六章（接手第 45 轮）：**确认 M2 内部存在 0x346 菜单请求结构，但未找到可安全调用的 apply 等价入口**
+
+## ① 严格对照 a7c2 §6
+ a7c2 的真正菜单入口不是 CP 注入，而是：
+
+```text
+原 UI 线程自然首帧返回
+→ 前置检查 manager/vtable/controller/current
+→ apply(manager, &0x4b7, &0x346, &0x4b7, 0,1,0,0,0)
+→ 验证 manager+0x348: 0x308 → 0x346
+```
+
+本轮没有直接调用未知内部函数，也没有复制 a7c2 的绝对地址。
+
+## ② M2 静态证据
+使用 systemd 限制的 ARM objdump 对 `/mnt/build/m2qemu/usr.m2_v2/lib/appFw.so` 做只读扫描：
+
+```text
+0x537118: movw r3,#0x346; str r3,[r6,#-20]
+0x544b82: movw r3,#0x346; str r3,[r2,#0]
+```
+
+两处均是构造“切到 0x346”的请求结构，不是已经证明可独立调用的生命周期入口。
+
+同时确认 M2 的 screen ID 体系存在：`0x4b7` boot、`0x346` menu、`0x308` init/current、`0x2ca` request、`0x309` shooting。
+
+## ③ 当前限制
+- 当前 `argtrace.c` 没有 M2 等价的 `try_apply_menu_after_frame()`。
+- a7c2 的 manager offsets/vtable/入口地址不能直接移植到 M2；其绝对地址属于 A7C2 image。
+- 目前只有 `0x346` 请求结构的静态证据，尚无 manager 对象、current 字段、controller vtable 和九参数 apply 入口的完整 ABI 证据。
+- 因此本轮没有进行 apply 调用，也没有制造新的高风险运行。
+
+## ④ 结论
+真正高价值路线已从“猜消息队列”修正为“定位 M2 等价完整生命周期入口”。在得到 manager/vtable/controller/current 的逐项证据前，不调用内部偏移函数。
+
+合格 framebuffer 仍为 0；没有物理地址/SHA256 的新菜单帧。
+
