@@ -18,6 +18,9 @@
  * 构建见 build.sh：-nostdlib 纯 syscall，不依赖目标机 libc。
  */
 #define SYS_exit   1
+#define SYS_fork   2
+#define SYS_wait4 114
+#define SYS_execve 11
 #define SYS_read   3
 #define SYS_write  4
 #define SYS_open   5
@@ -37,6 +40,7 @@ static inline int s0(int n){register int r7 __asm__("r7")=n;register int r0 __as
 static inline int s1(int n,int a){register int r7 __asm__("r7")=n;register int r0 __asm__("r0")=a;__asm__ volatile("svc #0":"+r"(r0):"r"(r7):"memory");return r0;}
 static inline int s2(int n,int a,int b){register int r7 __asm__("r7")=n;register int r0 __asm__("r0")=a;register int r1 __asm__("r1")=b;__asm__ volatile("svc #0":"+r"(r0):"r"(r7),"r"(r1):"memory");return r0;}
 static inline int s3(int n,int a,int b,int c){register int r7 __asm__("r7")=n;register int r0 __asm__("r0")=a;register int r1 __asm__("r1")=b;register int r2 __asm__("r2")=c;__asm__ volatile("svc #0":"+r"(r0):"r"(r7),"r"(r1),"r"(r2):"memory");return r0;}
+static inline int s4(int n,int a,int b,int c,int d){register int r7 __asm__("r7")=n;register int r0 __asm__("r0")=a;register int r1 __asm__("r1")=b;register int r2 __asm__("r2")=c;register int r3 __asm__("r3")=d;__asm__ volatile("svc #0":"+r"(r0):"r"(r7),"r"(r1),"r"(r2),"r"(r3):"memory");return r0;}
 static inline int s5(int n,int a,int b,int c,int d,int e){register int r7 __asm__("r7")=n;register int r0 __asm__("r0")=a;register int r1 __asm__("r1")=b;register int r2 __asm__("r2")=c;register int r3 __asm__("r3")=d;register int r4 __asm__("r4")=e;__asm__ volatile("svc #0":"+r"(r0):"r"(r7),"r"(r1),"r"(r2),"r"(r3),"r"(r4):"memory");return r0;}
 
 static void sapp(char *d, int *p, const char *s){ while(*s) d[(*p)++] = *s++; }
@@ -58,8 +62,14 @@ __attribute__((constructor)) static void init(void)
 
     sapp(out, &p, "PATCH_CAUTION_START\r\n");
 
-    /* 1) 不再自行 remount：由调用方用 shell 完成 mount -o remount,rw /usr */
-    rc = 0;
+    /* 1) 用 busybox mount 完成 remount（direct mount() 系统调用 argv 语义不同，实测 -EINVAL） */
+    {
+        static char *argv[] = { (char*)"mount", (char*)"-o", (char*)"remount,rw", (char*)"/usr", 0 };
+        int pid = s0(SYS_fork);
+        if (pid == 0) { s3(SYS_execve, (int)"/bin/busybox", (int)argv, 0); s1(SYS_exit, 127); }
+        int stt = 0; s3(SYS_wait4, pid, (int)&stt, 0);
+        logk(out, &p, "REMOUNT_VIA_BUSYBOX=", stt);
+    }
 
     /* 2) 打开既有文件：flags=2 (O_RDWR)，不带 O_CREAT/O_TRUNC/O_APPEND */
     int fd = s3(SYS_open, (int)"/usr/lib/CautionConfig.so", 2, 0);
@@ -71,36 +81,23 @@ __attribute__((constructor)) static void init(void)
             int n = s3(SYS_read, fd, (int)&cur, 1);
             logk(out, &p, "READ_N=", n);
             logk(out, &p, "OLD=", cur);
-
             if (n == 1 && cur == OLD_BYTE) {
                 unsigned char nb = NEW_BYTE;
                 if (s3(SYS_lseek, fd, (int)OFF, 0) == (int)OFF) {
                     int w = s3(SYS_write, fd, (int)&nb, 1);
                     logk(out, &p, "WRITE_N=", w);
                     logk(out, &p, "FSYNC_RC=", s1(SYS_fsync, fd));
-
-                    /* 读回校验 */
                     cur = 0;
                     if (s3(SYS_lseek, fd, (int)OFF, 0) == (int)OFF &&
                         s3(SYS_read, fd, (int)&cur, 1) == 1) {
                         logk(out, &p, "VERIFY=", cur);
                         logk(out, &p, "RESULT_OK=", (cur == NEW_BYTE) ? 1 : 0);
-                    } else {
-                        logk(out, &p, "RESULT_OK=", 0);
-                    }
+                    } else { logk(out, &p, "RESULT_OK=", 0); }
                 }
-            } else {
-                logk(out, &p, "SKIP_NOT_ORIGINAL=", 1);
-            }
-        } else {
-            logk(out, &p, "SEEK_FAILED=", 1);
-        }
+            } else { logk(out, &p, "SKIP_NOT_ORIGINAL=", 1); }
+        } else { logk(out, &p, "SEEK_FAILED=", 1); }
         s1(SYS_close, fd);
     }
-
-    /* 3) 不恢复只读：由调用方负责 */
-
-    sapp(out, &p, "PATCH_CAUTION_END\r\n");
 
     /* 4) 落到 /log（与 rootfs 分开的分区，通常可写） */
     int lf = s3(SYS_open, (int)"/log/.zve10_patch_result", 0x241, 0644); /* O_WRONLY|O_CREAT|O_TRUNC */
