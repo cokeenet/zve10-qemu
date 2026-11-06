@@ -39071,6 +39071,32 @@ a7c2 的 `appFw+0x1e78870` 只对其自身 image 成立。其 apply ABI 和 mana
 ## ③ 结论
 继续禁止直接调用或 patch `0x1e78870`。下一步只能通过 M2 自身运行时对象捕获、完整 vtable/字段证据和函数边界确认来定位等价生命周期入口。合格 framebuffer 仍为 0；QEMU 实例为 0。
 
+# ★★★★★★★★★ 2026-11-07 第四百一十二章（接手第 48 轮）：**直接反汇编证明 M2+0x1e78870 不是 apply，而是全局 setter**
+
+## ① 决定性证据
+对 M2 `appFw.so` 的 `0x1e78840..0x1e78c0` 做了 systemd 限制下的只读 Thumb 反汇编：
+
+```asm
+0x1e7885c: 读取两个 PC-relative 全局基址
+0x1e78860..0x1e7886c: 计算各自 +0x1cc00 +0x2b0
+0x1e78870: 计算第二个全局槽地址（不是函数入口）
+0x1e78874: ldr r2,[r2]
+0x1e7887a: str r2,[r3]
+0x1e7887c: pop {r7,pc}
+```
+
+因此 M2 的 `appFw+0x1e78870` 是一个函数体中间的全局值复制/ setter 指令位置，绝不是 a7c2 的九参数 apply 入口。直接调用会把参数解释为错误上下文，禁止调用或 patch。
+
+## ② 与 M2 request-builder 的关系
+- `0x1100e3c/0x1100e58 → 0x1100f82 → 0x115917c` 是四参数 request submission/helper。
+- `0x1e78870` 是全局 setter。
+- 两者都不是已验证的 manager lifecycle apply。
+
+## ③ 结论
+a7c2 的 apply ABI 只能作为结构和判据参考，不能移植绝对地址。M2 等价入口仍未定位；本轮没有运行 QEMU、没有修改固件，也没有高风险调用。
+
+合格 framebuffer 仍为 0；无物理地址/SHA256 的新菜单帧；QEMU 实例为 0。
+
 # ★★★★★★★★★ 2026-11-07 第四百一十章（接手第 47 轮）：**排除静态表初始化，锁定 0x1100e3c/0x1100e58 共享请求 builder**
 
 ## ① 纠正误判
