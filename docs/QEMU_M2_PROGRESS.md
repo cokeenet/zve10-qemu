@@ -39288,3 +39288,15 @@ M2 `.text` 全范围扫描仍未找到将这些 screen table 与 manager current
 
 继续保持只读分析和高风险调用禁用。合格 framebuffer 仍为 0；无物理地址/SHA256 的新菜单帧；QEMU 实例为 0。
 
+# ★★★★★★★★★ 2026-11-07 第四百二十一章（接手第 56 轮）：**全量 manager mining 受限于 1 GiB OOM，未形成新结论**
+
+## ① 运行边界
+- 读取既有 `/tmp/m2-appFw-thumb.txt`（约 13.3M 行）做全量函数级 manager/ID 交叉挖掘。
+- 首次 Python 全量保留函数文本在 `MemoryMax=1G` 下被 systemd OOM kill；随后改为 `awk` 流式扫描，在 `MemoryMax=512M` 下完成，未修改目标/仓库，未运行 QEMU。
+- 流式结果没有产生可同时证明 manager identity、current/controller guards、screen IDs 和 apply-like call 的唯一函数。
+
+## ② 结论
+本轮没有新增可执行入口，也没有进行内部调用。保持 a7c2 的证据闭环要求：manager/current/controller/apply 必须同时闭合，不能从大规模常量/字段命中推导菜单切换。
+
+合格 framebuffer 仍为 0；QEMU 实例为 0。
+
