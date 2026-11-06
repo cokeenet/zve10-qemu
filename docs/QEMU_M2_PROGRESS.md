@@ -35131,3 +35131,98 @@ WidgetSystem::notifyDraw        = 0（固件自身）
 ```
 
 **⚠️ 本轮 0 次 QEMU 运行（纯离线），实例数 0。**
+
+---
+
+# ★★★★★★★★★★★ 2026-11-06 第三百七十七章（第 261 轮）：**闭环确证：updateFrame 只有 1 个调用点，就在 UI 帧循环内**
+
+## ① ★★★★★ objdump 直接列出 updateFrame 的 PLT
+```
+0052a4d0 <_ZN2ux6wgtsys12WidgetSystem11updateFrameEv@plt>:
+```
+（我的手工 PLT 解码算法算错了，objdump 一次就对）
+
+## ② ★★★★★★ 全 appFw 搜索该 PLT 的调用点：**只有 1 处**
+```
+Thumb bl/blx → updateFrame@plt (0x52a4d0): **1 处**
+  0x54ed5a
+
+ARM b/bl → 0
+
+★ 0x54ed5a 正是 **UI 帧循环 0x54ed12 内部**！
+  （第 311 层已反汇编：updateCurrentTime → while(processEvent) → processCommands
+    → isFrameDelay → **updateFrame @0x54ed5a** → notifyDraw → drawFramebuffer）
+```
+
+## ③ ★★★★★★★ 完整闭环（每条都有实测或静态证据）
+```
+① UI 帧循环 0x54ed12 是**唯一**驱动 updateFrame 的地方
+② updateFrame 在整个 appFw 只有 1 个调用点 = 0x54ed5a（本轮证实）
+③ updateFrame 实测 = **0 次**（FRAMEAPI 计数，历史全部运行）
+④ processEvent 实测 = **0 次**（UXLOOP 计数）
+⑤ 0x54ed12 的 PC 采样 = **0 次**（第 319 层定量：应 170+，实测 0）
+⑥ notifyDraw 固件自身调用 = **0 次**（DRAW_PROBE=12 全是我们的主动调用）
+⑦ GRM_gpermFillrect = **0 次**
+⑧ onDrawNotice = **0 次**
+⑨ processSystemMessage = **0 次**（PSM_HOOK）
+⑩ FB nonzero = 1（全零）
+
+⇒ **五条独立测量 + 两条静态唯一性证明，全部指向同一结论：**
+   **UI 帧循环 0x54ed12 从未执行**
+```
+
+## ④ ★★★★★★ 唯一剩下的问题：谁调用 0x54ed12？
+```
+第 311 层已确认：0x54faae 是它**唯一**的调用点
+  bl 0x54ed12
+条件：0x54faa4 cmp.w r8, #0 ; bne 0x54facc（跳过）
+  r8 = 0x54fa3c 的 bl 0x54f2ca 的返回值（门控）
+
+★ 而 0x54f2ca（门控）我们有 5 个出口的完整分析（第 314 层）
+★ 卡点就在"门控返回了什么"
+
+⇒ 但 PC 采样拿不到 0x54f2ca 的返回值（函数太小，E<<1）
+⇒ 必须用**插桩**：hook 0x54f2ca 的**调用者**？不行，都在 appFw 内部
+⇒ 唯一办法：**在 0x54ed12 入口插桩**（但它是内部函数）
+
+★★ 突破思路：**hook WidgetSystem::updateCurrentTime**（有导出符号 0x107bf8）
+   它是 0x54ed12 循环的**第一条调用**（第 311 层：0x54ed12 → updateCurrentTime）
+   ⇒ 如果它被调用 ⇒ 0x54ed12 在执行 ⇒ 门控返回了 0
+   ⇒ 如果它是 0 ⇒ 0x54ed12 从未执行 ⇒ 门控返回非 0
+```
+
+## ⑤ 本层净收益
+```
+✅ **用 objdump 直接列出 updateFrame@plt = 0x52a4d0**
+✅ **确立 updateFrame 只有 1 个调用点（0x54ed5a，在 UI 帧循环内）**
+✅ **完整闭环：10 条证据一致指向 "UI 帧循环从未执行"**
+✅ 基线不受影响（纯静态分析）
+❌ 帧 = 0
+```
+
+## 方法论（第 365 条）★★★★★★★★★
+**"'唯一调用点'是最强的收敛证据——它把'不知道哪里出问题'变成'只有一处可能'"：
+```
+搜索 updateFrame@plt 的调用点：**全 appFw 只有 1 处**（0x54ed5a）。
+
+★ 这意味着：updateFrame=0 ⇔ 0x54ed5a 未执行 ⇔ 0x54ed12 未执行
+  ⇒ 无需再猜测"也许别的路径也能触发绘制"
+
+⇒ 判据：**找到"唯一调用点"后，问题立刻收敛到"那一点是否执行"。
+   而"那一点是否执行"可以用**简单插桩**回答，不需要复杂的链式推理。**
+
+★ 本会话的反面教训：
+   250 轮里我一直在追"绘制链的中间环节"，
+   而"唯一调用点"这个信息用一次 grep 就能拿到，
+   拿到后问题立刻变成单点判断。
+```
+
+## ⑥ 下一步（一轮可判）
+```
+★★★ hook WidgetSystem::updateCurrentTime（导出符号，0x107bf8）
+   · 它是 0x54ed12 循环的第一条调用
+   · 非零 ⇒ 0x54ed12 在执行 ⇒ 门控返回 0 ⇒ 问题在循环内部
+   · 零   ⇒ 0x54ed12 从未执行 ⇒ 门控返回非 0 ⇒ 问题在门控
+```
+
+**⚠️ 本轮 0 次 QEMU 运行（纯静态），实例数 0。**
