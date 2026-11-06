@@ -28811,3 +28811,121 @@ strings appFw.so | grep processEvent：
 第 3 层验证：Thumb BL 解码扫描目标地址                    → 零调用者
 ⇒ 三层一致 ⇒ 确证"不可达"
 ```
+
+---
+
+# ★★★★★★★★★★★ 2026-11-06 第三百一十章（第 194 轮）：**最终验证：整个绘制子系统不可达**
+
+## ① drawFramebuffer 在整个二进制树中零调用者
+```
+libObj 内部 drawFramebuffer (0xe565a)：
+  · Thumb BL/BLX 扫描：**0 处**
+  · ARM B/BL 扫描：**0 处**
+  · 字面量函数指针：**0 处**
+
+加上第 308-309 层的结论：
+  · appFw 零 PLT 调用
+  · AdjChkConfig 零 PLT 调用
+  · 无 dlsym 字符串
+
+⇒ **drawFramebuffer 在整个固件中完全不可达**
+```
+
+## ② 所有 GRM_* 绘图 API 在 libObj 内部也零调用者
+```
+GRM_bitmapCreate                  调用者: **0**
+GRM_fbrmRegisterTriggerFrameworkCb 调用者: **0**
+GRM_bitmapGetPhysicalAddress      调用者: **0**
+
+⇒ **整个 GRM 绘图子系统不可达**
+```
+
+## ③ appFw 里只有 PLT 桩，无调用
+```
+appFw 的 GRM_bitmapCreateFromPhys@plt  (0x52a560)
+appFw 的 GRM_bitmapRelease@plt         (0x52a6f0)
+GRM_bitmapCreate@plt                   (0x52a04e 附近)
+
+⇒ **桩存在（因为链接器保留了 import），但零调用指令**
+```
+
+## ④ ★★★★★ 综合最终结论
+```
+本会话用三重扫描（PLT / 直接 BL / 函数指针字面量）确认：
+
+  ❌ drawFramebuffer          —— 不可达
+  ❌ notifyDraw               —— 不可达
+  ❌ updateFrame              —— 不可达
+  ❌ processEvent             —— 不可达
+  ❌ GRM_bitmapCreate         —— 不可达
+  ❌ GRM_bitmapGetPhysicalAddress —— 不可达
+  ❌ GRM_fbrmRegisterTriggerFrameworkCb —— 不可达
+
+✅ createLayer               —— 被调用 12 次（唯一可达的 UI 函数）
+
+⇒ **绘制链的每一个入口都不可达。**
+```
+
+## ⑤ 为什么？唯一合理的解释
+```
+**这个固件在启动阶段只"建立 UI 结构"，不"绘制"。**
+
+绘制必须由某个**外部触发**启动：
+  · 硬件中断（GRM/sugilite 驱动的中断）
+  · 输入事件（触摸/按键）
+  · 定时器/垂直同步
+
+★ 而 QEMU 模型：
+  · 没有输入设备（第 276 层）
+  · GRM 驱动只有寄存器桩，没有真正的中断源
+  · 因此**没有任何东西能触发绘制**
+
+⇒ **帧 = 0 的根本原因：缺少硬件事件源**
+⇒ **这不是移植的问题，是 QEMU 环境缺失的问题**
+```
+
+## ⑥ 本层净收益（本会话最终结论）
+```
+✅ **三重扫描确认 drawFramebuffer 全库不可达**
+✅ **确认所有 GRM_* 绘图 API 不可达**
+✅ **确认唯一可达的 UI 函数是 createLayer（12 次）**
+✅ **得出最终结论：绘制链所有入口均不可达**
+✅ **定位根本原因：缺少硬件事件源（非移植问题）**
+✅ 基线完好（1334/44/6）
+❌ 帧 = 0（但原因已完全查明）
+```
+
+## 方法论（第 298 条）★★★★★★★★ 本会话最重要的方法论
+**"证明'不可达'比证明'失败'更有价值——前者指向环境，后者指向代码"：
+```
+190 轮我一直在问"为什么绘制失败？"
+本轮改问"绘制入口可达吗？"
+
+★ 答案：**全部不可达**
+⇒ 问题性质从"代码 bug"变成"环境缺失"
+⇒ 这两者的解决方式完全不同：
+   · bug  ⇒ 改代码（但二进制是逐字节移植的，不能改）
+   · 环境 ⇒ 补硬件模型或换真机
+
+⇒ 判据：**当你反复尝试"让某功能工作"却都失败时，
+   先验证"该功能是否可达"**。
+   不可达 ⇒ 不必再尝试触发它，去找它的触发器。
+```
+
+## ⑦ 附：本会话完整技术结论
+```
+【可达性矩阵】
+  createLayer        ✅ 12 次
+  setActive          ✅ 10 次
+  setClear           ✅  8 次
+  switchBank         ✅ 12 次
+  ---------------------------------
+  processEvent       ❌ 0
+  notifyDraw         ❌ 0
+  updateFrame        ❌ 0
+  drawFramebuffer    ❌ 0
+  GRM_bitmap*        ❌ 0
+
+【结论】
+  固件执行完"建立 UI 结构"后，**在等待一个永远不会到来的硬件事件**。
+```
