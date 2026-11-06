@@ -39406,3 +39406,15 @@ M2 的 screen dispatch 是对象 vtable 驱动的批量注册/枚举机制；`0x
 
 合格 framebuffer 仍为 0；无物理地址/SHA256 的新菜单帧；QEMU 实例为 0。
 
+# ★★★★★★★★★ 2026-11-07 第四百二十七章（接手第 61 轮）：**screen dispatch 入口无直接代码引用，进一步确认其为表驱动间接调用**
+
+## ① 静态核对
+- 对 M2 `appFw.so` 原始 bytes 搜索 `0x7a0b4d`、`0x7a0b4c`、`0x7a1bd5`、`0x7a2751` 的直接 32-bit 地址引用，均未命中。
+- 结合函数体的批量 vtable[0] 调用形状，说明这些 dispatch 例程很可能由函数表/重定位后的间接路径进入，而不是普通 BL caller。
+- 该结果不改变语义判断：函数体本身是 screen/model 注册循环，未携带 manager current/controller guard。
+
+## ② 结论
+本轮只补充调用关系边界，没有找到可安全调用的入口。继续不伪造 dispatch object，不直接调用 vtable[0]，不把 0x346 枚举当菜单切换。
+
+合格 framebuffer 仍为 0；无物理地址/SHA256 的新菜单帧；QEMU 实例为 0。
+
