@@ -39332,3 +39332,37 @@ WidgetSystem::createLayer/getLayer
 ## ② 结论
 继续区分：公开 UX API 可用于观察/验证输入和绘制，不能替代 a7c2 manager lifecycle。没有运行 QEMU、没有内部调用、没有合格 framebuffer。
 
+# ★★★★★★★★★ 2026-11-07 第四百二十四章（接手第 58 轮）：**发现 M2 的 screen-ID dispatch vtable，但仍未证明其为 manager apply**
+
+## ① 静态证据
+M2 `appFw.so` 的 `0x7a2750..0x7a2a50` 连续执行：
+
+```text
+r0 = object/context (r4)
+r1 = screen ID（0x2c0..0x2f4、0x346、0x306 等）
+r2 = shared context (r5)
+r3 = 4
+ldr r6,[object vptr]
+blx r6
+```
+
+关键分支包含：
+
+```text
+r1 = 0x346
+r3 = 4
+vtable[0](object, 0x346, context, 4)
+```
+
+这比单纯 screen table 更接近运行时 screen-ID dispatch，但当前证据仍不足以证明：
+
+```text
+object == a7c2 manager
+vtable[0] == lifecycle apply
+```
+
+## ② 结论
+`0x7a2880` 一带是 M2 的 screen-ID 分发/注册循环，可能是进入 menu 生命周期的关键对象，但不能直接调用 vtable[0] 或伪造 object。下一步需要运行时只读捕获 object/vptr、调用次数和 screen ID，再验证是否在 UI 线程且与 0x308/0x346 转换相关。
+
+没有进行高风险调用；合格 framebuffer 仍为 0；QEMU 实例为 0。
+
