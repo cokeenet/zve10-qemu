@@ -38960,3 +38960,8 @@ ARM 是**小端**：指令 e92d4ff0 在内存中的字节顺序是 **2d e9 f0 4f
 - 本轮没有新的 `onDrawNotice`、GRM 绘制调用或合格 framebuffer；没有物理地址/SHA256 验收帧。
 - 下一步必须先从当前固件实际导出的 OSAL ABI/消息头布局确定正确的 size/source 读取方式，再重复单变量注入；不能继续使用错误 getter 推导消息内容。
 
+## ④ 事后校正（必须保留）
+- a7c2 的实际 size 符号是 `osal_msg_size`，不是 `osal_get_msg_size`；已按参考代码修正当前源码。
+- `input42`/`input43`/`input44` 使用的 kernel config 指向旧的 `/mnt/build/m2qemu/work/ui.cpio.m2`，而不是临时包含最新注入库的 `/tmp/ui.cpio.m2.input`；这些运行没有出现 `INJECT_INPUT_QUEUES`，不能当作注入实验结果。
+- 唯一确认使用新注入库的实验是 `input41`，其 `send=0` 后仍缺少正确 size/source 解析；因此后续必须重新生成临时 cpio、确认镜像 SHA，再运行一次，不能把 input43/44 的返回日志与注入关联。
+
