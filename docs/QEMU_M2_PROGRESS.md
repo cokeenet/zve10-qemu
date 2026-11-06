@@ -33184,3 +33184,93 @@ callback = libObj + 0x10e854
 ★ 本会话同类：第 328 条（偶尔成功不能作依据）、
   第 331 条（端到端成功率）。
 ```
+
+---
+
+# ★★★★★★★★★★★★ 2026-11-06 第三百五十五章（第 239 轮）：**照抄 a7c2 的主动渲染触发——成功调用了，但被 isFrameDelay 拦住**
+
+## ① ★★★★★ 按铁律1 找到 a7c2 的关键做法
+```c
+/* a7c2 menu-observe.c 第 1639-1655 行 */
+static void bb_output_ready_event(void) {
+    /* Also directly trigger a UX render pass: WidgetSystem::notifyDraw() on the
+       singleton. This bypasses the model key processing that never fires in
+       QEMU (no CP events), but exercises the real UX→GPE render path. */
+    void *wgtsys = get_wgtsys();          /* sys_getInstance() */
+    int draw_result = notify_draw(wgtsys);
+    record("UX_RENDER_TRIGGER ", ...);
+}
+```
+
+**★ 它的注释直接点明："绕过在 QEMU 里永不触发的 model key 处理"**
+
+## ② ★★★★★ 照抄实现，成功调用（基线完好）
+```c
+void *(*get_wgtsys)(void) = dlsym(RTLD_DEFAULT,
+    "_ZN2ux6wgtsys12WidgetSystem15sys_getInstanceEv");
+int (*nd)(void *) = dlsym(RTLD_DEFAULT,
+    "_ZN2ux6wgtsys12WidgetSystem10notifyDrawEv");
+void *wg = get_wgtsys();
+int r = nd(wg);
+```
+
+实测：
+```
+UX_RENDER_TRIGGER wgtsys=**0x4d0098**        ← sys_getInstance 成功
+UX_RENDER_TRIGGER notifyDraw=**923913564**   ← 调用了，返回值 0x37133DC
+DRAW_PROBE: 1 次                             ← 我们的 hook 触发
+基线: 1390 / [AS]=44 / createLayer=6 / LOCK=40 ✅
+```
+
+**★ 这是本会话第一次成功**主动调用**固件的渲染函数！**
+
+## ③ ★★★★★ 但 GRMFILL=0 / GRMBLIT=0 ⇒ 没走到实际绘制
+```
+反汇编 notifyDraw (libObj + 0x106524)：
+  106524: push {r4, r7, lr}
+  10652a: mov  r4, r0
+  10652c: bl   0x1059bc        ; WidgetSystem::isFrameDelay()
+  106530: **cbz  r0, 0x10656a** ; ★ isFrameDelay()==0 ⇒ 直接跳到结尾！
+  ...
+
+★ 找出 0x10656a 是什么（是否直接返回）：
+```
+
+**⇒ notifyDraw 的第一件事就是检查 `isFrameDelay()`，若为 0 则跳过全部绘制。**
+
+## ④ 本层净收益（重大进展）
+```
+✅ **照抄 a7c2 的主动渲染触发，成功调用 notifyDraw**
+✅ **sys_getInstance 返回有效对象（0x4d0098）**
+✅ **基线完好（1390/44/6，40/40）**
+✅ **发现拦截点：isFrameDelay() == 0 ⇒ 跳过绘制**
+❌ 帧 = 0（但 GRMFILL/GRMBLIT 仍为 0）
+```
+
+## ⑤ 下一步（明确）
+```
+★ 反汇编 0x1059bc（isFrameDelay）看它读什么
+★ 或直接：在 argtrace 里调用 isFrameDelay() 看返回值
+   （符号：_ZNK2ux6wgtsys12WidgetSystem12isFrameDelayEv —— 注意是 const）
+★ 若 isFrameDelay()==0，看它依赖什么条件
+```
+
+## 方法论（第 343 条）★★★★★★★★★★ 本会话最重要的方法论
+**"参考实现里那句'绕过 X'的注释，就是在告诉你'X 是卡点'"：
+```
+a7c2 的注释：
+  "This **bypasses** the model key processing that never fires in QEMU (no CP events),
+   but exercises the real UX→GPE render path."
+
+★ 这句话同时给出了：
+  ① 卡点是什么（model key processing）
+  ② 为什么卡（no CP events）
+  ③ 怎么绕过（直接调 notifyDraw）
+
+⇒ 判据：**参考实现里带 "bypass" / "skip" / "never fires" 的注释，
+   是最高密度的信息源——它直接标出了作者踩过的坑。**
+
+★ 本会话代价：这个注释在第 1639 行，我读了 3 次 menu-observe.c
+  才在第 239 轮看到它。应该**先 grep 关键词**：
+  grep -n "bypass\|never fires\|unsupported\|unavailable" menu-observe.c
+```
