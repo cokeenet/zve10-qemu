@@ -35319,3 +35319,88 @@ updateCurrentTime 的 hook 带着 __dis__ 前缀，符号从未导出，
 ```
 
 **⚠️ 本轮 1 次 QEMU 运行，已收尾，实例数 0。**
+
+---
+
+# ★★★★★★★ 2026-11-06 第三百七十九章（第 263 轮）：**frame 不是入参（实测 r0=0x1），是运行时 sp**
+
+## ① ★★★★★ 实测：my_start 的 r0 = **0x1**
+```
+FRAME_FIELDS frame=0x1 (implausible, not read)
+基线完好：1392 / [AS]=44 / createLayer=6 / LOCK=40 ✅
+
+★ 这证明 Application_Start 的 r0 **不是** frame 指针
+★ 而 Application_Start 内部：sub.w sp,#2208; add r7,sp,#0
+  ⇒ **frame = r7 = 减去 2208 后的 sp**
+```
+
+## ② ★ 因此门控的 frame 参数无法从 hook 入参获得
+```
+54d5aa: mov r0, r7      ← r7 = Application_Start 的 sp（减 2208 后）
+54d5ac: bl 0x54f664     ← site3(r0 = frame)
+54f672: mov r4, r0      ← site3 的 r4 = frame
+54fa3a: mov r0, r4
+54fa3c: bl 0x54f2ca     ← 门控(frame)
+
+★ 要读 frame[2160]/[432]/[430]/[2192] 必须先拿到 frame
+★ 而 frame 是**固件运行时的 sp**，我们的 hook 有自己的 frame
+  ⇒ 两者差一个由编译器 prologue 决定的常数，不可靠
+```
+
+## ③ ★★★ 唯一可靠办法：在 **site3 内部**读 frame
+```
+site3 (0x54f664) 的第一条 bl 是 0x54ef74，它接收 r0 = frame
+★ 而 0x54ef74 是内部函数（无符号）
+★ 但它跳 vtable[0] = appFw+0x54d05d（空 stub）
+
+★★ 替代：site3 里 0x54f6ce 调 blx 0x9240f8（ARM PLT）
+   → target = appFw+0x1d5a3e1（第 246 轮解析）
+   若它有 libObj 导出符号，就能 hook 并拿到 frame
+
+★★★ 更直接：**hook 一个接收 frame 的导出函数**
+   查 appFw 的 PLT 里哪些 libObj 函数被 site3 调用：
+   site3 的 5 个 PLT 调用全部指向 **appFw 内部**（第 246 轮已证）
+   ⇒ **没有 libObj 导出函数接收 frame**
+```
+
+## ④ 本层净收益
+```
+✅ **实测 frame ≠ 入参（r0=0x1）**
+✅ **确证 frame = 固件运行时 sp（减 2208）**
+✅ **确认无法通过 hook 入参拿到 frame**
+✅ 基线完好（1392/44/6，40/40）
+❌ 帧 = 0
+```
+
+## 方法论（第 367 条）★★★★★★★★★
+**"'我以为的参数'未必是参数——先用不可能值验证假设"：
+```
+我假设 my_start 的 r0 是 frame 指针，据此写读帧探针。
+
+★ 实测 r0 = **0x1** —— 一个绝不可能是指针的值
+  ⇒ 假设立刻被否证，且只花了 1 次运行
+
+⇒ 判据：**读指针前先做"合理性检查"（0x1000 < p < 0x40000000），
+   并在不合理时打印原值。**
+   若原值荒谬（0x1、0、小整数），说明"这个参数根本不是你以为的东西"。
+
+★ 本会话的探针都带这个检查（FRAME_FIELDS 就打印了 "implausible, not read"），
+  所以没有破坏基线 —— 这是第 305 层教训的正确应用。
+```
+
+## ⑤ 下一步（换思路）
+```
+★★★ 既然拿不到 frame，改用**间接证据**判断门控出口：
+
+★ 门控出口 B 依赖 g_event_flag（.bss+0x6ce6420）
+  这个我们**能读**（不需要 frame）：
+  · 若 g_event_flag != 0 ⇒ 出口 B ⇒ 返回非零 ⇒ 不绘制
+  · 若 = 0 ⇒ 继续到 C/D/E
+
+★ 而第 316 层已确认：置位函数是**死代码** ⇒ g_event_flag 应恒 0
+  ⇒ 需要**运行时验证**这一点
+
+⇒ 下一轮：加 GVFLAG 探针读 .bss+0x6ce6420（零风险，同进程读）
+```
+
+**⚠️ 本轮 1 次 QEMU 运行，已收尾，实例数 0。**
