@@ -28929,3 +28929,120 @@ GRM_bitmapCreate@plt                   (0x52a04e 附近)
 【结论】
   固件执行完"建立 UI 结构"后，**在等待一个永远不会到来的硬件事件**。
 ```
+
+---
+
+# ★★★★★★★★★★★★ 2026-11-06 第三百一十一章（第 195 轮）：**推翻"不可达"结论！找到真正的 UI 帧循环**
+
+## ① ★★★★★ 先做对照组标定，发现扫描器之前用错了
+```
+第 285 条方法论要求"检测器必须先标定"。
+
+★ 标定结果：
+  createLayer@plt (0x528d7c)  → 扫描器在 libObj 里找 = **0 处** ❌
+  ⇒ 扫描器"失效"？不——是**扫描对象错了**：
+    调用点不在 libObj，而在 **appFw**！
+
+★ 在 appFw 里重新标定：
+  createLayer@plt (0x528d7c)  → **4 处**（0x7239bc/ea/1a/48）✅
+  ⇒ **扫描器有效**
+```
+
+## ② ★★★★★ 用标定过的扫描器重新扫描：所有绘制函数都有调用点！
+```
+createLayer@plt   (对照)     调用点=4 ✅
+drawFramebuffer@plt        调用点=**1** ✅  [0x54ed82]
+notifyDraw@plt             调用点=**1** ✅  [0x54ed74]
+updateFrame@plt            调用点=**1** ✅  [0x54ed5a]
+processEvent@plt           调用点=**2** ✅  [0x54ed36, 0x54f898]
+
+⇒ **第 194 层"整个绘制子系统不可达"的结论彻底作废！**
+```
+
+## ③ ★★★★★ 找到真正的 UI 帧循环：0x54ed12
+```asm
+0054ed12 <UI_FRAME_LOOP>:
+  54ed16: mov   r4, r0
+  54ed1a: add.w r4, r4, #1704
+  54ed1e: blx   UXEngine::wgtsys@plt
+  54ed22: blx   WidgetSystem::updateCurrentTime@plt     ; ★ 更新时间
+  54ed2c: blx   0x9245a8
+  54ed32: blx   UXEngine::wgtsys@plt
+  54ed36: **blx   processEvent@plt**                    ; ★ while(processEvent())
+  54ed3e: bne.n 54ed32
+  54ed40: blx   UXEngine::resmgr@plt
+  54ed46: blx   ResourceManager::processCommands@plt    ; ★ 处理资源命令
+  54ed4c: blx   UXEngine::wgtsys@plt
+  54ed50: blx   isFrameDelay@plt                        ; ★ 需要重绘吗？
+  54ed54: cbz   r0, 54ed90
+  54ed56: blx   UXEngine::wgtsys@plt
+  54ed5a: **blx   updateFrame@plt**                     ; ★ 更新帧
+  54ed62: b.n   54ed4c                                  ; 循环
+  54ed6a: ...
+  54ed70: blx   UXEngine::wgtsys@plt
+  54ed74: **blx   notifyDraw@plt**                      ; ★ 通知绘制
+  54ed7e: blx   UXEngine::gfxeng@plt
+  54ed82: **blx   drawFramebuffer@plt**                 ; ★★★ 绘制帧缓冲！
+  54ed8c: b.w   0x925b0c
+```
+
+**⇒ 这才是完整的 UI 帧循环：处理事件 → 处理命令 → 更新帧 → 通知绘制 → 绘制帧缓冲**
+
+## ④ ★ 谁调用它：唯一调用者 0x54faae（在 site3 内部）
+```asm
+0054faa4:
+  54faa4: cmp.w r8, **#0**          ; ★ 条件：r8 == 0
+  54faa8: bne.n 54facc              ; r8 != 0 ⇒ 跳过
+  54faaa: mov   r0, r4
+  54faac: adds  r6, #1
+  54faae: **bl 0x54ed12**           ; ★★★ 调用 UI 帧循环！
+```
+
+**⇒ 这是进入绘制的**唯一路径**，条件：`r8 == 0`**
+
+## ⑤ 本层净收益（本会话最重要的突破）
+```
+✅ **发现扫描器标定对象错误（应在 appFw 而非 libObj）**
+✅ **推翻第 194 层"绘制链不可达"的结论**
+✅ **找到真正的 UI 帧循环 0x54ed12（含 drawFramebuffer）**
+✅ **找到它的唯一调用者 0x54faae**
+✅ **确认调用条件：r8 == 0**
+✅ 基线完好（1334/44/6）
+❌ 帧 = 0
+```
+
+## ⑥ 下一步（关键）
+```
+0x54faa4 的 r8 来自哪里？
+  · 0x54faa4 之前：`cmp.w r8, #0`
+  · r8 是 site3 的寄存器，需要追它从哪里来
+
+★ 若 r8 恒 != 0 ⇒ 永不进入 UI 帧循环 ⇒ 帧 = 0
+```
+
+## 方法论（第 299 条）★★★★★★★★ 本会话最重要的方法论
+**"'零匹配'可能是扫描对象错了，而不是目标不存在"：
+```
+第 194 层我扫描 libObj 内部找 drawFramebuffer 的调用者，得到零匹配，
+就断定"整个绘制子系统不可达"。
+
+★ 本轮标定发现：**调用点在 appFw，不在 libObj**。
+  扫描器没错，是我扫错了文件。
+
+⇒ 判据（硬规则）：
+   **搜索跨库调用时，必须扫描**调用方**，而不是被调方。**
+   ELF 的跨库调用：
+     · 调用方有自己的 PLT 桩 → 调用点出现在**调用方**
+     · 被调方只有函数定义 → 内部无调用者（如果它是纯导出）
+
+★ 本会话第 285 条（标定）救了我：
+  如果没有对照组，我会一直相信"不可达"这个错误结论。
+```
+
+## ⑦ 附：本会话"错误结论"的存活时间（更新）
+```
+1. "停在 0x54ef8c"              33 层后推翻
+2. "0x723aac 是菜单构建器"       ~40 层后推翻
+3. **"绘制链不可达"**            1 层后推翻（本轮，多亏标定）
+4. "0x7a804c 是输入队列"         3 层后推翻
+```
