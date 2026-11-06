@@ -39393,3 +39393,16 @@ M2 已确认有 `screen table`、`screen-ID request builder`、`screen-ID vtable
 
 合格 framebuffer 仍为 0；没有物理地址/SHA256 的新菜单帧；QEMU 实例为 0。
 
+# ★★★★★★★★★ 2026-11-07 第四百二十六章（接手第 60 轮）：**screen dispatch function prologue confirms registration loop semantics**
+
+## ① 静态核对
+- `0x7a0b4c` 是同类 screen-ID dispatch 函数入口，函数从 `r0` 对象取 vptr，然后反复调用 `vtable[0]`。
+- 参数模式是：`r0=object`、`r1=小整数/属性 ID`、`r2=shared context`、`r3=2`；而 `0x7a2750` 一带使用 `r3=4`。
+- 该函数连续提交大量属性/模型 ID（0、1、2、3、4、5、6、14、19、20、22、23…），与 screen/model registration/initialization 行为一致，不是单一菜单切换。
+- `0x7a2880` 一带则继续提交大量 screen IDs，其中包含 `0x346`，但调用循环结构不读取 manager current，也没有 a7c2 apply 的 from/to/restore 三指针。
+
+## ② 结论
+M2 的 screen dispatch 是对象 vtable 驱动的批量注册/枚举机制；`0x346` 只是其中一个提交 ID。它不能直接充当菜单生命周期入口。继续不调用未知 vtable 槽，不伪造对象。
+
+合格 framebuffer 仍为 0；无物理地址/SHA256 的新菜单帧；QEMU 实例为 0。
+
