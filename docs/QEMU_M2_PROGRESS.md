@@ -39218,3 +39218,15 @@ GraphicsEngine::drawFramebuffer()
 
 合格 framebuffer 仍为 0；无物理地址/SHA256 的新菜单帧；QEMU 实例为 0。
 
+# ★★★★★★★★★ 2026-11-07 第四百一十七章（接手第 53 轮）：**确认 M2 WidgetBase vtable 有 onDrawNotice 槽，但未找到调用者**
+
+## ① 静态证据
+- M2 `appFw.so` 的 `.data.rel.ro` 中有大量 `WidgetBase::onDrawNotice` relocations（首个 relocation `0x353d86c`，约 149 个）。
+- 邻接虚表布局与预期一致：该函数位于 vtable 槽索引 31（字节偏移 `0x7c`）附近，周围还有 onMouseEvent/onTimer/onAnimate 等槽。
+- 对 appFw/libObj 全 `.text` 做 `ldr [vptr,#0x7c]` → `blx` 的窄模式扫描没有得到可靠直接命中；实际调用可能是更复杂的寄存器传播/基类偏移，不能凭槽索引硬造 caller。
+
+## ② 结论
+静态确认“onDrawNotice 是大量 WidgetBase vtable 的槽”，但还没有确认谁在运行时调用这些槽。继续采用只读 vtable/返回地址观测，不 patch vtable，不直接调用虚槽。
+
+合格 framebuffer 仍为 0；无物理地址/SHA256 的新菜单帧；QEMU 实例为 0。
+
