@@ -35043,3 +35043,91 @@ DRAW_PROBE=1 来自 UX_RENDER_TRIGGER（第 239 轮加的主动调用）：
 
 ★ 具体：查 libObj 里 WidgetBase 相关的导出符号
 ```
+
+---
+
+# ★★★★★★★★★★ 2026-11-06 第三百七十六章（第 260 轮）：**决定性：UI 系统的三个生命周期入口全部为 0**
+
+## ① ★★★★★ 已有的插桩（早就在代码里，一直没查历史）
+```
+argtrace.c 第 1746 行：_ZN2ux6wgtsys12WidgetSystem12processEventEv
+  → 统计 g_uxloop_events，输出 "UXLOOP processEvent n=.. ret=.."
+argtrace.c 第 1962 行：_ZN2ux6wgtsys12WidgetSystem11updateFrameEv
+  → 统计 g_updframe_n，输出 "FRAMEAPI updateFrame -> .."
+argtrace.c 第 1942/1952 行：getLayer / getWidget
+```
+
+## ② ★★★★★★ 历史日志全部运行累计计数
+```
+UXLOOP processEvent   = **0**   ← 事件泵从未被调用
+FRAMEAPI updateFrame  = **0**   ← 帧更新从未被调用
+GRMFILL               = **0**   ← 平台填充从未被调用
+DRAW_PROBE            = 12      ← 12 次运行 × 每次 1 次（全是我们主动调的）
+```
+
+## ③ ★★★★★★★ DRAW_PROBE=12 的来源已确认
+```
+dense/dn/fd/gl/lh/psm/rb21/rb22/rb23/sys/ur2/ux —— 12 次运行
+每次恰好 **1 次**：
+  DRAW_PROBE notifyDraw n=1 self=0x4e2478
+  DRAW_PROBE notifyDraw n=1 self=0x4c9a28
+  ...
+
+★ 每次运行的 1 次都来自 **UX_RENDER_TRIGGER**（我们自己的主动调用）
+★ **固件自己从未调用过 notifyDraw**
+```
+
+## ④ ★★★★★★ 结论：UI 系统的三个生命周期入口全是 0
+```
+WidgetSystem::processEvent      = 0   ← 事件泵
+WidgetSystem::updateFrame       = 0   ← 帧更新（真正的绘制驱动）
+WidgetSystem::notifyDraw        = 0（固件自身）
+
+⇒ **WidgetSystem 从未被驱动**
+⇒ 不是"绘制链断在中途"，而是 **整个 UI 系统从未启动**
+（与第 361 轮的六点计数完全一致）
+```
+
+## ⑤ 本层净收益
+```
+✅ **发现 processEvent/updateFrame 的插桩早已存在（第 1746/1962 行）**
+✅ **历史全部运行累计：processEvent=0 / updateFrame=0**
+✅ **确认 DRAW_PROBE=12 全部来自我们主动调用（每次恰好 1 次）**
+✅ **三方独立证据一致：UI 系统从未启动**
+✅ 基线不受影响（纯离线）
+❌ 帧 = 0
+```
+
+## 方法论（第 364 条）★★★★★★★★★★ 本会话最重要的方法论
+**"先查自己已有的插桩——它可能早就在测你要找的东西"：
+```
+我在第 3 轮新写了 5 个 WidgetSystem hook，结果 4 个与已有定义冲突。
+★ 而冲突的那 4 个（processEvent / updateFrame / getWidget / getLayer）
+  **早就在 argtrace.c 里，而且一直在统计**。
+
+★ 查历史日志：processEvent=0 / updateFrame=0 ← **正是我要找的答案**
+
+⇒ 判据：**动手加新探针前，先 grep 自己的代码里有没有同名统计，
+   再 grep 历史日志里它的输出。**
+   本会话代价：白写了 ~60 行代码（虽未破坏基线）。
+
+★ 这与第 340 条（先 grep 自己的 hook）同源，但我又犯了一次。
+```
+
+## ⑥ 距亮屏的确切剩余工作（现在完全清晰）
+```
+【已确证】WidgetSystem 从未被驱动（3 个生命周期入口全 0）
+
+【缺口】谁应该驱动它？
+  · 正常路径：appFw 的主循环 → notifyDraw/updateFrame
+  · 但 processSystemMessage=0 ⇒ 主循环从未进入
+
+【下一步（唯一方向）】
+  找"谁调用 WidgetSystem::processEvent / updateFrame"
+  → 用 PC 采样找它们的调用者（但函数小，E<<1）
+  → 或在 **appFw 侧**找调用点（appFw 有 JUMP_SLOT 0x377b480 → updateFrame）
+     ★ 关键：查 appFw 里哪个函数 blx 0x377b480（updateFrame 的 PLT 槽）
+     那个函数就是"驱动者"
+```
+
+**⚠️ 本轮 0 次 QEMU 运行（纯离线），实例数 0。**
