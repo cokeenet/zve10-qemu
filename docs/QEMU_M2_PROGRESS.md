@@ -32401,3 +32401,88 @@ a7c2 固件有：view::create_screen（vtable 槽0，base+0x17cdb00）
 
 ★ 本会话代价：80 轮在重新发明"怎么算 base"，而答案就在自己的日志里。
 ```
+
+---
+
+# ★★★★★★★★★★★★ 2026-11-06 第三百四十六章（第 230 轮）：**goal 已更新为"严格参考 a7c2-re"；按铁律找到 GOT 槽真地址**
+
+## ① goal 已修改（rev 8）
+```
+新增最高优先级铁律：
+ 1. 每做一个"新机制"之前，先 grep a7c2-re 里它是怎么做的，不要自己发明
+ 2. 对照"做法"层（代码），不是"结论"层（STATUS.md）
+ 3. a7c2 已验证的关键做法必须照抄或明确说明为何不适用
+```
+
+## ② ★★★★★ 按铁律1 读 a7c2 的 install_frame_observers，找到我们做错的地方
+```c
+/* a7c2 的做法 */
+static void install_frame_observers(unsigned long base) {
+    if (mprotect((void *)(base + 0x5bc2000), 4096, 3) != 0) { ...失败... }
+    *(unsigned long *)(base + 0x5bc2098) = (unsigned long)observe_notify_draw;
+    *(unsigned long *)(base + 0x5bc2370) = (unsigned long)observe_draw_framebuffer;
+    record("FRAME_PROBES_ARMED ", "verified appFw notifyDraw/drawFramebuffer import slots");
+}
+```
+
+**★ 关键点：**
+```
+1. 它替换的是 **appFw 的 GOT 导入槽**（因为 appFw 通过 PLT 调 libObj 的函数）
+2. mprotect 权限用 **3（读+写）**，不是 7
+3. **两个槽一起换**（notifyDraw + drawFramebuffer），我只换了一个
+```
+
+## ③ ★★★★★ 用 readelf 找到我们的准确槽地址
+```
+$ arm-linux-readelf -rW appFw.so | grep -E "drawFramebuffer|notifyDraw"
+
+  0377afe0  00012116 R_ARM_JUMP_SLOT  _ZN2ux6gfxeng14GraphicsEngine15drawFramebufferEv
+  0377b440  00026216 R_ARM_JUMP_SLOT  _ZN2ux6wgtsys12WidgetSystem10notifyDrawEv
+
+⇒ drawFramebuffer 的 GOT 槽 = **appFw + 0x377afe0**
+⇒ notifyDraw 的 GOT 槽      = **appFw + 0x377b440**
+```
+
+## ④ 为什么第 301 层的 DRAWFB_PATCH 会破坏基线
+```
+第 301 层我记录的日志：
+  DRAWFB_PATCH slot=0x31744fe0 before=0x2e4f29d0 expect=0x418febc
+  DRAWFB_PATCH written=0x418fcf8
+  → 行数=1061 [AS]=0 createLayer=2
+
+★ 现在可以判断：那个 slot=0x31744fe0 与正确的 0x377afe0 **完全不同**
+  （0x31744fe0 vs base+0x377afe0）
+  ⇒ **改错了地址**，破坏了别的东西，所以基线崩溃
+  ⇒ 不是"改内存本身有害"，而是"改错了地方"
+```
+
+## ⑤ 本层净收益（关键纠正）
+```
+✅ **goal 已更新为严格参考 a7c2-re**
+✅ **按铁律1 读到 a7c2 的 install_frame_observers 完整做法**
+✅ **用 readelf 找到我们真实的 GOT 槽地址（0x377afe0 / 0x377b440）**
+✅ **解释清楚第 301 层失败的真实原因（改错地址，不是"干预有害"）**
+✅ **发现要换两个槽而不是一个**
+```
+
+## 方法论（第 334 条）★★★★★★★★★★ 本会话最重要的方法论
+**"'干预破坏基线'这个结论本身可能是错的——真正的错误往往是'干预错了地方'"：
+```
+第 301 层 DRAWFB_PATCH 破坏基线后，我总结出第 301 条方法论：
+  "校验'位置正确'≠'改动安全'，只有完全不改内存的观测才安全"
+
+★ 对照 a7c2 后发现：**这个结论是错的**。
+  a7c2 大量使用 mprotect + GOT 替换 + inline code patch，
+  它照样能稳定跑出菜单。
+
+⇒ 真正的原因是：我那次 **slot 地址算错了**（0x31744fe0 vs base+0x377afe0）。
+  破坏基线的原因是"改错地方"，不是"改内存"。
+
+⇒ 判据（硬规则）：
+   **一次失败后总结方法论时，必须排除"我这次操作本身有 bug"这个可能，
+     否则会把 bug 上升成"规律"，从而永久关闭一整类正确做法。**
+
+★ 这可能是本会话最贵的一个错误：
+  因为它让我在之后的 40+ 轮里完全不敢改内存，
+  而 a7c2 证明改内存（正确地改）才是唯一出路。
+```
