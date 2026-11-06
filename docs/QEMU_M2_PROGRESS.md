@@ -34433,3 +34433,99 @@ FB nonzero       = 1
 ```
 
 **⚠️ 本轮 1 次 QEMU 运行，已收尾，实例数 0。**
+
+---
+
+# ★★★★★★★ 2026-11-06 第三百六十九章（第 253 轮）：**a7c2 主动触发的完整形态：除了 notifyDraw 还要投递 BB_OUTPUT_READY**
+
+## ① ★★★★★ 按铁律1 读完整的 bb_output_ready_event（第 1640-1680 行）
+```c
+static void bb_output_ready_event(void) {
+    /* 第 1 部分：直接触发一次渲染 */
+    void *wgtsys = get_wgtsys();              /* WidgetSystem::sys_getInstance */
+    int draw_result = notify_draw(wgtsys);    /* notifyDraw */
+
+    /* 第 2 部分：★★★ 主动投递 BB_OUTPUT_READY 消息 ★★★
+       "The CP event dispatcher (appFw 0x34e65f8) reads its queue from
+        [appFw+0x910fa1c] via helper 0x3510fa4 and accepts exactly:
+        frame u16 0x2003 @+0, code u16 0x8201 @+2, u16 3 @+0xa;
+        it then stores u32 @+0x1c into global 0x910f9fc and
+        **fulfils a std::promise (0x34e6508) that a waiting AppFw sequence holds**.
+        On real hardware CP sends this after the output pipeline starts." */
+    unsigned int queue = *(volatile unsigned int *)(appfw_base + 0x910fa1c);
+    void *msg = 0;
+    real_allocate_msg(queue, &msg, 48, 1);
+    b[0]=0x03; b[1]=0x20;   /* frame 0x2003 */
+    b[2]=0x01; b[3]=0x82;   /* code 0x8201 */
+    b[4]=48;                /* size */
+    b[10]=3;                /* selector */
+    ...
+}
+```
+
+## ② ★★★★★ 这才是"主动触发"的完整形态
+```
+a7c2 做了两件事：
+  ① 直接调 notifyDraw 触发渲染 ✅（我们已实现，DRAW_PROBE=1）
+  ② **主动投递 BB_OUTPUT_READY 消息，满足固件等待的 std::promise**
+
+★ 只做 ① 不够 —— 因为 notifyDraw 内部（0x1061c0）还在等某个状态，
+  而那个状态正是靠这条消息被设置的
+```
+
+## ③ ★ 但 a7c2 的偏移不能直接套用
+```
+a7c2 的 appFw 是 **aarch64 + 更大**：
+  · 队列全局偏移 0x910fa1c
+  · 分发器 0x34e65f8
+  · promise 0x34e6508
+
+我们的 appFw 是 **ARM32，.bss 只到 0x85f2a78**
+  ⇒ 0x910fa1c 超出范围 ⇒ **不可套用**
+  ⇒ 需要在我们自己的 appFw 里找对应的"CP 事件分发队列"
+```
+
+## ④ 本层净收益
+```
+✅ **按铁律1 读到 a7c2 主动触发的完整形态（2 个动作，不是 1 个）**
+✅ **理解为什么只调 notifyDraw 不够：还要满足固件等待的 promise**
+✅ **确认 a7c2 的偏移不可直接套用（aarch64 vs ARM32，库大小差 2 倍）**
+✅ 基线不受影响
+❌ 帧 = 0
+```
+
+## 方法论（第 357 条）★★★★★★★★★★ 本会话最重要的方法论
+**"参考实现的'一个动作'往往是一组动作的最后一步——只抄最后一步必然无效"：
+```
+a7c2 的 UX_RENDER_TRIGGER 在代码里只有 3 行（getInstance + notifyDraw + 记录）。
+
+★ 但完整函数还有第 2 部分：投递 BB_OUTPUT_READY 消息。
+  而我第 239 轮只抄了第 1 部分。
+
+⇒ 判据：**抄参考实现的某个函数时，必须读完**整个函数**，
+   不能只抄看起来相关的那几行。**
+   "顺带的"代码往往才是真正让功能生效的部分。
+
+★ 本会话代价：第 239 轮抄了一半，第 240-253 轮在追查
+  "为什么 notifyDraw 调用了但没绘制"。
+  如果当初读完整函数，会立刻看到第 2 部分。
+```
+
+## ⑤ 剩余 3 轮的诚实结论
+```
+★ 本会话已 253 轮 / 369 层
+★ 移植交付完整（864 文件 / 302 MB / md5 一致 / 38 份文档）
+★ 已找到断点：notifyDraw 内部 0x1061c0 的返回值
+★ 已找到根因方向：固件在等 BB_OUTPUT_READY 消息（std::promise）
+
+★ 剩余工作（超出 3 轮）：
+  ① 在我们 appFw 里定位 CP 事件分发队列的全局偏移（反汇编搜索，2-3 轮）
+  ② 构造 48 字节消息并投递（1-2 轮）
+  ③ 验证（1-2 轮）
+  ⇒ 共需 4-7 轮
+
+⇒ 建议：收尾，把"下一步 = 定位 BB_OUTPUT_READY 队列 + 投递"
+   写进最终文档。这已是一条**可执行、有依据**的路线。
+```
+
+**⚠️ 本轮 0 次 QEMU 运行（纯离线分析），实例数 0。**
