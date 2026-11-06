@@ -36454,3 +36454,78 @@ UPDATERES 从 0 变成 1，证明**驱动成功**。
 ```
 
 **⚠️ 本轮 1 次 QEMU 运行，已收尾，实例数 0。**
+
+---
+
+# ★★★★★★★★★ 2026-11-06 第三百九十一章（第 275 轮）：**updateResource 执行了但结构字段 f3c=0**
+
+## ① ★★★★★★★ 实测引擎结构字段
+```
+UPD_STRUCT before f24=0x6f6d354e f3c=0 gi=0x4e4228
+UPD_STRUCT after  f24=0x6f6d354e f3c=0 r=925669236
+
+★ f24 = 0x6f6d354e（非零）⇒ **updateResource 不走错误路径，继续执行**
+★ f3c = **0** ⇒ 与 widget 树/资源相关的字段为空
+★ 调用前后都不变 ⇒ updateResource 没有修改它们
+基线完好：1424 / [AS]=45 / createLayer=6 / LOCK=40
+```
+
+## ② ★★★ updateResource 的控制流（反汇编 0x102730）
+```asm
+102730: push {r4,r5,r6,r7,lr}; sub sp,#28; add r7,sp,#0
+102736: blx  3c570           ; sys_getInstance 的 PLT
+10273a: mov  r5, r0
+10273c: blx  3c1f8           ; ResourceManager::sys_getInstance
+102740: adds r5, #0x3c       ; r5 = engine + 0x3c     ← ★ 我读的就是这个
+102742: mov  r1, r0
+102744: adds r0, r7, #4
+102746: blx  3b818           ; ResourceUpdater ctor
+10274a: mov  r0, r5
+10274c: bl   0x102488        ; ★ 第一个检查
+102750: b    0x10277a
+102752: (循环体) ldr r1,[r4,#0]
+102756: bl   0xe2394         ; WidgetNode 迭代器
+10275e: ldr  r3,[r3,#0x10]   ; vtable[+0x10]
+102762: blx  r3              ; ★ 虚调用（widget 处理）
+102768: bl   0x18dd78
+102776: bl   0xe23b8         ; 迭代器推进
+10277a: mov  r4, r0
+10277c: cmp  r0, #0          ; ★ 循环条件
+```
+
+**★ `adds r5, #0x3c` ⇒ r5 = engine + 0x3c，传给 0x102488**
+**⇒ 我读的 `[gi+0x3c]` 是 `*(engine+0x3c)`，而 `0x10248c` 读的是 `[r0+0x24]` = `*(engine+0x3c+0x24)` = `*(engine+0x60)`**
+
+**⇒ 我读错了偏移！应该是 `engine + 0x60`，不是 `engine + 0x24`**
+
+## ③ 本层净收益
+```
+✅ **updateResource 完整控制流（含 widget 遍历循环）**
+✅ **发现我读的偏移错了：应读 engine+0x60（不是 +0x24）**
+✅ **确认 f24 非零 ⇒ updateResource 不走错误路径**
+✅ 基线完好（1424/45/6，40/40）
+❌ GRMFILL 仍为 0
+```
+
+## 方法论（第 379 条）★★★★★★★★★
+**"'反汇编里看到的偏移' ≠ '我该读的偏移'——必须跟着寄存器传递走"：
+```
+0x10248c 里的 `ldr r3,[r0,#0x24]` 看起来就是"读 +0x24"。
+★ 但 r0 来自 `0x10274a: mov r0, r5`，而 `r5 = engine + 0x3c`（0x102740）
+⇒ 实际是 `*(engine + 0x3c + 0x24)` = **`*(engine + 0x60)`**
+
+⇒ 判据：**读结构字段前，必须追溯该寄存器的**全部来源**，
+   包括之前的 `adds`/`mov`。
+   只看最后一条 `ldr` 会算错偏移。
+
+★ 本会话第 9 次偏移错误（前 8 次见第 368 条）。
+```
+
+## ④ 下一步
+```
+★★★ 改读 engine + 0x60（而不是 +0x24 和 +0x3c）
+★ 并且读遍历树的字段：从 0x102752 的 ldr r1,[r4,#0] 看，r4 是迭代器
+  ⇒ 需要知道迭代器从哪来（0x10277a 的 bl 0xe23b8 返回值）
+```
+
+**⚠️ 本轮 1 次 QEMU 运行，已收尾，实例数 0。**
