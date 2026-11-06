@@ -39071,3 +39071,61 @@ a7c2 的 `appFw+0x1e78870` 只对其自身 image 成立。其 apply ABI 和 mana
 ## ③ 结论
 继续禁止直接调用或 patch `0x1e78870`。下一步只能通过 M2 自身运行时对象捕获、完整 vtable/字段证据和函数边界确认来定位等价生命周期入口。合格 framebuffer 仍为 0；QEMU 实例为 0。
 
+# ★★★★★★★★★ 2026-11-07 第四百一十章（接手第 47 轮）：**排除静态表初始化，锁定 0x1100e3c/0x1100e58 共享请求 builder**
+
+## ① 纠正误判
+- `0x60ec80..0x60ee40` 虽然连续写入偏移 `+0x308`、`+0x330`、`+0x348`，但完整反汇编显示它是大规模静态表初始化：连续填充 `r3+0x2a0..0x420`，几乎没有调用控制流。
+- 因此不能把它当作 manager lifecycle/apply 函数；本轮排除该误判，没有运行或 patch。
+
+## ② 更有价值的 M2 结构
+在 `0x1100dd0..0x1100f90` 的共享 switch/continuation 中：
+
+```text
+0x1100e3c: 0x346 分支，构造 frame 参数 +0x70..+0x78
+0x1100e58: 0x348 分支，构造 frame 参数 +0x64..+0x6c
+两分支最终汇合到 0x1100f82
+```
+
+这证明 M2 把 `0x346` 与 `0x348` 作为同一生命周期/请求 builder 中的成对请求类型处理，但仍未证明它们直接对应运行时 manager 对象。
+
+另有 `0x1f8cb7c` 一类记录序列：写入 0x346 外部结构、随后处理 0x348，再调用共享 `0x1f70af0`；目前仍只能归类为记录/请求序列。
+
+## ③ 当前边界
+- `0x60ec80` 表初始化：排除为 manager/apply。
+- `0x1100e3c/0x1100e58`：确认共享 request-builder，尚无 manager guard。
+- `0x1f8cb7c`：确认成对记录序列，尚无 manager guard。
+- 尚未找到可安全调用的 M2 九参数 lifecycle apply 入口；不进行高风险调用。
+
+合格 framebuffer 仍为 0；无物理地址/SHA256 的新菜单帧；QEMU 实例为 0。
+
+# ★★★★★★★★★ 2026-11-07 第四百一十一章（接手第 47 轮）：**0x1100e3c/0x1100e58 最终确认是四参数请求提交，不是九参数 apply**
+
+## ① 共享 continuation 的真实调用形状
+对 `0x1100dd0..0x1101040` 和 `0x11590f0..0x11592a0` 做了 systemd 限制下的只读反汇编：
+
+```text
+0x1100e3c: 构造 0x346 请求
+0x1100e58: 构造 0x348 请求
+两者汇合到 0x1100f82
+0x1100f82: bl 0x115917c
+```
+
+调用时寄存器/栈形状是：
+
+```text
+r0 = selector/context
+r1 = frame word pointer
+r2 = adjacent frame word pointer
+r3 = third frame word pointer
+bl  0x115917c
+```
+
+`0x115917c` 随后读取请求字段，经过 vtable[0]/vtable[1] 发送/提交，并返回 1；没有加载 manager+0x330/+0x348，也没有 a7c2 的九参数布局。
+
+## ② 结论
+- `0x346/0x348` 成对出现，确实属于 M2 的 request-builder family。
+- 该 family 与 a7c2 的 manager lifecycle apply 是不同机制；不能把 `0x1100f82` 或 `0x115917c` 当菜单切换入口。
+- 当前最可靠的结论仍是：M2 的完整 manager/apply 等价物尚未定位，不调用这些内部函数。
+
+合格 framebuffer 仍为 0；无物理地址/SHA256 的新菜单帧；QEMU 实例为 0。
+
