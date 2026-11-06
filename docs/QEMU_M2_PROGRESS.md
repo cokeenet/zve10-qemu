@@ -39300,3 +39300,17 @@ M2 `.text` 全范围扫描仍未找到将这些 screen table 与 manager current
 
 合格 framebuffer 仍为 0；QEMU 实例为 0。
 
+# ★★★★★★★★★ 2026-11-07 第四百二十二章（接手第 56 轮）：**M2 源码中的 FORCE_MENU 线程也是未接入的旧实验**
+
+## ① 源码一致性核对
+检查当前 `/mnt/build/m2qemu/src/argtrace.c`：
+
+- `menu_force_thread()` 仍存在，内部硬编码了 `appFw+0x723aac`；
+- `ARG_FORCE_MENU` 被定义为 `0`；
+- 全文件没有 `pthread_create(..., menu_force_thread, ...)` 调用点。
+
+因此不能把注释中的“FORCE MENU”当作当前可运行机制，也不能把旧日志归因到当前产物。a7c2 的做法要求先证明 observer/干预线程确实接入并受控；本轮没有启用它。
+
+## ② 结论
+M2 当前可复现实验路径仍只有已明确接入的导出符号插桩和显式输入注入；内部 `0x723aac` 菜单 builder 未接入，禁止直接调用。合格 framebuffer 仍为 0；QEMU 实例为 0。
+
