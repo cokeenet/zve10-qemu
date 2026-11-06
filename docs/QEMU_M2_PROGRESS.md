@@ -32309,3 +32309,95 @@ init_task @ 0x6047f0c0 是账本里记了很久的"已知常量"。
   · 32 条方法论
   · 帧 = 0（未达成，四条读取路径均已实测失败并记录原因）
 ```
+
+---
+
+# ★★★★★★★★★★★★ 2026-11-06 第三百四十五章（第 229 轮）：**对照 a7c2-re 全部关键实现，找到三处我们做错/没做的地方**
+
+## ① ★★★★★ 发现一：libObj base 一直都能算出来（我找了 80 轮）
+
+```
+LIBOBJ_SYM handle=0x21848 processEvent=0xa924519 processSystemMessage=0xa902611
+（这行日志从第 148 层就存在，共 1368 条）
+
+★ 用 dlsym 拿到的运行时地址减符号偏移：
+  libObj_base = (processSystemMessage & ~1) - 0xe5610
+
+验证（4 次运行，与 GE_PROBE 完全一致）：
+  wk   psm=0xa902611 → base=0xa81d000   GE_PROBE=0xa81d000  ✅
+  sp2  psm=0xa994611 → base=0xa8af000   GE_PROBE=0xa8af000  ✅
+  f50  psm=0xab02611 → base=0xaa1d000   GE_PROBE=0xaa1d000  ✅
+  ts3  psm=0xa880611 → base=0xa79b000   （4KB 对齐 ✅）
+
+⇒ **不需要页表遍历、不需要扫描、不需要 init_task、不需要 walk**
+⇒ 我为此试了 4 条路径、花了约 20 轮，全部是多余的
+```
+
+## ② ★★★★★ 发现二：a7c2 是**主动调用切屏函数**，我们一直在"等"
+```c
+/* a7c2 在 drawFramebuffer 的 hook 里主动切屏 */
+((apply_t)(appfw_base + 0x1e78870))((void *)manager, &from, &to, &restore, 0, 1, 0, 0, 0);
+// from=0x4b7, to=0x346（菜单）, restore=0x4b7
+// 前置检查：manager+0x348 (current) == 0x308
+
+★ 切屏后 current 从 0x308 → 0x346，下一帧就是菜单
+```
+
+**我们的做法：完全没做这一步。一直在等固件自己走到菜单。**
+
+## ③ ★★★★★ 发现三：a7c2 用 **AP 消息队列**取帧，不读 framebuffer
+```
+headless-osd.c:
+  HOSD_CONTROL    0x8280074d
+  HOSD_UPDATE     0x8280084d
+  HOSD_META_UPDATE 0x8280084e
+  HOSD_AP         0x8288076c
+  HOSD_GUI        0x9088076b
+
+★ 通过 osal_rcv_msg_tmo 接收，帧格式 RGBA4444 640x480
+★ 完全不依赖 QEMU framebuffer，也不依赖 GPE 光栅
+```
+
+**我们一直在读 QEMU 的 FB_PHYS（物理地址），而固件根本不往那里写。**
+
+## ④ ★ 但我们的固件与 a7c2 的固件架构不同
+```
+a7c2 固件有：view::create_screen（vtable 槽0，base+0x17cdb00）
+我们的固件：**没有** create_screen 符号
+
+我们的 libObj 有完整 WidgetSystem API：
+  createLayer / postMousePress / postMouseRelease / postMouseMove
+  notifyDraw / updateFrame / processEvent / updateCurrentTime
+  getGestureAnalyzer / sys_getInstance
+
+⇒ 两代 UI 架构不同：a7c2 是 view/create_screen 模型，
+  我们是 WidgetSystem/layer 模型
+```
+
+## ⑤ 本层净收益（本会话最重要的一轮）
+```
+✅ **发现 libObj base 一直能从 LIBOBJ_SYM 算出（省掉全部 4 条扫描路径）**
+✅ **发现 a7c2 是主动调切屏，不是等**
+✅ **发现 a7c2 从 AP 消息队列取帧，不读 framebuffer**
+✅ **确认我们固件没有 create_screen，架构不同**
+✅ 基线完好
+❌ 帧 = 0
+```
+
+## 方法论（第 333 条）★★★★★★★★★★ 本会话最重要的方法论
+**"对照参考实现时，要对照**它的做法**，不是对照**它的结论**"：
+```
+我读 a7c2 的 STATUS.md（结论层），得到"它也卡在 model_future"，
+就以为我们情况相同。
+
+★ 但读它的**代码**（做法层），发现三处根本不同：
+  ① 它的 base 从 dlsym 算（我们在扫页表）
+  ② 它主动切屏（我们在等）
+  ③ 它从消息队列取帧（我们在读 framebuffer）
+
+⇒ 判据：**参考实现的价值在"它具体怎么做的"，不在"它说它做到了什么"。**
+   读 STATUS.md 花 1 轮，读 menu-observe.c 的 2700 行要 10 轮，
+   但后者才能给出可执行的做法。
+
+★ 本会话代价：80 轮在重新发明"怎么算 base"，而答案就在自己的日志里。
+```
