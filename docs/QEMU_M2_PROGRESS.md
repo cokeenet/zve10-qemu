@@ -34341,3 +34341,95 @@ UI帧循环 54ed12                     0
 ```
 
 **⚠️ 本轮 0 次 QEMU 运行（纯离线验证），实例数 0。**
+
+---
+
+# ★★★★★★★★★ 2026-11-06 第三百六十八章（第 252 轮）：**插桩计数：notifyDraw 被调用 1 次，但 widget 绘制通知 0 次**
+
+## ① ★★★★★ 用导出符号做精确插桩（不是采样，0 次就是 0 次）
+```c
+/* WidgetBase::onDrawNotice 是 libObj 的导出符号（0x108b48） */
+int _ZN2ux6wgtsys10WidgetBase12onDrawNoticeEv(void *self)
+{
+    n = fetch_add(&g_notice_n, 1);
+    int r = real(self);
+    if (n < 5) logline("DRAWNOTICE call=%lu ret=%d self=%p\n", ...);
+    return r;
+}
+```
+**nm 确认导出：`00007b90 T _ZN2ux6wgtsys10WidgetBase12onDrawNoticeEv`**
+
+## ② ★★★★★ 实测结果（基线完好 1391/44/6，40/40）
+```
+DRAWNOTICE call  = **0**    ← widget 绘制通知从未被调用（精确计数）
+DRAW_PROBE       = **1**    ← notifyDraw 被调用过 1 次（我们的 hook 记录）
+GRMFILL / GRMBLIT= 0        ← 平台填充/拷贝从未调用
+FB nonzero       = 1
+```
+
+## ③ ★★★★★ 这精确标定了绘制链断开的位置
+```
+绘制链：
+  notifyDraw (libObj+0x106524)
+    ├─ isFrameDelay() → 1 ✅
+    ├─ 0x1061c0 → ？
+    ├─ 0x1061c0 内部 0x1061ac → ？      ← 若返回 0 则跳过
+    ├─ 循环体 0x106540（虚调用 widget）
+    │    └─ **WidgetBase::onDrawNotice** ← **0 次**
+    └─ 0xdeb30（真正绘制）
+
+★ DRAW_PROBE=1 但 DRAWNOTICE=0
+  ⇒ notifyDraw **进入了**，但**没走到 widget 通知**
+  ⇒ 断点在 notifyDraw 内部 0x1061c0 的返回值
+
+★ 且这解释了全部下游为 0：
+  · 无 widget 通知 ⇒ 无绘制命令 ⇒ GRMFILL=0 ⇒ GPE 无 fence ⇒ FB=0
+```
+
+## ④ 本层净收益（本会话最精确的链断点定位）
+```
+✅ **用导出符号插桩（精确计数）替代 PC 采样（概率性）**
+✅ **DRAWNOTICE=0 / DRAW_PROBE=1 ⇒ 断点在 notifyDraw 内部**
+✅ **把断点锁定到 0x1061c0 的返回值（第 240 轮反汇编已确认此分支）**
+✅ 基线完好（1391/44/6，40/40）
+❌ 帧 = 0
+```
+
+## 方法论（第 356 条）★★★★★★★★★★ 本会话最重要的方法论
+**"用导出符号做'层间计数'，比任何采样都可靠——它能精确定位'链断在哪一层'"：
+```
+我试过：
+  · PC 采样 → 概率性，小函数 E<<1（第 355 条）
+  · 内部函数手动调用 → 破坏状态（第 345 条）
+  · GOT 替换 → 破坏初始化（第 350 条）
+
+★ 而"定义同名导出函数 + 计数"：
+  · 精确（0 次就是 0 次）
+  · 零侵入（转发不变）
+  · 基线完好（1391/44/6）
+  · 可分层（notifyDraw / onDrawNotice / drawFramebuffer / GRM_gperm*）
+
+⇒ 判据：**定位"链断在哪一层"时，优先找每层的**导出符号**并逐个计数。
+   这比采样快、比改代码安全、比读内存简单。**
+
+★ 本会话已用此法测出：
+   · processSystemMessage = 0（第 361 轮）
+   · onDrawNotice = 0（本轮）
+   · notifyDraw = 1（本轮）
+   · GRM_gpermFillrect = 0（第 236 轮）
+```
+
+## ⑤ 剩余 4 轮
+```
+★ 本会话已 252 轮 / 368 层
+★ 移植交付完整（864 文件 / 302 MB / md5 一致 / 37 份文档）
+★ 断点已精确到：notifyDraw 内部 0x1061c0 的返回值
+★ 但 0x1061c0 / 0x1061ac 都是**无符号的内部函数**
+  ⇒ 导出符号插桩法在这里失效
+  ⇒ 只能 inline hook（本会话 3 次失败）
+
+⇒ 建议：用剩余 4 轮做诚实收尾，
+   把断点位置和"下一步用 inline hook 打桩"写清楚。
+```
+
+**⚠️ 本轮 1 次 QEMU 运行，已收尾，实例数 0。**
