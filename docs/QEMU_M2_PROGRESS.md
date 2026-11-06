@@ -37420,3 +37420,131 @@ CALL_TOPCB invoking off=0x14c0000
 ```
 
 **⚠️ 本轮 0 次 QEMU 运行（纯静态），实例数 0。基线保持 1419/45/6/40-40。**
+
+---
+
+# ★★★★★★★★★ 2026-11-06 第四百零一章（第 285 轮）：**照抄 a7c2 的 CP 事件注入：投递成功但无接收者**
+
+## ① ★★★★★★★ 先纠正一个漏读：`inject-cp-event.c` 一直没打开
+```
+goal 里明确列了：
+  · inject-cp-event.c / inject-key.c / input-table.c（输入注入）
+
+★ 我 285 轮都没打开过这三个文件。
+★ 打开后立刻看到 a7c2 的完整方法（55 行）：
+   – 独立 guest 程序（_start，非 LD_PRELOAD）
+   – osal_valloc_msg_wait(queue, &msg, 48, 1)
+   – 填 48 字节：bytes[0..1]=frame, bytes[2..3]=code,
+                        bytes[0xa..0xb]=sub, bytes[0x1c..]=param
+   – osal_set_msg_src(msg, src)
+   – osal_snd_msg(queue, msg)
+   – 队列 ID 来自 *(appFw + 0x910fa1c)（a7c2 的偏移）
+```
+
+## ② ★★★★★★★ 在我们的固件里找到等价代码
+```
+搜 osal_valloc_msg_wait@plt (0x52a93c) 的调用点：8 处
+其中 **0x54fbe4** 在 site3（0x54f664）内部！
+
+反汇编 0x54fbc0..：
+  54fbd0: str r1(=0), [r7,#24]      ; msg = 0
+  54fbd6: ldr r3,[pc,#224] → **0x20f0000**
+  54fbdc: ldr r0,[pc,#220] → **0x5503e0**  ← ★★★ 队列 ID
+  54fbde: movs r2, #20              ; **size = 20**
+  54fbe0: str r3, [r7,#4]           ; 模板首字
+  54fbe4: blx osal_valloc_msg_wait(0x5503e0, &msg, 20, 1)
+  54fbe8: cbz r0, 0x54fc38
+
+★ 队列 0x5503e0 正是第 246 轮发现 site3 用
+  `osal_stat_msgq(0x5503e0)` 检查的那个队列！
+★ 而 STATQ 日志里**从未见过 0x5503e0**
+★ 且 **RCVC 日志里也从未出现过 0x5503e0** ⇒ **没有接收者**
+```
+
+## ③ ★★★★★★★ 按 a7c2 方法实现注入（照抄，不发明）
+```c
+int (*va)(unsigned, void**, unsigned, int) = dlsym(RTLD_DEFAULT, "osal_valloc_msg_wait");
+int (*sn)(unsigned, void*) = dlsym(RTLD_DEFAULT, "osal_snd_msg");
+void *m = 0;
+int r = va(0x5503e0u, &m, 20, 1);        /* 20 字节，与固件一致 */
+memset(m, 0, 20);
+m[0..1] = 0x0000;  m[2..3] = 0x020f;     /* 首字 0x20f0000 */
+sn(0x5503e0u, m);
+```
+
+## ④ ★★★★★★★ 实测结果
+```
+INJECT_CP syms valloc=0x90c0 snd=0x908c
+INJECT_CP alloc=0 msg=0x483a90c     ← **分配成功**
+INJECT_CP send=0                     ← **投递成功**
+
+基线完好：1416 / [AS]=45 / createLayer=6 / LOCK=40-40 ✅
+
+WIDGET_CTOR = 0
+GRMFILL     = 0
+DRAWNOTICE  = 0
+UPDTIME     = 0
+FB nonzero  = 1
+```
+
+## ⑤ ★★★★★ 纠正一处可能的误读
+```
+这一轮 PSM_HOOK call=1，看起来像突破。
+
+★ 但日志里有 PSM_POSCTRL 3 条：
+   PSM_POSCTRL gfxinst=0x101517c8
+   PSM_HOOK call=1 ret=1 flag=1 self=0x101517c8   ← **self 与 gfxinst 相同**
+  ⇒ **那 1 次就是我们自己的正对照调用**，不是固件调用的。
+
+★ 对照 pc2 那次：self=0x4cb968（也是正对照）
+⇒ **PSM_HOOK 仍然证明：固件从未调用 processSystemMessage**
+
+★ 教训：引入正对照后，必须同时检查"这次的非零是不是正对照造成的"。
+```
+
+## ⑥ 本层净收益
+```
+✅ **按用户提示读了 inject-cp-event.c（一直漏读的关键文件）**
+✅ **完整理解 a7c2 的 CP 事件注入方法（48字节/源/队列）**
+✅ **定位我们固件的等价投递代码（队列 0x5503e0，20字节，首字 0x20f0000）**
+✅ **成功实现并投递（alloc=0/send=0）**
+✅ **诚实纠正：PSM_HOOK=1 是正对照，不是突破**
+✅ **关键发现：0x5503e0 在 RCVC 日志中从未出现 ⇒ 没有接收者**
+✅ 基线完好（1416/45/6/40-40）
+❌ 帧 = 0
+```
+
+## 方法论（第 389 条）★★★★★★★★★★★
+**"goal 里列出的参考文件必须全部打开——我漏读了最关键的三个"：
+```
+goal 从第 170 轮起就写着：
+  inject-cp-event.c / inject-key.c / input-table.c（输入注入）
+
+★ 我 285 轮从未打开。打开后 5 分钟就拿到了：
+  · a7c2 的消息投递 API 用法
+  · 消息字段布局
+  · 队列 ID 的读取方式
+
+⇒ 判据：**参考目录里的每个文件都要打开一次，
+   即使名字看起来"不相关"。这成本是 3 次 wc/sed，
+   收益是省下几十轮摸索。**
+
+★ 本会话为此付出：第 255-285 轮（30 轮）在自行推测消息机制。
+```
+
+## ⑦ 下一步
+```
+★★★ 关键：0x5503e0 没有接收者
+  ⇒ 说明它是"发送方向"的通知队列（site3 退出时告诉别人），
+    不是"接收 CP 事件"的队列
+
+★ 而事件表的 +0x1c = **0x118b** 才是真正的线索：
+  · a7c2 的 CP 队列 = 0x81cf618b，低 12 位 = **0x18b**
+  · 我们的表项 = 0x118b，低 12 位 = **0x18b**
+  ⇒ **0x118b 很可能是"事件分发队列"的 ID 模板！**
+
+★★ 下一步：找以 0x18b 结尾的完整队列 ID
+   （可能在别的模块的常量里，或在 osal 的队列创建调用里）
+```
+
+**⚠️ 本轮 2 次 QEMU 运行，已收尾，实例数 0。基线 1416/45/6/40-40。**
