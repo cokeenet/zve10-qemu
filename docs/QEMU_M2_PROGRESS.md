@@ -36047,3 +36047,112 @@ site2 内部 11 个调用，逐个核实**全部不阻塞**。
 ```
 
 **⚠️ 本轮 0 次 QEMU 运行（纯静态），实例数 0。**
+
+---
+
+# ★★★★★★★★★★★ 2026-11-06 第三百八十七章（第 271 轮）：**推翻"ENTRY_LOCK=40 证明 site2 执行"**
+
+## ① ★★★★★★★ 决定性发现：ENTRY_LOCK 的 caller 是 0x52abfe
+```
+ENTRY_LOCK n=1 mutex=0x35b5f080 caller=/usr/lib/appFw.so+**0x52abfe**
+ENTRY_UNLOCK n=1 mutex=0x35b5f080
+... 共 40 对
+
+★ 0x52abfe 是哪条指令？
+  52abfa: blx 529460 <pthread_mutex_lock@plt>
+  **52abfe: cbz r0, 52ac04**        ← ENTRY_LOCK 记录的"返回地址"就是这里
+
+⇒ ENTRY_LOCK 的 caller 是 **0x52abec 这个函数**（std::mutex::lock 的 wrapper）：
+  52abec: push {r3, r4, r7, lr}
+  52abee: add  r7, sp, #0
+  52abf0: mov  r4, r0
+  52abf2: bl   0x52ab7c
+  52abf6: cbz  r0, 0x52ac04
+  52abf8: mov  r0, r4
+  52abfa: blx  pthread_mutex_lock@plt
+  52abfe: cbz  r0, 0x52ac04
+  52ac00: blx  __throw_system_error
+  52ac04: pop  {r3, r4, r7, pc}
+```
+
+## ② ★★★★★★★ 这推翻了一个长期假设
+```
+本会话从第 181 层起就假设：
+  "ENTRY_LOCK/UNLOCK = 40/40 配对 ⇒ site2（0x54d2b0）执行了"
+
+★ 实际：ENTRY_LOCK 只是 **0x52abec 这个 mutex wrapper 被调用 40 次**
+  ⇒ 任何 appFw 代码加锁都会记录
+  ⇒ **与 site2 是否执行无关**
+
+★ 同理，"createLayer=12 / LAYERVT=18" 也需要重新审视：
+  createLayer 的 hook 是 site1（0x54d154）里调用的（第 212 轮）
+  而 site1 在 site2 **之前**
+  ⇒ **createLayer=12 只证明 site1 执行了，不证明 site2 执行了**
+```
+
+## ③ ★★★★★★★ 因此 site2 是否执行，实际上**从未被验证**
+```
+已有的"site2 执行"证据全部是有缺陷的：
+  · ENTRY_LOCK=40     ← 是 mutex wrapper 计数，与 site2 无关（本轮推翻）
+  · createLayer=12    ← 是 site1 里的调用（在 site2 之前）
+  · LAYERVT=18        ← 同样来自 site1/setActive
+  · PC 采样 site2 入口 3 次  ← E<<1，采样稀疏（第 353 条）
+
+⇒ **site2 可能也从未执行！**
+⇒ 若 site0 或 site1 中有阻塞 ⇒ site2 就不会执行
+⇒ 而 site3 未执行（10 条证据）就**自然成立**
+```
+
+## ④ 本层净收益（本会话最重要的一次前提推翻）
+```
+✅ **发现 ENTRY_LOCK 的真实来源（mutex wrapper 0x52abec）**
+✅ **推翻"ENTRY_LOCK=40 证明 site2 执行"（用了 90 轮的前提）**
+✅ **推翻"createLayer=12 证明 site2 执行"（那是 site1 的调用）**
+✅ **结论：site2 是否执行从未被验证**
+✅ 基线不受影响
+❌ 帧 = 0
+```
+
+## 方法论（第 375 条）★★★★★★★★★★★ 本会话最重要的方法论
+**"用'某个计数器非零'证明'某段代码执行'是无效的——除非该计数器只由那段代码产生"：
+```
+ENTRY_LOCK=40 被我当成"site2 执行"的证据用了 90 轮。
+
+★ 实际它是 mutex wrapper 的全局计数，任何代码路径都会增加。
+  ⇒ **计数器必须"唯一可归因"才能作为执行证据。**
+
+⇒ 判据（硬规则）：
+   **用计数器判断"X 是否执行"时，必须确认该计数器只被 X 触发。**
+   检查方法：看探针的 caller 地址（本轮就是靠 caller=0x52abfe 发现的）
+            或看该函数的调用点数量（若 >1，则不能归因）
+
+★ 本会话的"唯一可归因"正面例子：
+   · PSM_HOOK（processSystemMessage 只在 0x54fb42 被调用）✅
+   · onDrawNotice（150 个 vtable，但有 150 个来源 ⇒ 只能证明"没有任何 widget 绘制"）
+   · GRM_gperm*（平台入口，唯一可归因）✅
+
+★ 而 ENTRY_LOCK 是典型反例：40 次调用来自 mutex wrapper，与目标无关。
+```
+
+## ⑤ 下一步（范围回到 site0/site1）
+```
+★★★ Application_Start 的线性结构（本轮完整确认，无分支）：
+  54d590: blx 0x92559c   ; site0（ARM thunk）
+  54d59a: bl  0x54d154   ; site1  ← createLayer 在这里
+  54d5a6: bl  0x54d2b0   ; site2  ← 是否执行未验证
+  54d5ac: bl  0x54f664   ; site3  ← 10 条证据证明未执行
+  54d5b0: blx 0x923c84   ; site5
+  54d5b6: bl  0x54d538   ; site6
+  54d5be: 返回
+
+★ 已知：site1 执行了（createLayer=12）
+★ 所以卡点在 **site1 返回之后 到 site3 之前** = site2 或 site1 的尾部
+★ 而 site2 内部所有调用都不阻塞（第 270 轮）
+⇒ **site2 应该会返回**
+⇒ 但 site3 未执行 ⇒ **矛盾**
+
+★ 唯一未验证的：site1 是否**返回**了
+  若 site1 卡住 ⇒ site2/site3 都不执行 ⇒ 全部现象自洽！
+```
+
+**⚠️ 本轮 0 次 QEMU 运行（纯静态），实例数 0。**
