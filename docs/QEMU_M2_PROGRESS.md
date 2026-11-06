@@ -32559,3 +32559,84 @@ lib_text_base 对 libObj 可用（GE_PROBE 一直在打印 base），
 ⇒ 判据：**一个已知可用的工具对 A 成功、对 B 失败时，
    第一步是打印 B 的原始输入，而不是修改工具逻辑。**
 ```
+
+---
+
+# ★★★★★★★ 2026-11-06 第三百四十八章（第 232 轮）：**GOT 替换装上了，但时机太早（重定位未完成）**
+
+## ① ★★★★★ 零成本诊断先做：maps 里 appFw.so 的格式是正常的
+```
+MAPS_MATCH stem=appFw.so line=2e288000-316c7000 r-xp 00000000 00:01 555  /usr/lib/appFw.so
+
+★ 格式完全正常（r-xp + 绝对路径）
+★ 用 Python 模拟 lib_text_base 的匹配逻辑 ⇒ 匹配成功
+⇒ **lib_text_base 本身没有 bug**
+⇒ 之前返回 nil 是因为**调用时 appFw 尚未映射/尚未重定位**
+```
+
+## ② ★★★★★ 第三次尝试：在 my_start 开头装 GOT 替换（成功装上，但基线崩溃）
+```
+DRAWFB_PATCH slot=0x30f02fe0 before=0x2dcb09d0 expect=0x41a700c
+DRAWFB_PATCH written=0x41a6e44 (was 0x2dcb09d0)
+NOTIFY_PATCH slot=0x30f03440 before=0x2dcb09d0 expect=0x41aa0dc written=0x41a6dc8
+
+★ 基线：行数=1102 [AS]=0 createLayer=2  ⇒ **崩溃**
+★ DRAWFB=0 NOTIFY=0                    ⇒ 绘制仍为 0
+
+★★★ 关键线索：**before = 0x2dcb09d0**（两个槽同值！）
+   而 expect(dlsym 结果) = 0x41a700c / 0x41aa0dc
+   ⇒ 0x2dcb09d0 看起来像 **appFw 的 base 附近的值**
+   ⇒ 说明槽里存的还是**未重定位的占位值**，或指向 PLT0
+   ⇒ **我 patch 的时机在动态链接器完成重定位之前**
+```
+
+## ③ 已回滚，基线完全恢复
+```
+★ 哨兵: 行数=1395 [AS]=48 createLayer=6
+  ENTER=1  LOCK/UNLOCK=40/40  FB nonzero=1  QEMU 残留=0  ✅
+
+★ 回滚时误删了 my_start 的 "{"，已补回（第 192 行）
+```
+
+## ④ 本层净收益
+```
+✅ **用零成本诊断证明 lib_text_base 无 bug（maps 格式正常）**
+✅ **GOT 槽地址验证正确（slot/before/expect 都合理）**
+✅ **找到崩潰根因线索：before=0x2dcb09d0 是两个槽同值 ⇒ 重定位未完成**
+✅ **三次尝试全部回滚，基线完好（1395/48/6，40/40，0 残留）**
+❌ 帧 = 0
+```
+
+## ⑤ 下一步（明确，且是 a7c2 隐含的做法）
+```
+★★★ a7c2 的 install_frame_observers 是在哪里调的？
+  它有一个 initialize() 构造函数（__attribute__((constructor))），
+  在里面 dlsym 全部符号；然后 install_frame_observers 在
+  **appFw 初始化之后**的某个 hook 点调用。
+
+★ 我们的正确时机应该是：
+  · Application_System_Init 返回之后（appFw 已完成 dlopen + 重定位）
+  · 或 my_uxinit（uxengine_init2）里
+  · 或 my_app（Application_System_Init 的 wrapper）返回之后
+
+⇒ 需要在 my_app 的返回路径上调用 patch_drawfb_slot()
+   （此时 appFw 必然已重定位完成）
+```
+
+## 方法论（第 336 条）★★★★★★★★
+**"'写成功'不等于'写对了时机'——GOT 槽在重定位前是占位值"：
+```
+我两次 patch 都"成功写了"（日志显示 written=正确地址），
+但基线崩溃、绘制为 0。
+
+★ 真正原因：**槽里原本是 0x2dcb09d0（两个槽同值）**，
+  这是**动态链接器还没填**的占位值
+  ⇒ 我在 ld.so 完成重定位之前就覆盖了槽
+  ⇒ ld.so 之后又写回自己的值（覆盖我的 patch）
+  ⇒ 或者更糟：破坏了 ld.so 的重定位流程 ⇒ 基线崩溃
+
+⇒ 判据（硬规则）：
+   **patch 一个由动态链接器管理的表项时，必须确认重定位已完成。**
+   检查方法：读槽值，若它等于"PLT0 地址"或"模块内偏移"，
+   说明尚未重定位，此时绝不能写。
+```
