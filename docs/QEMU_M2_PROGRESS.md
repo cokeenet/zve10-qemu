@@ -39250,3 +39250,16 @@ GraphicsEngine::drawFramebuffer()
 
 合格 framebuffer 仍为 0；无物理地址/SHA256 的新菜单帧；QEMU 实例为 0。
 
+# ★★★★★★★★★ 2026-11-07 第四百一十九章（接手第 55 轮）：**扩大 slot31 扫描后仍未形成绘制调用链**
+
+## ① 静态扫描
+- 对 M2 `appFw.so` 与 `libObj.so` 扩大了 Thumb 窄/宽 load + slot31 + `blx` 模式扫描。
+- `appFw.so` 没有得到可靠的 `vptr → [vptr+0x7c] → blx` 直接链。
+- `libObj.so` 得到若干 slot31 调用，但进一步按符号归属确认它们属于 `DDSUserSus`、动画、TextSprite、GraphicsImage、LayoutAttributeWriter、ObjAvAdjCtrl 等非统一绘制路径。
+- 不能仅凭虚槽索引下结论，必须有调用者语义或运行时返回地址闭环。
+
+## ② 结论
+M2 的 onDrawNotice 槽调用者仍未形成 `notifyDraw → frame loop → onDrawNotice → GRM` 的证据链。本轮没有 patch、没有直接调用虚槽、没有 QEMU 运行。
+
+合格 framebuffer 仍为 0；没有物理地址/SHA256 的新菜单帧；QEMU 实例为 0。
+
