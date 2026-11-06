@@ -35753,3 +35753,101 @@ GRMFILL、FB…全部为 0）—— 非常自洽。
 ```
 
 **⚠️ 本轮 0 次 QEMU 运行（纯静态），实例数 0。**
+
+---
+
+# ★★★★★★★★★★★★ 2026-11-06 第三百八十四章（第 268 轮）：**正对照通过 —— PSM_HOOK 不是假零，九条测量全部成立**
+
+## ① ★★★★★★★ 先确认调用路径是 PLT（不是 ARM thunk）
+```
+0x54fb42: blx 528d58 <_ZN2ux6gfxeng14GraphicsEngine20processSystemMessageEv@plt>
+
+★ 走 **PLT**（不是第 212 层那种绕过 GOT 的 ARM thunk）
+★ 且 argtrace.so 里符号已导出：00007bb4 T _ZN2ux6gfxeng14GraphicsEngine20processSystemMessageEv
+⇒ **hook 应该在链路上**
+```
+
+## ② ★★★★★★★ 正对照实验：主动调用一次
+```
+PSM_POSCTRL syms gfxinst=0xa8c4e71 psm=0x4062c48
+                          ↑ libObj 的 sys_getInstance   ↑ **我们的 hook**（argtrace.so）
+PSM_POSCTRL gfxinst=0x4cb968          ← GraphicsEngine 单例
+PSM_HOOK resolve real=0xa8a8611       ← 真正的 libObj 实现（rtld 找到了）
+PSM_HOOK call=1 ret=1 flag=1 self=0x4cb968   ← ★★ **计数变成 1！**
+PSM_POSCTRL psm returned 1
+
+基线完好：1409 / [AS]=47 / createLayer=6 / LOCK=40 ✅
+```
+
+## ③ ★★★★★★★ 结论：PSM_HOOK 完全有效
+```
+✅ dlsym(RTLD_DEFAULT, processSystemMessage) 返回 **我们的 hook**（0x4062c48）
+   ⇒ **RTLD_DEFAULT 优先级在我们之上 ⇒ 固件调用也会落到我们**
+✅ 主动调用 → 计数 1 → 返回 1 → flag=1
+✅ 说明 hook 链路完整：符号导出 → rtld 路由 → 我们的 wrapper → 转发到 real(0xa8a8611)
+
+★ 因此：**PSM_HOOK = 0 意味着固件真的从未调用 processSystemMessage**
+★ 九条测量的共同基础**成立**：
+   UI 循环 / updateFrame / onDrawNotice / GRMFILL / GRMBLIT / FB 全为 0
+   ⇒ **UI 绘制系统确实从未启动**
+```
+
+## ④ ★★★★★★★ 而 processSystemMessage 若被固件调用会返回 1
+```
+PSM_HOOK call=1 ret=1 flag=1
+  ⇒ 回调（libObj+0x10e854）读到 flag=1，返回 1
+  ⇒ processSystemMessage 返回 1
+  ⇒ while (psm() != 0) **为真** ⇒ 循环体会执行 ⇒ 会绘制
+
+★ 所以只要固件调用一次，就会进入绘制
+★ 而它一次都没调用 ⇒ **问题在"谁应该调用它"**
+```
+
+## ⑤ 本层净收益（本会话最关键的验证）
+```
+✅ **确认调用走 PLT（不是 thunk），hook 在链路上**
+✅ **正对照通过：计数 0→1，返回 1，flag=1**
+✅ **PSM_HOOK=0 是真实测量，不是假零**
+✅ **九条测量全部成立：UI 绘制系统确实从未启动**
+✅ 基线完好（1409/47/6，40/40）
+❌ 帧 = 0
+```
+
+## 方法论（第 372 条）★★★★★★★★★★★ 本会话最重要的方法论
+**"正对照能让'一个零'从'可疑'变成'可信'——这是本会话唯一一次成功的自我验证"：
+```
+PSM_HOOK=0 解释了 9 条测量，过于自洽 ⇒ 我怀疑它是假零。
+
+★ 正对照：主动调用一次 ⇒ 计数变 1，返回 1，flag=1
+  ⇒ **零是真实的**，九条测量成立。
+
+⇒ 判据：**当一个零承担了过多结论时，用"制造一次非零"来验证它。
+   成本：1 轮；收益：要么确认 9 条结论，要么推翻 9 条结论。**
+
+★ 而这次验证的额外收获：
+   dlsym 返回了**我们的 hook**（0x4062c48）而不是 libObj 实现
+   ⇒ 证明 RTLD_DEFAULT 的优先级是"我们的库在前"
+   ⇒ **固件调用必然经过我们**（这是 hook 有效性的结构性保证）
+
+★ 本会话 7 次假零（第 366 条）+ 这次真零验证
+  ⇒ **"零"必须先被证明，然后才能用于推理。**
+```
+
+## ⑥ 下一步：真正的靶点已确定
+```
+★★★ 固件从未调用 processSystemMessage ⇒ 谁应该调用它？
+
+★ 唯一调用点是 0x54fb42（site3 内的主循环，第 267 轮确认）
+★ 而 0x54fb42 在循环头：`mov r8,#0; blx gfxeng; blx psm; cmp r0,#0; bne 0x54f700`
+★ 循环之前的代码：0x54f664..0x54f6fe（site3 的口）
+  · 0x54f6fe: b.n 0x54fb3e    ← **无条件跳到循环头！**
+
+⇒ 所以 site3 进入后**必然**执行 0x54fb3e → 0x54fb42
+⇒ 若 psm=0 ⇒ site3 **从未进入**
+
+★ 而 site3 的调用点是 0x54d5ac（Application_Start 的第 3 个 bl）
+  ⇒ Application_Start 在 0x54d5a6（site2）之后就该调 site3
+  ⇒ **site2 从未返回**（回到第 248 轮的推论，但那次被采样稀疏问题否定）
+```
+
+**⚠️ 本轮 1 次 QEMU 运行，已收尾，实例数 0。**
