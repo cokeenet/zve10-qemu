@@ -38180,3 +38180,89 @@ a7c2 BOOT-TROUBLESHOOTING §5 原文：
 ```
 
 **⚠️ 本轮 6 次 QEMU 运行（含 1 次崩溃 + 回滚验证），已收尾，实例数 0。**
+
+---
+
+# ★★★★★★★★★★ 2026-11-06 第四百零七章（第 291 轮）：**栈对齐假设被否证 —— 但仍发现 naked 桩正确**
+
+## ① ★★★★★★★ naked 桩这次成功了
+```
+ARGTRACE start target captured = 0x2e3cc581      ← dlopen hook 捕获的 target 正确写入
+START_NAKED enter lr=0x131da53d target=0x2e3cc581 ← 桩被调用，lr 是 im.elf 的返回点
+```
+**⇒ target 来源修正（用 dlopen hook 的 r 而非 RTLD_NEXT）解决了第 290 轮的失败**
+
+## ② ★★★★★★★ 基线判读（关键：没崩，只是探针缺失）
+```
+指标                rb30(回滚后)  nk2(naked桩)   判定
+CREATELAYER              12          12          ✅ 一致
+LAYERVT                  18          18          ✅ 一致
+INITSEQ                  61          61          ✅ 一致
+ARGTRACE hooked           1           1          ✅ 一致
+FB nonzero                1           1          ✅ 一致
+行数                   1443        1256          ⚠ 少 187 行
+[AS]                     45           0          ⚠ my_start 才设 g_as_phase
+MY_TID                    1           0          ⚠ 在 my_start 里
+ENTRY_LOCK               40           0          ⚠ 在 my_start 里
+
+★ 结论：**基线是好的**。缺失的三项全在 my_start 内，
+  而 naked 桩直接跳到 real_start，不经过 my_start。
+⇒ 这不是崩溃，是"诊断探针不执行"。
+```
+
+## ③ ★★★★★★★★ 栈对齐假设被**否证**
+```
+假设（第 290 轮）：my_start 有自己的栈帧 ⇒ real_start 的 sp 偏移
+                  ⇒ frame 偏移 ⇒ site2 写 frame[2160] 破坏栈 ⇒ site3 不执行
+
+★ 本轮用 naked 桩让 sp **完全一致**（push/pop 平衡 + bx 尾调用）
+★ 结果：
+  GOTWATCH psm    rel=0x5289d0   ← 仍未解析
+  GOTWATCH drawfb rel=0x5289d0   ← 仍未解析
+  ⇒ **site3 仍未执行**
+
+⇒ **栈对齐不是根因。** 即使 sp 一致，site3 依然不执行。
+```
+
+## ④ 本层净收益
+```
+✅ **naked 桩正确工作（target 捕获 + 跳转 + sp 不变）**
+✅ **确认基线未崩（三项核心指标与回滚后完全一致）**
+✅ **否证"栈对齐是根因"这一假设**
+✅ **确认 site3 未执行与 sp 无关**
+❌ 帧 = 0
+```
+
+## 方法论（第 395 条）★★★★★★★★★★★
+**"'基线崩溃'与'探针不执行'必须分清——核心指标没变就不是崩溃"：
+```
+本轮看到 行数 1443→1256、[AS] 45→0、LOCK 40→0，第一反应是"崩溃"。
+★ 但逐项对比才发现：CREATELAYER / LAYERVT / INITSEQ / FB 全部一致。
+
+⇒ 判据：**哨兵报警时，先逐项对比**具体指标**，而不是只看总行数：
+   · 核心行为指标（createLayer / LAYERVT / FB）不变 ⇒ 不是崩溃
+   · 只是某类日志消失 ⇒ 那个日志所在函数的执行路径变了**
+
+★ 本会话差点因为"行数变少"而回滚一个**正确**的改动（naked 桩）。
+```
+
+## ⑤ 下一步（现在有了正确的 naked 桩，可以把探针搬进去）
+```
+★★★ naked 桩现在是**正确**的（sp 不变、target 正确），
+   只是 my_start 里的诊断没搬进去。
+
+★ 下一次：把 my_start 的探针体（GOT_SWEEP / WGSCAN / DRIVE_AT_SEND / uinit_backtrace）
+   移到 argtrace_start_enter 里 —— 但注意它会在**任何线程**被调用，
+   需要像原来一样加线程判断。
+
+★★ 同时保留一个关键认识：
+   **site3 未执行与 sp 无关**，所以真正的卡点仍未找到。
+   而 createLayer=12 / LAYERVT=18 / INITSEQ=61 与之前完全一致
+   ⇒ UX 初始化确实完整执行了
+   ⇒ 卡点在 site2 返回之后、site3 的 0x54fb3e 之前
+   ⇒ 该区间只有：0x54d5ac（调用）→ 0x54f664（入口）→ ... → 0x54f6fe（跳转）
+   ⇒ 而 0x54f674 是虚调用 `ldr r0,[r0,#16]; ldr r3,[r0]; ldr r3,[r3]; blx r3`
+   ⇒ **下一个嫌疑：0x54ef74 的虚调用目标**
+```
+
+**⚠️ 本轮 2 次 QEMU 运行，已收尾，实例数 0。基线核心指标 12/18/61/FB=1 一致。**
