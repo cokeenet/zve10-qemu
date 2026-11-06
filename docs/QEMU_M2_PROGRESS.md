@@ -36610,3 +36610,111 @@ UPD_STRUCT after  f60=0x4c4f98 r=918312820
 ```
 
 **⚠️ 本轮 1 次 QEMU 运行，已收尾，实例数 0。**
+
+---
+
+# ★★★★★★★★★★★★ 2026-11-06 第三百九十三章（第 277 轮）：**决定性：widget 树完全为空（WIDGET_CTOR=0，已正对照）**
+
+## ① ★★★★★★★ 实测
+```
+WIDGET_CTOR n=   **0**     ← Widget::Widget() 从未被调用
+WNODE ctor       **0**     ← WidgetNode ctor 也从未被调用
+
+基线完好：1419 / [AS]=46 / createLayer=6 / LOCK=40 ✅
+UPDATERES = 1（updateResource 已执行）
+GRMFILL = 0 / DRAWNOTICE = 0 / FB = 1
+```
+
+## ② ★★★★★★★ 正对照：hook 确实有效
+```
+关键检查：Widget::Widget() (0xe1370) 在 **libObj 内部**有多少个 bl 调用点？
+  ⇒ **0 处**
+
+★ 这意味着：
+  · libObj 内部**不**直接构造 Widget
+  · Widget 只能被**外部模块**（appFw 的派生类）构造
+  · 而外部跨模块调用 **必然经过 PLT/GOT**
+  · 我们的 LD_PRELOAD hook **只能拦截跨模块调用**
+  ⇒ **hook 在必需路径上，WIDGET_CTOR=0 是真实测量**
+
+★ 若内部有调用点，它们会绕过 hook ⇒ 零就是假零。
+  而实测内部 **0 处** ⇒ 排除假零。
+```
+
+## ③ ★★★★★★★★ 因此确认的完整事实链
+```
+updateResource ✅ 已执行（UPDATERES=1）
+  → engine+0x60 = 0x4c4f98（非零）✅ 走正路
+  → widget 遍历循环
+    → **树里一个 widget 都没有**（WIDGET_CTOR=0）
+      ⇒ 循环一次都不进入
+        → 无 vtable[+0x10] 虚调用
+          → 无 onDrawNotice
+            → 无 GRM_gpermFillrect
+              → GPE 无请求
+                → FB 全零
+```
+
+## ④ ★★★★★★★ 这解释了本会话所有现象
+```
+为什么 processSystemMessage 从未被调用？
+  → site3 未执行 → 但更深层：**UI 从未被填充**
+为什么 onDrawNotice=0？
+  → 树里没有 widget
+为什么 GRMFILL=0？
+  → 没有 widget 要画
+为什么 FB 全零？
+  → 没有任何绘制请求
+
+★ **根本原因：appFw 从未构造任何 widget 实例**
+  ⇒ 不是"绘制链断了"，而是 **"没有东西可画"**
+```
+
+## ⑤ 本层净收益（本会话最关键的一次定位）
+```
+✅ **Widget::Widget() 从未被调用（0 次）**
+✅ **WidgetNode ctor 从未被调用（0 次）**
+✅ **正对照通过：hook 在必需路径上（libObj 内部 0 个调用点）**
+✅ **确认根因：widget 树完全为空，不是"链断了"而是"没东西可画"**
+✅ 基线完好（1419/46/6，40/40）
+❌ 帧 = 0
+```
+
+## 方法论（第 381 条）★★★★★★★★★★★ 本会话最重要的方法论
+**"零的正对照要看'是否所有路径都经过 hook'——内部调用会绕过 LD_PRELOAD"：
+```
+WIDGET_CTOR=0 可能有两种含义：
+  A. 真的从未构造（真相）
+  B. hook 拦不到内部调用（假零）
+
+★ 判据（零成本）：**统计目标函数在本模块内部的 bl 调用点数量**
+  · 内部调用点 = 0 ⇒ 所有构造都来自外部 ⇒ **hook 必经** ⇒ 零是真相
+  · 内部调用点 > 0 ⇒ 那些调用绕过 hook ⇒ 零可能是假零
+
+★ 实测：Widget::Widget() 在 libObj 内部 **0 个调用点**
+  ⇒ 排除假零 ⇒ **WIDGET_CTOR=0 是真相**
+
+★ 这是本会话第 8 次做"假零"排查，
+  而这次是**唯一一次用"统计内部调用点"做的**，也是最快的一次（零成本）。
+```
+
+## ⑥ 下一步（真正的最后一步）
+```
+★★★ 现在问题变成：**谁应该构造 widget？**
+
+已知：
+  · createLayer=6（4 个 layer 建好了）
+  · createLayer 是 WidgetSystem 的方法，它创建的是 **layer**，不是 widget
+  · widget 需要被 **addChild / setParent** 到 layer 上
+
+★ 关键符号（第 276 轮已见）：
+  · _ZN2ux6wgtsys6Widget9setParentERNS0_10WidgetBaseE  (0xe1546)
+  · Widget::setLayerID / setLocalPos / initSprite
+
+★ 下一轮：hook Widget::setParent 和 Widget::initSprite，
+  看有没有任何 widget 被加入树
+  （但如果 Widget ctor=0，这些也都是 0）
+  ⇒ **真正的靶点：谁调用 Widget 的派生类构造函数**
+```
+
+**⚠️ 本轮 1 次 QEMU 运行，已收尾，实例数 0。**
