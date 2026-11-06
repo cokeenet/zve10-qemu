@@ -39430,3 +39430,15 @@ screen-ID dispatch 的入口/对象需要通过运行时只读捕获，而不是
 
 合格 framebuffer 仍为 0；无物理地址/SHA256 的新菜单帧；QEMU 实例为 0。
 
+# ★★★★★★★★★ 2026-11-07 第四百二十九章（接手第 63 轮）：**screen dispatch 间接表内容已确认是广泛内部函数表，不是单一 menu manager 表**
+
+## ① 静态结果
+- `0x37a2e7c` 指向 `0x1100da8`，但同一邻域包含约百个不同 appFw 内部函数地址，分布跨越多个子系统。
+- 该表不是只包含 screen dispatch 的专用表，更像通用函数/回调注册表。
+- 因此通过该表单个 entry 找到 `0x1100da8`，不能反推其 caller、object 类型或生命周期语义。
+
+## ② 结论
+M2 screen dispatch 仍需运行时对象/vtable 捕获才能确认语义。静态函数表地址不能作为安全调用依据。本轮无 QEMU、无 patch、无内部调用。
+
+合格 framebuffer 仍为 0；没有物理地址/SHA256 的新菜单帧；QEMU 实例为 0。
+
