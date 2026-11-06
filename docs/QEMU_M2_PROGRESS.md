@@ -38965,3 +38965,25 @@ ARM 是**小端**：指令 e92d4ff0 在内存中的字节顺序是 **2d e9 f0 4f
 - `input42`/`input43`/`input44` 使用的 kernel config 指向旧的 `/mnt/build/m2qemu/work/ui.cpio.m2`，而不是临时包含最新注入库的 `/tmp/ui.cpio.m2.input`；这些运行没有出现 `INJECT_INPUT_QUEUES`，不能当作注入实验结果。
 - 唯一确认使用新注入库的实验是 `input41`，其 `send=0` 后仍缺少正确 size/source 解析；因此后续必须重新生成临时 cpio、确认镜像 SHA，再运行一次，不能把 input43/44 的返回日志与注入关联。
 
+# ★★★★★★★★★ 2026-11-07 第四百零五章（接手第 44 轮）：**`osal_msg_size` ABI 校正完成，但新镜像仍未跑到注入路径**
+
+## ① 构建校正
+- 已按 a7c2 的真实符号把诊断从 `osal_get_msg_size` 改为 `osal_msg_size`。
+- 使用临时 cpio `/tmp/ui.cpio.m2.input` 构建了新 Image，Image SHA256：`7deb126725110fe64e70484b72afc860e5e7d8b1add7b30561101bca23d2e7e8`。
+- 新注入库 SHA256：`4a10512840af4cfdbb2c4ee76d48b26725f184532d64832f90c4024c83ca5b6c`。
+
+## ② input45 结果及限制
+- 受控目录：`/mnt/build/m2qemu/out/input45`；systemd-run 单实例，结束后实例为 0。
+- `input45` 中 `osal_msg_size` 已能返回非零长度（20/52 字节），说明 ABI 符号选择修正有效；但该运行没有出现 `INJECT_INPUT_QUEUES`/`STARTCMP`，而是停在更早的启动/队列阶段，不能把它当作“注入已执行”。
+- 日志虽有 `RCVC_RET`，内容是系统初始化消息，例如 size=20/52，不能与目标输入注入关联。
+- 因此 input45 只能证明 getter 修正有效，不能证明 UI 消费了新注入事件。
+
+## ③ 当前结论
+- `osal_msg_size` 选择已纠正。
+- 仍需要下一次确认三个同时条件：
+  1. serial 中出现 `INJECT_INPUT_QUEUES begin`；
+  2. 同一运行出现 `STARTCMP match=1` 和 `createLayer=6`；
+  3. 目标 qid 的 `RCVC_RET` 返回 size/source/bytes 与注入消息可对应。
+- 在满足这三项前，不能把任何 `RCVC_RET` 解读为注入消息消费。
+- 合格 framebuffer 仍为 0；没有物理地址/SHA256 的新菜单帧。
+
