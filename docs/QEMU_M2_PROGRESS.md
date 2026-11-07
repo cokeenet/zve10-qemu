@@ -39900,6 +39900,26 @@ CONFIG_INITRAMFS_SOURCE="/mnt/build/m2qemu/work/ui.cpio.m2"
 
 - 本轮没有运行 QEMU，没有修改固件；QEMU 实例为 0。
 
+# ★★★★★★★★★ 2026-11-07 第四百四十章（实体机）：**再次临时注入成功，当前仍需拔 USB 恢复 WiFi**
+
+## ① 注入结果
+在确认设备为正确的 ZV-E10 `054c:0d95` 后，按 OSS 临时 agent 流程发送到固定加载路径：
+
+```text
+path=/tmp/jiritsu/libJit.so
+payload=agent_v14.so 18104 B
+first Senser authentication: OK
+second Senser authentication: OK
+SET_FILE_PATH code=0 body=00000000
+SET_FILE2 code=0 body=00000000 status=0x00000000 (OK)
+STOP_SENSER sent
+```
+
+## ② 当前限制
+上传成功后设备仍枚举为 `054c:0d95`，USB 插着时 WiFi 通道不可用；对 `10.42.0.158:7777` 的多次 ping 均为 `No route to host`。
+
+这不是 agent 已监听或未监听的结论，因为 USB 大容量模式本身会让 WiFi 断开。下一步必须由使用者拔掉 USB，等待 10–30 秒，再重新 ping；本轮没有写 `/etc/ld.so.preload`，没有持久写入。
+
 ## ② 结论
 staged archive 的 payload 归因已闭合，但当前 Image 仍需在同一 cpio source 配置下重新生成后才能宣称包含这版 payload。此前 source/观察结论只承认同时绑定 Image、cpio、argtrace SHA 的运行。
 
