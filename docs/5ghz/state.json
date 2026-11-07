@@ -1,0 +1,10 @@
+{
+  "state": "ready",
+  "write_mode": false,
+  "module_ops_authorized": false,
+  "idle_timeout_seconds": 600,
+  "scope": "one authenticated service session; owner-submitted single-line commands via a local queue; read-only allow-list",
+  "commands_completed": 3,
+  "refused_count": 0,
+  "session_started": 1794077892.7547724
+}
