@@ -39549,6 +39549,44 @@ manager+0x330/+0x348 guards
 ## ② 结论
 后续不会把附加 zip 中的旧 A7C `openView`/RootSelector 偏移移植到 M2，也不会把旧工程的 UI/GPE 方案冒充为新菜单生命周期证据。已完成的 M2 输入消费证据仍然有效，但菜单切换和绘制缺口必须继续按 `/root/fw/a7c2re` 新菜单代码闭合。
 
+# ★★★★★★★★★ 2026-11-07 第四百三十九章（实体机）：**临时 USB agent 上传成功，但 WiFi 7777 通道未监听**
+
+## ① 实体机状态
+实体机已确认是 ZV-E10 老 UI，USB 初始为：
+
+```text
+054c:0d95
+```
+
+按 OSS `INJECT_QUICKSTART.md`/`AGENT_USAGE.md` 流程，使用临时 USB payload（不写 `/etc/ld.so.preload`）：
+
+```text
+agent_v14.so SHA256=b15bdb105f10c6f6caf83aaa8d52359e3e2ca6443ff0eb7d703f629ea6cc3718
+```
+
+执行结果：
+
+```text
+first Senser authentication: OK
+second Senser authentication: OK
+SET_FILE_PATH code=0 body=00000000
+SET_FILE2 code=0 body=00000000 status=0x00000000 (OK)
+STOP_SENSER sent
+```
+
+USB 随后消失，符合临时 Senser 流程。
+
+## ② WiFi 结果
+按用户提供 IP `10.42.0.158` 多次执行只读 ping：
+
+```text
+ConnectionRefusedError [Errno 111]
+```
+
+因此当前 agent 的 TCP 7777 尚未监听，不能继续实体机读取或部署任何文件。可能原因包括：payload 上传成功但 agent daemon 未 fork/监听、相机 WiFi 尚未恢复、IP 变化或端口被拒绝。
+
+本轮没有写 `/etc/ld.so.preload`，没有执行实体机写文件命令。后续应先确认相机 WiFi 当前 IP/端口，再决定是否重新临时注入；不要转为持久 preload。
+
 # ★★★★★★★★★ 2026-11-07 第四百三十三章（接手第 68 轮）：**当前 Image + 当前注入库完成可归因运行，输入消息被两个队列实际消费**
 
 ## ① 构建与绑定
