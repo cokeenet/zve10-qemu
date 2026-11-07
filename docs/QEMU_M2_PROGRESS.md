@@ -39488,6 +39488,8 @@ M2 的 frame/event loop 静态存在，当前关键未知已收窄为：运行�
 
 合格 framebuffer 仍为 0；QEMU 实例为 0。
 
+补充：gotobs71 运行把只读 `GOT_SLOT processEvent` 加入源码后完成了新 Image 绑定，但日志仍未出现该 slot 行，说明 `report_got_slots()` 的实际调用点/产物路径还需单独核验；不能把“未出现”解释成 PLT0。
+
 # ★★★★★★★★★ 2026-11-07 第四百三十二章（接手第 66/67 轮）：**当前 Image 重建被 /tmp 空间耗尽阻断，未运行 QEMU**
 
 ## ① 现状
