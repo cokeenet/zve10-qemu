@@ -39834,3 +39834,23 @@ FB_SAMPLE nonzero=0 unique=1
 补充：`osal_get_msg_src` 观测值仍为 `0`，因此 source 字段本身不能作为当前 ABI 的可靠证据；决定性证据是 size=52 且 body 字节完全匹配注入 frame/code/sub/param。
 QEMU 已收尾，实例数 0。
 
+# ★★★★★★★★★ 2026-11-07 第四百三十七章（接手第 75 轮）：**当前 staged cpio 已验证嵌入当前 argtrace，持久配置已恢复**
+
+## ① 归因核验
+- 当前 `stage-current/ui.cpio` 内的 `usr/lib/argtrace.so` SHA256 已读回并与工作区当前库一致：
+
+```text
+b15bdb105f10c6f6caf83aaa8d52359e3e2ca64403ff0eb7d703f629ea6cc3718
+```
+
+- 当前持久 kernel config 已恢复：
+
+```text
+CONFIG_INITRAMFS_SOURCE="/mnt/build/m2qemu/work/ui.cpio.m2"
+```
+
+- 本轮没有运行 QEMU，没有修改固件；QEMU 实例为 0。
+
+## ② 结论
+staged archive 的 payload 归因已闭合，但当前 Image 仍需在同一 cpio source 配置下重新生成后才能宣称包含这版 payload。此前 source/观察结论只承认同时绑定 Image、cpio、argtrace SHA 的运行。
+
