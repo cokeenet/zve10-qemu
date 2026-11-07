@@ -39490,6 +39490,17 @@ M2 的 frame/event loop 静态存在，当前关键未知已收窄为：运行�
 
 补充：gotobs71 运行把只读 `GOT_SLOT processEvent` 加入源码后完成了新 Image 绑定，但日志仍未出现该 slot 行，说明 `report_got_slots()` 的实际调用点/产物路径还需单独核验；不能把“未出现”解释成 PLT0。
 
+# ★★★★★★★★★ 2026-11-07 第四百三十八章（接手第 76 轮）：**GOT 只读观测绑定运行仍未出现 processEvent 槽记录**
+
+## ① 运行
+- 新 Image 使用 staged cpio 构建，SHA256：`8f6fad271aedd6576fbfd72dbd9d9f555bd2fbd69861f5853b24d4594850b6f9`。
+- argtrace SHA256：`b15bdb105f10c6f6caf83aaa8d52359e3e2ca64403ff0eb7d703f629ea6cc3718`。
+- `gotobs76` 使用 `systemd-run --unit=zve10-gotobs76 --collect --property=MemoryMax=4G`。
+- 运行仍闭合输入消费和基线，但没有出现 `GOT_SLOT processEvent` 或 `UXLOOP processEvent`；只有已有的 `notifyDraw`/输入/FB=0 记录。
+
+## ② 结论
+这不能直接解释为 processEvent=PLT0：`report_got_slots()` 的实际调用路径/当前 cpio 入口仍需核验。当前唯一确定结论是输入已消费、绘制未触发；本轮没有亮屏。
+
 # ★★★★★★★★★ 2026-11-07 第四百三十二章（接手第 66/67 轮）：**当前 Image 重建被 /tmp 空间耗尽阻断，未运行 QEMU**
 
 ## ① 现状
