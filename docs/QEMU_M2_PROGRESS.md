@@ -39499,6 +39499,43 @@ M2 的 frame/event loop 静态存在，当前关键未知已收窄为：运行�
 ## ② 结论
 本轮没有新的运行时证据，也不能把失败构建的旧 Image 当作当前注入实验结果。后续重建必须先确认 `/tmp` 有足够空间，再记录新 Image SHA 后运行。
 
+# ★★★★★★★★★ 2026-11-07 第四百三十六章（接手第 71 轮）：**明确区分：a7c2-re 新菜单研究 ≠ 用户附加的 a7c 老菜单工程**
+
+## ① 来源核对
+用户附加的 `a7c-qemu-main.zip` README 明确写的是：
+
+```text
+A7C QEMU（ILCE-7C 2.03）
+```
+
+其 `source/ui/ui-observe.c` 是另一套旧 A7C 视图管理器方案：
+
+```text
+ViewBase::openView/closeView
+pViewManager
+RootSelector/viewUnified2
+```
+
+它不是当前任务要求参考的 `a7c2-re` 新菜单研究实现。
+
+本任务真正参考的是只读路径：
+
+```text
+/root/fw/a7c2re/report/2026-10-17-qemu-native-camera/runtime/analysis/
+```
+
+其中新菜单方案是 `menu-observe.c` 的：
+
+```text
+captured_manager
+create_screen_returned
+manager+0x330/+0x348 guards
+首帧后九参数 apply
+```
+
+## ② 结论
+后续不会把附加 zip 中的旧 A7C `openView`/RootSelector 偏移移植到 M2，也不会把旧工程的 UI/GPE 方案冒充为新菜单生命周期证据。已完成的 M2 输入消费证据仍然有效，但菜单切换和绘制缺口必须继续按 `/root/fw/a7c2re` 新菜单代码闭合。
+
 # ★★★★★★★★★ 2026-11-07 第四百三十三章（接手第 68 轮）：**当前 Image + 当前注入库完成可归因运行，输入消息被两个队列实际消费**
 
 ## ① 构建与绑定
