@@ -39499,3 +39499,294 @@ M2 的 frame/event loop 静态存在，当前关键未知已收窄为：运行�
 ## ② 结论
 本轮没有新的运行时证据，也不能把失败构建的旧 Image 当作当前注入实验结果。后续重建必须先确认 `/tmp` 有足够空间，再记录新 Image SHA 后运行。
 
+# ★★★★★★★★★ 2026-11-07 第四百三十三章（接手第 68 轮）：**当前 Image + 当前注入库完成可归因运行，输入消息被两个队列实际消费**
+
+## ① 构建与绑定
+为避免 `/tmp` 满，当前 initramfs 先在健康的 `/mnt/build` 上生成：
+
+```text
+stage-current/ui.cpio
+SHA256=6fea2c06007d42c9eb6d472440e857d2f802e9147b3db596c4e2cca4e23b1cd9
+```
+
+使用该 staged cpio 重建 Image：
+
+```text
+Image SHA256=dfb0e6e6662e5defcc8402a1429b0214c8728023102ddf5b1c5e4921daad8242
+argtrace.so SHA256=4a10512840af4cfdbb2c4ee76d48b26725f184532d64832f90c4024c83ca5b6c
+QEMU SHA256=8457417745b387eae99f6967f63e9599d23640fdcc80f4fabc01803c9790150a
+```
+
+## ② current68 受控运行
+输出目录：`/mnt/build/m2qemu/out/current68`。
+
+使用：
+
+```text
+systemd-run --unit=zve10-current68 --collect --property=MemoryMax=4G
+```
+
+基线保持：
+
+```text
+createLayer=6
+LAYERVT=18
+ENTRY_LOCK=40 配对
+STARTCMP match=1
+S3REG=0
+```
+
+注入确实执行：
+
+```text
+INJECT_INPUT_QUEUES begin tid=195 cl_n=6
+INJECT_INPUT n=1 qid=0x7a804c frame=0x2003 code=0x8201 sub=3 param=0x1 send=0
+INJECT_INPUT n=2 qid=0x7a0020 frame=0x2003 code=0x8201 sub=3 param=0x1 send=0
+INJECT_INPUT_QUEUES done
+```
+
+更关键的是，两个目标队列都返回了**本轮注入的 52 字节消息**：
+
+```text
+RCVC_RET qid=0x7a804c result=0 msg=... size=52 source=0 bytes=0320018200000000010003000000000000000000000000000000000001000000 tid=127
+RCVC_RET qid=0x7a0020 result=0 msg=... size=52 source=0 bytes=0320018200000000010003000000000000000000000000000000000001000000 tid=129
+```
+
+其中前字段明确对应：
+
+```text
+frame=0x2003
+code=0x8201
+sub=3
+param=1
+```
+
+这第一次闭合了：
+
+```text
+原 OSAL 投递 → 目标 qid 接收返回 → 消息字节与注入内容一致
+```
+
+此前 `send=0` 的证据不足问题已解决。
+
+## ③ 绘制结果
+尽管消息被消费，当前帧仍为：
+
+```text
+FB_SAMPLE nonzero=0 unique=1
+```
+
+没有出现：
+
+```text
+onDrawNotice
+GRM_gpermFillrect
+GRM_gpermRectblit
+```
+
+因此输入链已打通，但尚未触发新菜单绘制。该结果是真实进展，不是亮屏完成。
+
+QEMU 已收尾，实例数 0。
+
+# ★★★★★★★★★ 2026-11-07 第四百三十三章（接手第 68 轮）：**输入链首次完全闭合：current68 真实消费注入消息**
+
+## ① 绑定与运行
+为避免 `/tmp` 满，本轮把当前 initramfs staged 到 `/mnt/build/m2qemu/stage-current/ui.cpio`，并以它重建 Image；所有 SHA 已写入：
+
+```text
+Image   dfb0e6e6662e5defcc8402a1429b0214c8728023102ddf5b1c5e4921daad8242
+argtrace 4a10512840af4cfdbb2c4ee76d48b26725f184532d64832f90c4024c83ca5b6c
+QEMU    8457417745b387eae99f6967f63e9599d23640fdcc80f4fabc01803c9790150a
+cpio    6fea2c06007d42c9eb6d472440e857d2f802e9147b3db596c4e2cca4e23b1cd9
+```
+
+受控运行目录：`/mnt/build/m2qemu/out/current68`，命令使用 `systemd-run --unit=zve10-current68 --collect --property=MemoryMax=4G`。
+
+## ② 基线与注入
+
+```text
+createLayer=6
+LAYERVT=18
+ENTRY_LOCK=40 配对
+STARTCMP match=1
+S3REG=0
+```
+
+注入日志：
+
+```text
+INJECT_INPUT_QUEUES begin tid=195 cl_n=6
+INJECT_INPUT n=1 qid=0x7a804c frame=0x2003 code=0x8201 sub=3 param=0x1 send=0
+INJECT_INPUT n=2 qid=0x7a0020 frame=0x2003 code=0x8201 sub=3 param=0x1 send=0
+INJECT_INPUT_QUEUES done
+```
+
+## ③ 决定性消费证据
+两个目标接收线程均返回了与本轮注入完全一致的 52-byte message：
+
+```text
+qid=0x7a804c result=0 size=52 bytes=0320018200000000010003000000000000000000000000000000000001000000 tid=127
+qid=0x7a0020 result=0 size=52 bytes=0320018200000000010003000000000000000000000000000000000001000000 tid=129
+```
+
+字节字段对应：
+
+```text
+frame=0x2003
+code=0x8201
+sub=3
+param=1
+```
+
+这闭合了：
+
+```text
+原 OSAL 投递 → qid 接收 → size=52 → message body 与注入匹配
+```
+
+这是目前最强的运行时输入证据；此前只有 `send=0`，本轮首次证明实际消费。
+
+## ④ 绘制结果与剩余缺口
+尽管消息被消费，仍观察到：
+
+```text
+FB_SAMPLE nonzero=0 unique=1
+```
+
+且没有新的 `onDrawNotice`/`GRM_gpermFillrect`/`GRM_gpermRectblit`。`notifyDraw` 只出现此前已有的两次，`processEvent` 导出插桩没有产生日志；因此剩余缺口从“输入是否到达”缩小到“InfraInput 消费后是否有更高层事件转发/当前 UI loop 是否实际进入”。
+
+本轮没有声称亮屏。QEMU 已收尾，实例数 0。
+
+# ★★★★★★★★★ 2026-11-07 第四百三十三章（接手第 68 轮）：**输入链首次完全闭合：current68 真实消费注入消息**
+
+## ① 绑定与运行
+为避免 `/tmp` 满，本轮把当前 initramfs staged 到 `/mnt/build/m2qemu/stage-current/ui.cpio`，并以它重建 Image；所有 SHA 已写入：
+
+```text
+Image   dfb0e6e6662e5defcc8402a1429b0214c8728023102ddf5b1c5e4921daad8242
+argtrace 4a10512840af4cfdbb2c4ee76d48b26725f184532d64832f90c4024c83ca5b6c
+QEMU    8457417745b387eae99f6967f63e9599d23640fdcc80f4fabc01803c9790150a
+cpio    6fea2c06007d42c9eb6d472440e857d2f802e9147b3db596c4e2cca4e23b1cd9
+```
+
+受控运行目录：`/mnt/build/m2qemu/out/current68`，命令使用 `systemd-run --unit=zve10-current68 --collect --property=MemoryMax=4G`。
+
+## ② 基线与注入
+
+```text
+createLayer=6
+LAYERVT=18
+ENTRY_LOCK=40 配对
+STARTCMP match=1
+S3REG=0
+```
+
+注入日志：
+
+```text
+INJECT_INPUT_QUEUES begin tid=195 cl_n=6
+INJECT_INPUT n=1 qid=0x7a804c frame=0x2003 code=0x8201 sub=3 param=0x1 send=0
+INJECT_INPUT n=2 qid=0x7a0020 frame=0x2003 code=0x8201 sub=3 param=0x1 send=0
+INJECT_INPUT_QUEUES done
+```
+
+## ③ 决定性消费证据
+两个目标接收线程均返回了与本轮注入完全一致的 52-byte message：
+
+```text
+qid=0x7a804c result=0 msg=... size=52 bytes=0320018200000000010003000000000000000000000000000000000001000000 tid=127
+qid=0x7a0020 result=0 msg=... size=52 bytes=0320018200000000010003000000000000000000000000000000000001000000 tid=129
+```
+
+字节字段对应：
+
+```text
+frame=0x2003
+code=0x8201
+sub=3
+param=1
+```
+
+这闭合了：
+
+```text
+原 OSAL 投递 → qid 接收 → size=52 → message body 与注入匹配
+```
+
+这是目前最强的运行时输入证据；此前只有 `send=0`，本轮首次证明实际消费。
+
+## ④ 绘制结果与剩余缺口
+尽管消息被消费，仍观察到：
+
+```text
+FB_SAMPLE nonzero=0 unique=1
+```
+
+且没有新的 `onDrawNotice`/`GRM_gpermFillrect`/`GRM_gpermRectblit`。`notifyDraw` 只出现此前已有的两次，`processEvent` 导出插桩没有产生日志；因此剩余缺口从“输入是否到达”缩小到“InfraInput 消费后是否有更高层事件转发/当前 UI loop 是否实际进入”。
+
+本轮没有声称亮屏。QEMU 已收尾，实例数 0。
+
+# ★★★★★★★★★ 2026-11-07 第四百三十四章（接手第 70 轮）：**修正 staged Image 归因，准备 source=0x92840747 的可靠 A/B**
+
+## ① 之前的归因问题
+- 检查发现 kernel `.config` 在部分运行中仍指向旧 `/mnt/build/m2qemu/work/ui.cpio.m2`，导致 staged init/argtrace 改动没有进入 Image。
+- 本轮已明确把 `.config` 指向 `/mnt/build/m2qemu/stage-current/ui.cpio`，并重新完成 kernel build；之前的 staged 构建已因此被旧配置覆盖，不能直接使用其 SHA 做 source A/B 归因。
+- 当前 source-A/B init 明确写入 `INJECT_INPUT_SOURCE=0x92840747`，这是按 a7c2 `inject-cp-event.c`/`menu-observe.c` 对照的 source。
+
+## ② 当前状态
+- 已重新生成 staged cpio 并成功重建 Image；下一步必须以该新 Image SHA 运行，并同时检查 `INJECT_INPUT_QUEUES` 与 `RCVC_RET` 的 52-byte body。
+- 未运行该新 Image 前，不对 source A/B 下结论。
+
+# ★★★★★★★★★ 2026-11-07 第四百三十五章（接手第 70 轮）：**source=0x92840747 运行已绑定并消费注入消息，但未触发绘制**
+
+## ① 绑定
+修正 kernel config 后重新生成 staged cpio 并重建 Image：
+
+```text
+Image   ff78ce7190e708f0a5cc2a22b6f4d05d1a38ea470a547e21ac307d5850e7f92f
+cpio    9902977820d458409dc52adbbc3ae13779414fb54dd88bdecf2da26f2f1bfcdb
+argtrace b15bdb105f10c6f6caf83aaa8d52359e3e2ca64403ff0eb7d703f629ea6cc3718
+```
+
+## ② source928fix 受控运行
+输出目录：`/mnt/build/m2qemu/out/source928fix`。
+
+```text
+systemd-run --unit=zve10-source928fix --collect --property=MemoryMax=4G
+```
+
+基线：
+
+```text
+createLayer=6
+LAYERVT=18
+STARTCMP match=1
+S3REG=0
+```
+
+注入执行并完成接收：
+
+```text
+INJECT_INPUT_QUEUES begin tid=195 cl_n=6
+INJECT_INPUT n=1 qid=0x7a804c frame=0x2003 code=0x8201 sub=3 param=0x1 send=0
+INJECT_INPUT n=2 qid=0x7a0020 frame=0x2003 code=0x8201 sub=3 param=0x1 send=0
+INJECT_INPUT_QUEUES done
+```
+
+两个 qid 都收到本轮 52-byte body：
+
+```text
+bytes=0320018200000000010003000000000000000000000000000000000001000000
+```
+
+## ③ 结果
+source A/B 已真正运行并完成消费，但仍为：
+
+```text
+FB_SAMPLE nonzero=0 unique=1
+```
+
+没有新的 `onDrawNotice`/GRM 绘制或合格 framebuffer。source 从 `0x2003` 改为参考的 `0x92840747` 没有改变当前绘制结局；当前缺口不在消息是否到达，而在消费后的高层事件/绘制生命周期。
+
+QEMU 已收尾，实例数 0。
+
