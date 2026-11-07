@@ -39920,6 +39920,51 @@ STOP_SENSER sent
 
 这不是 agent 已监听或未监听的结论，因为 USB 大容量模式本身会让 WiFi 断开。下一步必须由使用者拔掉 USB，等待 10–30 秒，再重新 ping；本轮没有写 `/etc/ld.so.preload`，没有持久写入。
 
+# ★★★★★★★★★ 2026-11-07 第四百四十一章（实体机）：**按 agent_v14 源码定位 watchdog 武装开关，发送 unbind 载荷后设备仍未回到总线**
+
+## ① 源码级根因
+`oss/tools/payload/vendor/agent_v14.so` 对应源码 `_archive/dirs/agent/agent_v14.c` 中：
+
+```c
+static void watchdog(void){
+    if(!have(BINDF)) return;              /* /log/zv1f_ui/bind.txt */
+    for(int i=0;i<9;i++){ if(ui_running()) return; sleep(10); }
+    apply_binds(0); unlink(BINDF); sync();
+    system("/bin/busybox reboot -f");
+}
+```
+
+即只要 `/log/zv1f_ui/bind.txt` 存在，agent 加载后就会扫描 UI，失败则强制重启。这与“一注入就重启”的现象一致，属于开关被武装，而不是 agent ABI 问题。
+
+agent 本体 ABI 已核验：仅 `NEEDED libc.so.6`，最高需求 `GLIBC_2.4`，与相机 glibc 2.11 相符。
+
+## ② 已做的只读/最小操作
+- 新写并编译 `src/payload_unbind.c` → `payload_unbind.so`（5696 B）：
+  - `-nostdlib` 纯 syscall；
+  - `readelf -d` 无 `NEEDED`；
+  - 无 `UND` 符号；
+  - 有 `.init_array`。
+- 该载荷只做：`unlink("/log/zv1f_ui/bind.txt")`、重建 `safemode`、把结果写 `/log/unbind_result.txt` 与 `/setting/unbind_result.txt`。
+- 通过既有 Jiritsu 通道发送到 `/tmp/jiritsu/libJit.so`：
+
+```text
+SET_FILE_PATH code=0 body=00000000
+SET_FILE2 code=0 body=00000000 status=0x00000000 (OK)
+```
+
+- 未写 `/etc/ld.so.preload`，未改 `/usr`，未刷固件。
+
+## ③ 当前设备状态（未闭合）
+注入后连续 60 秒以上轮询：
+
+```text
+lsusb 中无 Sony 设备
+10.42.0.158 无 ICMP 响应
+```
+
+因此目前无法确认 unbind 是否执行、`bind.txt` 是否已删除。设备未回到 USB 总线，需要使用者现场确认相机是否重启完成并重新进入 `054c:0d95`，才能继续只读核验。
+
+
 ## ② 结论
 staged archive 的 payload 归因已闭合，但当前 Image 仍需在同一 cpio source 配置下重新生成后才能宣称包含这版 payload。此前 source/观察结论只承认同时绑定 Image、cpio、argtrace SHA 的运行。
 
