@@ -39488,7 +39488,7 @@ M2 的 frame/event loop 静态存在，当前关键未知已收窄为：运行�
 
 合格 framebuffer 仍为 0；QEMU 实例为 0。
 
-补充：gotobs71 运行把只读 `GOT_SLOT processEvent` 加入源码后完成了新 Image 绑定，但日志仍未出现该 slot 行，说明 `report_got_slots()` 的实际调用点/产物路径还需单独核验；不能把“未出现”解释成 PLT0。
+补充：gotobs76 日志实际出现 `GOT_ENTER/GOT_BASE` 与三项旧 slot（site1/createLayer/osal_rcv_msg_tmo），但没有新增 `processEvent` 行；这说明当前运行产物/构建时源码仍存在版本归因疑点，不能把缺失行解释成 processEvent=PLT0。后续须以 cpio 内 argtrace bytes 和 Image 同轮绑定复核。
 
 # ★★★★★★★★★ 2026-11-07 第四百三十八章（接手第 76 轮）：**GOT 只读观测绑定运行仍未出现 processEvent 槽记录**
 
