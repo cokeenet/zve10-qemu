@@ -39825,6 +39825,10 @@ FB_SAMPLE nonzero=0 unique=1
 
 没有新的 `onDrawNotice`/GRM 绘制或合格 framebuffer。source 从 `0x2003` 改为参考的 `0x92840747` 没有改变当前绘制结局；当前缺口不在消息是否到达，而在消费后的高层事件/绘制生命周期。
 
+## ④ 下一步的低风险观测
+- 当前 `argtrace.c` 已增加只读 `GOT_SLOT processEvent (JUMP_SLOT)` 报告项，复用现有 `report_got_slots()`，不替换槽、不改变控制流。
+- 下一次绑定当前 Image 的运行可区分：processEvent 槽是否仍为 PLT0、已解析实现，及导出 hook 是否有运行时命中；不再仅凭历史 `UXLOOP` 空日志判断。
+
 补充：`osal_get_msg_src` 观测值仍为 `0`，因此 source 字段本身不能作为当前 ABI 的可靠证据；决定性证据是 size=52 且 body 字节完全匹配注入 frame/code/sub/param。
 QEMU 已收尾，实例数 0。
 
