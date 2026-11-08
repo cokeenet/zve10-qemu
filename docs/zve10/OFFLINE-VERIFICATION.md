@@ -142,3 +142,28 @@ node is at index 6; if the menu layout differs it logs
 
 This is why nothing happens at boot: the entry appears when the menu is built,
 not when the library loads.
+
+## libObj.so really does call dlopen, and the override wins
+
+`libObj.so` carries one `R_ARM_JUMP_SLOT` relocation at `0x013D9A44` against
+the undefined symbol `dlopen`, so its `dlopen@plt` calls go through the
+dynamic linker rather than being resolved at link time. That is the entry
+point the override needs.
+
+The override is chosen, not just present:
+
+| | symbol | size |
+|---|---|---|
+| libnewmenu.so | `dlopen@@GLIBC_2.4` | 888 B (real implementation) |
+| libdl.so.2 | `dlopen@@GLIBC_2.4` | 60 B (thunk) |
+
+Both are the default version of `GLIBC_2.4`, which is what libObj.so asks
+for, and `LD_PRELOAD` places libnewmenu.so ahead of libdl in the global
+scope, so the first definition found is ours.
+
+The string `viewUnified2.so` sits at `vaddr 0xE4D402` in libObj.so, directly
+followed by `initializeViewConfig`, which is consistent with the view library
+being opened from that code path. No literal in the file points at that
+address, so the reference is PC-relative or computed, which is why the
+override matching on the path string is more robust than hooking a fixed
+call site.
