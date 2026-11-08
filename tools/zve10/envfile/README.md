@@ -89,3 +89,27 @@ nothing on the boot path is modified.
   after the function returns.
 - The file is read once, at init time. Changing it takes effect on the next
   boot.
+
+
+## The gate in front of it: /setting/mode/dmode
+
+`set_oreore_env` is not called unconditionally. main does:
+
+```
+0x9B78  bl check_oreore2        -> check_mode_file
+0x9B7C  ldr r3, [0x9D60]        -> .bss flag at 0x14868
+0x9B7E  ldr r3, [r3]
+0x9B80  cbz r3, 0x9B86          -> skip if zero
+0x9B82  bl set_oreore_env
+```
+
+`check_mode_file` at `0x93B0` sets that flag to 1 at `0x9404`, but only after
+`open("/setting/mode/dmode")` succeeds at `0x93CC` (path literal `0x0A5BD`).
+If the open fails it jumps to `0x947C`, which returns -1 without touching the
+flag -- and then `.bss` is still zero and `set_oreore_env` is skipped
+entirely.
+
+On a normal camera `/setting/mode/dmode` exists and holds `3`, so the gate is
+open. `deploy.sh` checks for it anyway and creates it with `3` if it is
+missing, since losing the env.txt injection to a missing two-byte file would
+be a confusing way to fail.

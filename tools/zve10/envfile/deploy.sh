@@ -32,14 +32,25 @@ run chmod 755 "$LIB_DST"
 echo "已复制到 $LIB_DST"
 run md5sum "$LIB_DST"
 
-# 2. 写 env.txt
+# 2. 确保 /setting/mode/dmode 存在
+#    init 的 check_mode_file 打不开它会跳过 set_oreore_env，
+#    那样 env.txt 就白写了。默认值 "3" 是原厂正常模式。
+DMODE="/setting/mode/dmode"
+if [ ! -f "$DMODE" ]; then
+    echo "$DMODE 不存在，创建为 \"3\"（原厂默认）"
+    run mkdir -p /setting/mode
+    printf '3' > "$DMODE"
+fi
+echo "dmode = $(run cat "$DMODE" 2>/dev/null)"
+
+# 3. 写 env.txt
 printf 'LD_PRELOAD=%s\n' "$LIB_DST" > "$ENV"
 run sync
 echo
 echo "已写 $ENV:"
 run cat "$ENV" | while read line; do echo "  $line"; done
 
-# 3. 检查 /setting 可写
+# 4. 检查 /setting 可写
 echo
 echo "检查 /setting 挂载:"
 run cat /proc/mounts | run grep ' /setting '
