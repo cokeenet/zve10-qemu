@@ -11,6 +11,8 @@ set -euo pipefail
 
 NAME="${1:?需要实验名，如 vfat-mmap}"
 TIMEOUT="${2:-180}"
+SMP="${SMP:-4}"
+UART="${UART:-3}"
 
 QEMU=/mnt/build/m2qemu/qsrc/build/qemu-system-arm
 KERNEL=/mnt/build/m2qemu/work/kbuild-ui2/arch/arm/boot/Image
@@ -33,9 +35,9 @@ systemd-run --unit="$UNIT" --collect --no-block \
   --property=StandardError="file:$OUT/qemu.err" \
   --property=StandardOutput="file:$OUT/qemu.out" \
   "$QEMU" \
-  -M zve10 -cpu cortex-a9 -smp 4 -m 1024 \
+  -M zve10 -cpu cortex-a9 -smp "$SMP" -m 1024 \
   -kernel "$KERNEL" \
-  -append 'console=ttyAM0,115200n8 cfg.uart=3 mem=1G@0 memrsv=0x1A5E000@0x02E68000 memrsv=128M@0x20000000:uc rdinit=/init loglevel=8' \
+  -append "console=ttyAM0,115200n8 cfg.uart=$UART mem=1G@0 memrsv=0x1A5E000@0x02E68000 memrsv=128M@0x20000000:uc rdinit=/init loglevel=8" \
   -display none -serial "file:$OUT/serial0.log" -serial "file:$OUT/serial1.log" \
   -monitor none -no-reboot
 
