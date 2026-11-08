@@ -93,3 +93,52 @@ newline, empty file. All behave as the binary would.
 - whether viewUnified2.so is loaded at all in a real UI session (QEMU never
   reaches it)
 - whether the hooks produce a menu entry
+
+## Hook machinery
+
+`ne_hook` patches 8 or 10 bytes depending on the target's alignment, and
+`ne_jump` produces exactly that many:
+
+```c
+ne_jump(where, target):
+    literal = (where + 7) & ~3;
+    pc      = (where + 4) & ~3;
+    LDR.W PC, [PC, #(literal - pc)]     ; 4 bytes at where
+    if (literal != where + 4) NOP       ; 2 bytes, alignment fix-up
+    *(uint32_t *)literal = target       ; 4 bytes
+    return literal + 4 - where;
+```
+
+| hook | address | align | bytes reserved | bytes written |
+|---|---|---|---|---|
+| CautionConfig init | `0xB8DFFA` | 2 | 10 | 10 |
+| viewUnified2 populate | `0x3014F0` | 0 | 8 | 8 |
+| viewUnified2 main | `0x2FCCC0` | 0 | 8 | 8 |
+| viewUnified2 row | `0x862130` | 0 | 8 | 8 |
+
+The immediate is 0 for the aligned cases and 4 for the misaligned one, well
+inside the LDR.W literal range. The original 12 bytes are copied to a
+trampoline that ends with a jump back to `address + 12`, so the patched
+prologue is not lost.
+
+## Where the entry actually gets added
+
+`ne_init_wrapper` only appends a row when the caller is `views_base +
+0x301921`, so it depends on viewUnified2.so being loaded. On this firmware
+`libObj.so` is the only thing carrying the string `viewUnified2`, so the chain
+is:
+
+```
+libObj.so loads            -> object_base known
+user opens the menu        -> libObj dlopens viewUnified2.so
+our dlopen hook sees it    -> views_base known, 4 hooks installed
+CautionConfig.so arrives   -> (as a DT_NEEDED of viewUnified2)
+ne_init_wrapper fires      -> ne_add_row
+```
+
+`ne_populate_wrapper` then asserts the page has exactly 6 entries and the new
+node is at index 6; if the menu layout differs it logs
+`NE_ERROR phase=initialized_path` rather than corrupting anything.
+
+This is why nothing happens at boot: the entry appears when the menu is built,
+not when the library loads.
