@@ -201,3 +201,36 @@ process. Putting the chain together:
 The unknowns are therefore narrower than they look: the only untested link is
 whether the environment reaches im.elf on hardware, which is what
 `/setting/env.txt` is for.
+
+## What ne_add_row refuses to do without
+
+`ne_add_row` is deliberately narrow. Before touching anything it checks:
+
+```c
+version->properties->last == 6
+rec[0..5] match keys {0,6,11,12,14,41}, kinds {0,0,1,1,1,1},
+             values {0x0204e12b,0x0204e2c3,0,3,0xde,0x5c}
+version->vptr == ne_caution + 0xfab968
+parent->vptr  == version->vptr
+ne_find_symbol("_Znaj")               /* operator new[] */
+parent->children gets 5 copied entries and the new node at [5]
+parent->count goes 5 -> 6
+```
+
+Spot-checked against this firmware:
+
+| item | result |
+|---|---|
+| `clone` at `0xB8EAFD` | `b505 4600 af28 ...` Thumb prologue |
+| `construct_properties` at `0xB8ED3D` | `b500 af80 e806 ...` Thumb prologue |
+| `cmnViewSettingNodeRootSetupVersion` | present, 40-byte OBJECT, `.bss` (slice 22) |
+
+The symbol lives in `.bss`, so there is nothing to see in the file: it is
+populated at run time and `dlsym` hands back live data. `0xFAB968` is the same
+kind of thing -- a vtable pointer that is zero in the file and valid once the
+library is loaded. Neither can be checked statically, which is why the checks
+above are written to fail closed: every one of them returns a negative code
+rather than proceeding.
+
+Every failure path returns `-1` through `-6` and logs an `NE_ERROR` line, so a
+layout mismatch shows up as a specific error rather than memory corruption.
