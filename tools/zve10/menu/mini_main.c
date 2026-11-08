@@ -100,6 +100,29 @@ static void nm_try_install(void);
  *
  * 用 .symver 把实现函数改名导出，避免与编译器内建声明冲突。
  */
+/* 原版 dlopen 的指针（绕过我们自己的 hook）。
+ * 定义在 nm_dlopen_impl 之前，供诊断模式使用。
+ */
+static void *(*nm_real_dlopen_ptr)(const char *, int);
+
+static void *nm_real_dlopen(const char *path, int flags)
+{
+    if (!nm_real_dlopen_ptr) {
+        nm_real_dlopen_ptr = (void *(*)(const char *, int))
+                             dlvsym(RTLD_NEXT, "dlopen", "GLIBC_2.4");
+        if (!nm_real_dlopen_ptr)
+            nm_real_dlopen_ptr = (void *(*)(const char *, int))
+                                 dlsym(RTLD_NEXT, "dlopen");
+        if (!nm_real_dlopen_ptr) {
+            void *hdl = dlopen("libdl.so.2", RTLD_NOW | RTLD_NOLOAD);
+            if (hdl) nm_real_dlopen_ptr = (void *(*)(const char *, int))
+                                          dlsym(hdl, "dlopen");
+        }
+    }
+    if (!nm_real_dlopen_ptr) return NULL;
+    return nm_real_dlopen_ptr(path, flags);
+}
+
 void *nm_dlopen_impl(const char *path, int flags);
 __asm__(".symver nm_dlopen_impl,dlopen@@GLIBC_2.4");
 void *nm_dlopen_impl(const char *path, int flags)
@@ -181,6 +204,13 @@ void *nm_dlopen_impl(const char *path, int flags)
 
     if (handle && path && strstr(path, "viewUnified2.so")) {
         nm_log("NM MATCH viewUnified2\n");
+        /* ★ 关键：ne_find_symbol() 依赖 ne_view_handle，
+         * 不设它的话 ne_add_row 里所有 ne_find_symbol 调用都返回 NULL，
+         * 于是第一道检查 (version->properties->last != 6) 直接 return -1。
+         * 这就是 NE_VERSION node=0 / NE_ERROR status=-1 的原因。
+         */
+        ne_view_handle = handle;
+        nm_log("NM ne_view_handle=%p\n", handle);
         void *factory = dlsym(handle, "ViewRootSelectorToInstance");
         Dl_info info;
         if (factory && dladdr(factory, &info) && info.dli_fbase) {
@@ -605,6 +635,31 @@ static void nm_boot(void)
         nm_log("NM installed at ctor\n");
     } else {
         nm_log("NM waiting for dlopen (no timer, hook-driven)\n");
+
+        /* ★ 诊断模式：/z_force 存在时，主动 dlopen viewUnified2.so，
+         * 让 4 个 hook 有机会装上。
+         *
+         * 用途：QEMU 里 CP 初始化不完整，UI 走不到加载视图库那一步，
+         * 导致 hook 永远装不上、无法验证 ne_add_row 逻辑。
+         * 这个开关让库自己拉起来，绕过 CP 依赖。
+         *
+         * 真机上不需要这个开关（UI 会自己加载）。
+         */
+        if (access("/z_force", F_OK) == 0) {
+            nm_log("NM FORCE: /z_force present, dlopening viewUnified2.so\n");
+            void *h = nm_real_dlopen("viewUnified2.so", RTLD_NOW | RTLD_GLOBAL);
+            nm_log("NM FORCE: viewUnified2 handle=%p\n", h);
+            if (h) {
+                void *ctor = dlsym(h, "_ZN18CmnViewSettingNodeC1EPPS_iPK24CmnViewSettingProperties");
+                nm_log("NM FORCE: caution ctor=%p\n", ctor);
+                void *factory = dlsym(h, "ViewRootSelectorToInstance");
+                nm_log("NM FORCE: ViewRootSelectorToInstance=%p\n", factory);
+            }
+            nm_try_install();
+            nm_log("NM FORCE: after try_install installed=%d modules=%d caution=%#lx views=%#lx\n",
+                   nm_installed, ne_modules_installed,
+                   (unsigned long)ne_caution, (unsigned long)views_base);
+        }
     }
 }
 
