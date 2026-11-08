@@ -14,6 +14,8 @@
  */
 #define _GNU_SOURCE
 #include <dlfcn.h>
+#include <signal.h>
+#include <sys/time.h>
 #include <errno.h>
 #include <link.h>
 #include <pthread.h>
@@ -88,7 +90,18 @@ static void nm_try_install(void);
  *   于是进程内所有 dlopen 调用都先落到这里。
  *   我们用 dlvsym(RTLD_NEXT, ...) 取回真正的实现，转发后检查 path。
  */
-void *dlopen(const char *path, int flags)
+/* ★ 必须导出为 dlopen@GLIBC_2.4。
+ *
+ * 相机固件链接的是 dlopen@@GLIBC_2.4（见 libdl-2.11.2.so 的 dynsym）。
+ * ld.so 解析带版本的重定位时只接受【同版本】的定义；一个无版本标记的
+ * dlopen 会被跳过，调用仍走 libdl.so.2。这就是真机上一条 NM dlopen
+ * 都没有的原因。
+ *
+ * 用 .symver 把实现函数改名导出，避免与编译器内建声明冲突。
+ */
+void *nm_dlopen_impl(const char *path, int flags);
+__asm__(".symver nm_dlopen_impl,dlopen@@GLIBC_2.4");
+void *nm_dlopen_impl(const char *path, int flags)
 {
     static void *(*native_dlopen)(const char *, int);
 
@@ -171,10 +184,19 @@ static void nm_try_install(void)
      */
     if (nm_installed || !object_base) return;
 
+    /* ---- CautionConfig.so 的基址和版本指纹 ----
+     *
+     * CautionConfig.so 是被 libObj.so 用字符串 "CautionConfig.so" 运行时 dlopen 的
+     * （见 libObj.so 的 .rodata：initializeCautionConfig / getCautionConfig /
+     *  terminateCautionConfig / "CautionConfig.so"）。
+     *
+     * 它不走 dl_iterate_phdr，所以我们用 dlsym(RTLD_DEFAULT) 直接找符号。
+     * 找不到就说明它还没被加载，稍后再试（watcher 会继续轮询）。
+     */
     void *sym = dlsym(RTLD_DEFAULT,
         "_ZN18CmnViewSettingNodeC1EPPS_iPK24CmnViewSettingProperties");
     if (!sym) {
-        nm_log("NM skip: caution symbol not found\n");
+        nm_log("NM wait: CautionConfig not loaded yet\n");
         return;
     }
 
@@ -185,17 +207,27 @@ static void nm_try_install(void)
         return;
     }
     uintptr_t caution = (uintptr_t)di.dli_fbase;
-    uintptr_t delta = ((uintptr_t)sym & ~(uintptr_t)1) - caution;
 
-    nm_log("NM caution sym=%p base=%#lx delta=%#lx file=%s\n",
-           sym, (unsigned long)caution, (unsigned long)delta,
+    /* ★ 上游用的指纹值是 0xb8eb21 = 0xb8eb20 | 1（Thumb 位）。
+     *   dlsym 返回的指针本身通常已带 Thumb 位，但 ELF 的 st_value 也带，
+     *   所以这里【不要】先 & ~1，否则永远差 1。
+     */
+    uintptr_t sym_off = (uintptr_t)sym - caution;          /* 可能带 Thumb 位 */
+    uintptr_t sym_off_even = (uintptr_t)sym & ~(uintptr_t)1;
+    sym_off_even -= caution;                                /* 去掉 Thumb 位 */
+
+    nm_log("NM caution sym=%p base=%#lx off=%#lx off_even=%#lx file=%s\n",
+           sym, (unsigned long)caution,
+           (unsigned long)sym_off, (unsigned long)sym_off_even,
            di.dli_fname ? di.dli_fname : "?");
 
-    /* 版本锚点：构造函数必须在 0xb8eb21 */
-    if (delta != 0xb8eb21) {
-        nm_log("NM skip: caution anchor mismatch (got %#lx)\n", (unsigned long)delta);
+    /* 接受带/不带 Thumb 位两种写法（0xb8eb21 / 0xb8eb20） */
+    if (sym_off != 0xb8eb21 && sym_off_even != 0xb8eb20) {
+        nm_log("NM skip: caution anchor mismatch (off=%#lx even=%#lx want 0xb8eb21)\n",
+               (unsigned long)sym_off, (unsigned long)sym_off_even);
         return;
     }
+    nm_log("NM caution anchor OK\n");
 
     if (ne_hook(caution + 0xb8dffa, ne_pin_init,
                 (void *)ne_init_wrapper, &ne_original_init)) {
@@ -329,39 +361,139 @@ static void nm_watch_parent(pid_t parent)
 }
 
 /* ---- 构造函数 ---- */
-__attribute__((constructor))
-static void nm_boot(void)
+/* ---- 定时器回调：在本进程内轮询 ----
+ *
+ * 不能用 fork：子进程不共享地址空间，改不了父进程的函数指针。
+ * 不能用 pthread_create：在 ld.so 构造函数阶段会死锁（QEMU 实测挂死）。
+ *
+ * 用 setitimer(ITIMER_REAL) + SIGALRM：信号处理函数在【本进程】里执行，
+ * 能直接改函数指针，也没有线程/栈的问题。
+ */
+static volatile int nm_poll_ticks = 0;
+
+static void nm_on_alarm(int sig)
 {
-    /* ★ 锁只用来决定"谁来装 hook"，不能让锁失败导致整个库失效。
-     *
-     * 每个加载本库的进程都会导出 dlopen 覆盖——这是好事，
-     * 因为不管是 bootin.elf 还是 im.elf（还是它们的子进程）先加载 libObj.so，
-     * 都需要 hook 生效。锁只用来避免重复安装和重复 fork watcher。
-     */
-    /* ★ 不能用"抢锁失败就退出"来决定是否安装 hook。
-     *
-     * 每个进程有独立的地址空间，libObj.so 在哪加载，就得在那个进程里
-     * 覆盖对应的函数指针。锁唯一的作用是避免同一个进程里重复 fork watcher。
-     *
-     * 之前的设计让第一个加载本库的进程（往往是 init 或 ash）抢到锁，
-     * 结果真正 dlopen libObj.so 的 bootin.elf / im.elf 反而被挡在门外。
-     */
-    int have_lock = (nm_acquire_lock() == 0);
-    nm_log("NM load pid=%d lock=%d\n", (int)getpid(), have_lock);
+    (void)sig;
+    nm_poll_ticks++;
+
+    if (nm_installed) return;
+
+    /* 每 2 tick（1 秒）真正查一次，避免信号里做太多事 */
+    if ((nm_poll_ticks & 1) != 0) return;
+
     dl_iterate_phdr(nm_phdr, NULL);
     nm_try_install();
 
-    /* ★ 用 fork + /proc/PID/maps，不用线程。
-     *
-     * 为什么不用 pthread_create：
-     *   在 ld.so 的构造函数阶段创建线程会死锁（glibc 的线程栈、
-     *   TLS、以及 bootin.elf 可能还没初始化完 libpthread）。
-     *   QEMU 实测：pthread_create 之后整个 bootin.elf 卡死，serial 停住。
-     *
-     * 为什么 fork 也能看到后续 dlopen：
-     *   子进程虽然不共享地址空间，但可以读【父进程】的 /proc/PID/maps，
-     *   那是内核实时维护的，能看到主进程后来映射的所有库。
-     */
-    nm_log("NM ctor done (no watcher, test build)\n");
-    return;
+    if (!nm_installed && (nm_poll_ticks % 20) == 0 && nm_poll_ticks < 400) {
+        nm_log("NM tick=%d obj=%#lx views=%#lx\n", nm_poll_ticks,
+               (unsigned long)object_base, (unsigned long)views_base);
+    }
 }
+
+static void nm_start_timer(void)
+{
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = nm_on_alarm;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART;
+    if (sigaction(SIGALRM, &sa, NULL) != 0) {
+        nm_log("NM sigaction FAILED errno=%d\n", errno);
+        return;
+    }
+
+    struct itimerval it;
+    memset(&it, 0, sizeof it);
+    it.it_interval.tv_sec  = 0;
+    it.it_interval.tv_usec = 500 * 1000;   /* 每 500 ms */
+    it.it_value = it.it_interval;
+    if (setitimer(ITIMER_REAL, &it, NULL) != 0) {
+        nm_log("NM setitimer FAILED errno=%d\n", errno);
+        return;
+    }
+}
+
+/* ---- 判断本进程是否是 UI 主进程 ----
+ *
+ * 只有在 im.elf 里才需要装 hook。其他进程（init/busybox/wpa_supplicant/...）
+ * 既没有 libObj.so 也没有 CautionConfig.so，给它们起定时器只会
+ * 用 SIGALRM 打断它们的系统调用 —— 实测会导致菜单卡死。
+ */
+static int nm_is_ui_process(void)
+{
+    char buf[128];
+    int fd = open("/proc/self/cmdline", O_RDONLY);
+    if (fd < 0) return 0;
+    int n = read(fd, buf, sizeof buf - 1);
+    close(fd);
+    if (n <= 0) return 0;
+
+    /* cmdline 是 NUL 分隔，第一段是可执行文件路径 */
+    int end = 0;
+    while (end < n && buf[end] != 0) end++;
+    buf[end] = 0;
+
+    return strstr(buf, "im.elf") != NULL;
+}
+
+__attribute__((constructor))
+static void nm_boot(void)
+{
+    /* ★ 关键：只有 UI 主进程才工作。
+     *
+     * 实测过三种轮询方式，都有问题：
+     *   fork          → 子进程改不了父进程的函数指针
+     *   pthread_create→ ld.so 构造函数阶段死锁
+     *   setitimer     → SIGALRM 打断所有进程的系统调用，菜单卡死
+     *
+     * 所以现在：
+     *   1. 先判断是不是 im.elf，不是就立刻返回（零开销、零副作用）
+     *   2. 是的话只在本进程内装 timer
+     */
+    if (!nm_is_ui_process()) return;
+
+    int have_lock = (nm_acquire_lock() == 0);
+    nm_log("NM ui pid=%d lock=%d\n", (int)getpid(), have_lock);
+
+    /* ★ 安全模式：只记录库加载成功，不装任何 hook。
+     *
+     * 用 /z_safe 文件控制（在 initramfs 里，不依赖分区挂载）：
+     *   /z_safe 存在 → 只观测，不改菜单（第一阶段验证用）
+     *   /etc/nm_safe 不存在 → 正常装 hook
+     *
+     * 这样第一次上真机时，如果库有问题至少能看到日志，
+     * 而且不会因为 hook 出错导致 UI 卡死。
+     */
+    if (access("/z_safe", F_OK) == 0) {
+        nm_log("NM SAFE MODE: library loaded OK, hooks DISABLED\n");
+        /* 只做一次库扫描，记录能看到什么 */
+        dl_iterate_phdr(nm_phdr, NULL);
+        nm_log("NM safe-mode object=%#lx views=%#lx\n",
+               (unsigned long)object_base, (unsigned long)views_base);
+        return;
+    }
+
+    /* ★ 只在构造函数里试一次，不装任何定时器。
+     *
+     * 之前用 setitimer(ITIMER_REAL) 每 500ms 发 SIGALRM，
+     * 打断了 im.elf 主线程的系统调用，导致菜单卡死（真机实测）。
+     *
+     * 而 dlopen hook 已经能覆盖所有需要的时机：
+     *   · libObj.so 是运行时 dlopen 的（不在 DT_NEEDED 里）
+     *   · viewUnified2.so / CautionConfig.so 也是
+     * 所以 hook 会在它们加载时自动触发 nm_try_install()。
+     *
+     * 构造函数里只做一次静态扫描（dl_iterate_phdr），
+     * 万一某些库已经在内存里（比如 libc 之后的加载顺序），也能捕获。
+     */
+    dl_iterate_phdr(nm_phdr, NULL);
+    nm_try_install();
+
+    if (nm_installed) {
+        nm_log("NM installed at ctor\n");
+    } else {
+        nm_log("NM waiting for dlopen (no timer, hook-driven)\n");
+    }
+}
+
+
