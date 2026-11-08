@@ -164,6 +164,20 @@ void *nm_dlopen_impl(const char *path, int flags)
             nm_log("NM libObj: cannot resolve base\n");
         }
     }
+    /* ★ CautionConfig.so 加载时必须重试一次。
+     *
+     * 这是最容易漏的一环：libObj.so 通常先加载，那时 CautionConfig 还不在，
+     * nm_try_install() 会返回 "wait"。等 CautionConfig 真的加载进来时，
+     * 如果没有这个分支，就永远没有第二次机会，hook 永远装不上。
+     *
+     * QEMU 日志确认了这个时序：
+     *   NM dlopen ... libObj.so -> NM MATCH libObj -> NM wait: CautionConfig not loaded yet
+     */
+    if (handle && path && strstr(path, "CautionConfig.so")) {
+        nm_log("NM MATCH CautionConfig\n");
+        nm_try_install();
+    }
+
     if (handle && path && strstr(path, "viewUnified2.so")) {
         nm_log("NM MATCH viewUnified2\n");
         void *factory = dlsym(handle, "ViewRootSelectorToInstance");
