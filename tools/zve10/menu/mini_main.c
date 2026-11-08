@@ -342,6 +342,18 @@ static void nm_try_install(void)
      * 少了这一句，hook 装得再好，ne_add_row 也永远不会被调用，
      * 菜单项就不会出现。这是之前一直"装上了但没效果"的根因。
      */
+    /* ★ 同样必须回写 ne_caution。
+     *
+     * ne_add_row 里三处用到它：
+     *   if (version->vptr != ne_caution + 0xfab968) return -3;
+     *   clone                = (void *)(ne_caution + 0xb8eafd);
+     *   construct_properties = (void *)(ne_caution + 0xb8ed3d);
+     *
+     * 这个函数里算的是局部变量 caution，不回写的话 ne_caution 仍是 0，
+     * ne_add_row 要么在 -3 处失败，要么跳到 0xb8eafd 这种裸偏移地址上。
+     */
+    ne_caution = caution;
+
     ne_modules_installed = 1;
 
     nm_installed = 1;
