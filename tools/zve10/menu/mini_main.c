@@ -57,6 +57,7 @@ static void record(const char *key, uintptr_t value)
 
 /* ---- 全局基址（native_entry.inc 要用）---- */
 static int nm_installed;
+static int nm_install_failed;   /* 核心 hook 安装失败，不再重试 */
 
 #include "native_entry.h"
 #include "mini_font.h"
@@ -243,7 +244,7 @@ static void nm_try_install(void)
      * CautionConfig 那个 hook（构造函数 0xb8dffa）挂在 CautionConfig.so 上，
      * 用 dlsym(RTLD_DEFAULT) 找，不依赖任何 base，应当独立生效。
      */
-    if (nm_installed || !object_base) return;
+    if (nm_installed || nm_install_failed || !object_base) return;
 
     /* ---- CautionConfig.so 的基址和版本指纹 ----
      *
@@ -292,7 +293,12 @@ static void nm_try_install(void)
 
     if (ne_hook(caution + 0xb8dffa, ne_pin_init,
                 (void *)ne_init_wrapper, &ne_original_init)) {
-        nm_log("NM skip: caution init hook failed\n");
+        /* 这是最核心的 hook（菜单入口就在这个构造函数里）。
+         * 失败说明指纹或偏移不对，重试也没用 —— 但也不能设 nm_installed，
+         * 否则再也不试。所以标记成永久失败，避免每次 dlopen 都刷日志。
+         */
+        nm_log("NM FATAL: caution init hook failed (anchor or patch mismatch)\n");
+        nm_install_failed = 1;
         return;
     }
     nm_log("NM hooked CautionConfig init\n");
