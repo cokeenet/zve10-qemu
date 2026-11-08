@@ -188,3 +188,43 @@ That is a property of the emulator, not a defect in the injection path. The
 useful conclusion is that QEMU can take this work up to "the library runs in
 im.elf with a resolved libObj base" and no further; the menu has to be checked
 on hardware.
+
+## The CP firmware version mattered: 79 NULL APIs became 22
+
+Every binary in the QEMU rootfs matched the camera except one:
+
+| file | QEMU rootfs | camera | match |
+|---|---|---|---|
+| `usr/lib/libObj.so` | `12cf982d...` | `12cf982d...` | yes |
+| `usr/lib/viewUnified2.so` | `edb07179...` | `edb07179...` | yes |
+| `usr/lib/CautionConfig.so` | `26a5bacb...` | `26a5bacb...` | yes |
+| `usr/bin/im.elf` | `f1c746e3...` | `f1c746e3...` | yes |
+| `usr/bin/bootin.elf` | `d8bfb4f7...` | `d8bfb4f7...` | yes |
+| `usr/kmod/liro.ko` | `972ed597...` | `972ed597...` | yes |
+| `system/av-cam.bin` | `f8a0c402...` 17,195,164 B | `cdcae9d4...` 17,289,388 B | **no** |
+
+The rootfs carried a 94,224-byte older CP firmware. Swapping in the camera's
+copy dropped the missing-API warnings from **79 to 22**:
+
+```
+before:  Warning 130 is NULL! ... Warning 208 is NULL!   (79 lines)
+after:   Warning 139 is NULL! ... Warning 208 is NULL!   (22 lines)
+```
+
+So a good part of what looked like "QEMU lacks hardware" was actually a
+firmware mismatch, and that part is now fixed.
+
+## What the remaining 22 are
+
+They are still hardware the emulator does not have. CP init reaches
+`entry_pre` / `entry_main` and stops there either way, and `viewUnified2.so`
+is never dlopened. Those are genuinely QEMU's limit rather than a version
+problem.
+
+## Lesson for the hardware run
+
+The version pairing between `liro.ko` and `av-cam.bin` is load-bearing. Both
+are stock on this camera and mutually consistent, so hardware is not exposed
+to this failure mode -- but it is worth knowing, because a future CP update
+without the matching loader (or the reverse) would present exactly these
+symptoms.
