@@ -89,3 +89,62 @@ Before this, "the library loads but obj is 0" could not be told apart from
 loads and resolves libObj's base, and the next barrier is CP-dependent. That
 matches the hardware situation, where `/etc/ld.so.preload` was readable and the
 library present but `obj` stayed zero.
+
+## Where exactly it blocks
+
+Reading the tail of the log, the sequence is:
+
+```
+NM dlopen path=libread_refresh.so flags=0x101 -> (nil)
+NM wait: CautionConfig not loaded yet
+----------------------------------------
+LIRO (liro) rev:4-MUSASHI
+Param:adrs=035c6000, debug=1, delay=0
+entry point:635c6000
+Load firmware /system/av-cam.bin to 635c6000
+0 -> 635c6000 : 0 106609c loaded (OK)
+API support list
+  OSAL
+  Backup 2
+Warning 130 is NULL!
+...
+Warning 208 is NULL!
+```
+
+So CP firmware does load (10,660,0x10 bytes to 0x635C6000), and the CP starts
+resolving its host API table, but 79 of the entries the CP asks for are NULL
+in the QEMU host. CP init then stops after `entry_pre` / `entry_main`.
+
+`im.elf` (pid 118) is still alive at that point -- the earlier `ps` shows it
+using 3 seconds of CPU -- it is simply blocked in the CP handshake, which is
+why `viewUnified2.so` is never dlopened and `views_base` never becomes known.
+
+## What the repeated "wait" lines prove
+
+`NM wait: CautionConfig not loaded yet` appears after each dlopen:
+
+```
+NM dlopen path=libJiritsu.so        -> NM wait: CautionConfig not loaded yet
+NM dlopen path=libAtn.so            -> NM wait: CautionConfig not loaded yet
+NM dlopen path=libGetLog.so         -> NM wait: CautionConfig not loaded yet
+NM dlopen path=libread_refresh.so   -> NM wait: CautionConfig not loaded yet
+```
+
+That is the per-dlopen retry doing its job. Without it the first failed attempt
+after libObj was loaded would have been the only attempt, which is the bug
+fixed two rounds ago.
+
+## QEMU's useful limit
+
+QEMU is therefore the right place to check delivery and loading, and the wrong
+place to check whether the menu appears:
+
+| question | QEMU | hardware |
+|---|---|---|
+| does /setting/env.txt reach im.elf | yes | yes, needs the dmode gate |
+| does the library load and log | yes | yes |
+| does the dlopen override fire | yes | yes |
+| is libObj's base resolved | yes (0x97ff000) | expected |
+| is viewUnified2 loaded | **no, CP blocks first** | unknown |
+| do the hooks install | no | unknown |
+| does a menu row appear | no | unknown |
