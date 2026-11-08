@@ -190,6 +190,20 @@ void *nm_dlopen_impl(const char *path, int flags)
             nm_log("NM viewUnified2: no ViewRootSelectorToInstance\n");
         }
     }
+
+    /* ★ 兜底重试：CautionConfig.so 是 viewUnified2.so 的 DT_NEEDED 依赖。
+     *
+     * 它由 libdl 在 dlopen(viewUnified2) 内部递归加载，【不会】再经过本 hook，
+     * 而 viewUnified2.so 本身可能很晚才被 dlopen（QEMU 里全程 0 次）。
+     *
+     * 所以每次 dlopen 结束时都顺手检查一次 CautionConfig 是否已可解析 ——
+     * im.elf 启动阶段会 dlopen 上百个库，总有一次能撞上。
+     * 比定时器安全：不打断系统调用、不起线程、不装信号。
+     */
+    if (!nm_installed && object_base) {
+        nm_try_install();
+    }
+
     return handle;
 }
 
