@@ -1,3 +1,31 @@
+# ZV-E10 库注入：两条路线
+
+## 首选：`/etc/ld.so.preload`（QEMU 验证有效）
+
+```sh
+sh deploy_ldsopreload.sh
+reboot
+```
+
+`/etc/ld.so.preload` 写一行 `/etc/libnewmenu.so`，库放在旁边。**不依赖任何
+环境变量**，只需要 `/etc` 在 `im.elf` 启动前挂载好 —— `init` 在 `0x9B38`
+挂 `/etc`，`im.elf` 到 tick 104 才出现，余量充足。
+
+QEMU 实测（vfat `/etc` 直接挂载）：89 个进程加载成功，包括 pid=126 的 `im.elf`，
+当时 `LD_PRELOAD=<unset>`，说明走的是 `ld.so.preload` 而不是环境变量。
+
+详见 `../../docs/zve10/LDSO-PRELOAD-IS-THE-ROUTE.md`。
+
+## 备选：`/setting/env.txt`（QEMU 验证有效，真机未生效）
+
+下面这份文档描述这条路。它在 QEMU 里端到端通过（`LD_PRELOAD` 和任意自定义
+变量都能到达 `im.elf`），但真机上 `im.elf` 的 `environ` 里没有那条变量。
+它需要四个条件同时成立：`/setting` 按时挂载、`dmode` 门禁打开、
+`set_oreore_env` 被调用、变量能穿过 `bootin` 的 `execve`。
+首选路线一个都不需要。
+
+---
+
 # /setting/env.txt — 原厂预留的环境变量注入点
 
 ## 一句话
