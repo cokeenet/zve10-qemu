@@ -167,3 +167,37 @@ being opened from that code path. No literal in the file points at that
 address, so the reference is PC-relative or computed, which is why the
 override matching on the path string is more robust than hooking a fixed
 call site.
+
+## The libraries the hooks need do load on hardware
+
+Recorded earlier in this work, from `/proc/157/maps` on the running camera:
+
+```
+libObj.so          0x06265000
+libmpr.so          0x07747000
+viewUnified2.so    0x15f88000
+CautionConfig.so   0x16dd8000
+```
+
+`viewUnified2.so` and `CautionConfig.so` are both there. That matters because
+they are absent from the QEMU run -- QEMU halts in the CP handshake before the
+UI reaches the point of loading them -- and it would be easy to read that
+silence as "they never load".
+
+So the two libraries the four native hooks depend on are present in a real UI
+process. Putting the chain together:
+
+| step | evidence |
+|---|---|
+| env.txt reaches im.elf | static + QEMU |
+| library loads into im.elf | QEMU (`NM === boot ... exe=/usr/bin/im.elf`) |
+| dlopen override fires | QEMU (`NM dlopen path=...`) |
+| libObj base resolved | QEMU (`object_base=0x97ff000`) |
+| viewUnified2 loads | **hardware** (`/proc/157/maps` at 0x15f88000) |
+| CautionConfig loads | **hardware** (`/proc/157/maps` at 0x16dd8000) |
+| views_base, hooks install | follows from the two above |
+| menu row appears | hardware only |
+
+The unknowns are therefore narrower than they look: the only untested link is
+whether the environment reaches im.elf on hardware, which is what
+`/setting/env.txt` is for.
