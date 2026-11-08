@@ -148,3 +148,43 @@ place to check whether the menu appears:
 | is viewUnified2 loaded | **no, CP blocks first** | unknown |
 | do the hooks install | no | unknown |
 | does a menu row appear | no | unknown |
+
+## Why the 79 NULL APIs are not fixable here
+
+The messages come from `liro.ko` (65,212 B), which is the CP firmware loader:
+
+```
+liro.ko strings:
+  0x9378  "entry point"
+  0x94B8  "Load firmware"
+  0x953A  "API support list"
+  0x9560  "Warning %d is NULL"
+```
+
+Its own dependency line says:
+
+```
+depends=osal_uipc,backup,osal_utm,dma330
+```
+
+All four of those are loaded in QEMU (`MODULE_END ... status=0`), and
+`dma330` is the stub, which exports exactly two symbols:
+
+```
+dma330_mem_transfer_async   20 B
+dmac_mem_transfer_async     20 B
+```
+
+The real `dma330.ko` on the camera is 256,544 B, so the stub is a placeholder
+that satisfies the module dependency rather than an implementation.
+
+But the NULL entries are not only DMA: liro.ko references 28 distinct
+`osal_*` functions plus CP-side services (image pipeline, sensor, codec, and
+so on). QEMU emulates the CPU, some timers and a UART; it does not emulate the
+CP's hardware blocks. Those entries have no provider to register against, so
+they stay NULL and CP init halts after `entry_main`.
+
+That is a property of the emulator, not a defect in the injection path. The
+useful conclusion is that QEMU can take this work up to "the library runs in
+im.elf with a resolved libObj base" and no further; the menu has to be checked
+on hardware.
