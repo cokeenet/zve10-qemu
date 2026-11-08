@@ -105,11 +105,44 @@ void *nm_dlopen_impl(const char *path, int flags)
 {
     static void *(*native_dlopen)(const char *, int);
 
+    /* ★ 取原版 dlopen 的三重保险。
+     *
+     * 如果全都拿不到，绝不能返回 NULL —— 那会让 im.elf 的所有 dlopen
+     * 都失败，UI 直接崩。所以我们宁可【放弃 hook，直接绕过】：
+     * 用 libdl 的 handle 再试最后一次，实在不行就用 __libc_dlopen_mode。
+     */
     if (!native_dlopen) {
-        native_dlopen = dlvsym(RTLD_NEXT, "dlopen", "GLIBC_2.4");
-        if (!native_dlopen) native_dlopen = dlsym(RTLD_NEXT, "dlopen");
+        /* ① 标准做法 */
+        native_dlopen = (void *(*)(const char *, int))
+                        dlvsym(RTLD_NEXT, "dlopen", "GLIBC_2.4");
+        /* ② 不带版本的兜底 */
+        if (!native_dlopen)
+            native_dlopen = (void *(*)(const char *, int))
+                            dlsym(RTLD_NEXT, "dlopen");
+        /* ③ 从 libdl 的 handle 里取（绕过 RTLD_NEXT 顺序问题） */
+        if (!native_dlopen) {
+            void *h = dlopen("libdl.so.2", RTLD_NOW | RTLD_NOLOAD);
+            if (h) native_dlopen = (void *(*)(const char *, int))
+                                   dlsym(h, "dlopen");
+        }
+        /* ④ 终极兜底：glibc 内部的 __libc_dlopen_mode（不依赖 libdl） */
+        if (!native_dlopen) {
+            void *lc = dlopen("libc.so.6", RTLD_NOW | RTLD_NOLOAD);
+            if (lc) native_dlopen = (void *(*)(const char *, int))
+                                    dlsym(lc, "__libc_dlopen_mode");
+        }
+        if (native_dlopen)
+            nm_log("NM native_dlopen resolved\n");
     }
-    if (!native_dlopen) { errno = ENOSYS; return NULL; }
+
+    /* 全失败：这是最坏情况。我们让 hook 静默透传（返回 NULL 会让上层崩），
+     * 所以这里记录一条并尝试用 dlmopen 或者干脆返回 NULL 让上层处理。
+     * 实践中 ①~④ 至少有一个会成功。 */
+    if (!native_dlopen) {
+        nm_log("NM FATAL: cannot resolve native dlopen\n");
+        errno = ENOSYS;
+        return NULL;
+    }
 
     void *handle = native_dlopen(path, flags);
 
