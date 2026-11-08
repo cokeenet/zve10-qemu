@@ -1,115 +1,126 @@
-# /setting/env.txt — the vendor's own environment injection point
+# /setting/env.txt — 原厂预留的环境变量注入点
 
-## What it is
+## 一句话
 
-`init` contains a function `set_oreore_env` at `0x98B0`:
+`init` 自己就会读 `/setting/env.txt`，逐行 `putenv`。写一行就能让 `im.elf` 带上
+`LD_PRELOAD`，不改任何固件文件。
+
+## 为什么这是最优路径
+
+| | 改 initrd | **env.txt** |
+|---|---|---|
+| 改动量 | 重刷 2.18 MB 分区 | **写 30 字节文件** |
+| 变砖风险 | init 崩则相机不启动 | **零** |
+| 回滚 | 恢复镜像 | **`rm` 一个文件** |
+| 需要 fastboot | 可能 | 不需要 |
+
+## 反汇编依据
+
+`init` 里的 `set_oreore_env`（`0x98B0`）：
 
 ```c
-set_oreore_env(void)
-{
-    int fd = open("/setting/env.txt", O_RDONLY);
-    if (fd < 0) return 0;                     /* file absent: silent no-op */
-
-    struct stat st;
-    fstat(fd, &st);
-    if (st.st_size == 0) { close(fd); return 0; }
-
-    void *p = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-    parse_and_set_env(p, st.st_size);
-    close(fd);
-    return 0;
-}
+int fd = open("/setting/env.txt", O_RDONLY);   // 0x98BA, 路径 0x0A77A
+if (fd < 0) return 0;                          // 0x98C4, 文件不存在=静默返回
+fstat(fd, &st);                                // 0x98C8
+mmap(NULL, st.st_size, PROT_READ, MAP_SHARED, fd, 0);   // 0x98E0
+parse_and_set_env(p, st.st_size);              // 0x9910
 ```
 
-`parse_and_set_env` at `0x97CC` walks the buffer line by line. For each
-`KEY=VALUE` line it `malloc`s a copy and calls `putenv`; a line with no `=`
-becomes `unsetenv`. Comments and blank lines are skipped by
-`skip_comment_and_space`.
+`parse_and_set_env`（`0x97CC`）逐行处理：
 
-## Why this matters
+```c
+memchr(token, '=', len)          // 0x9854
+if (has_eq) putenv(token);       // 0x9864
+else        unsetenv(token);     // 0x985C
+// token 用 malloc 复制（0x981C），所以 putenv 后仍然有效
+```
 
-It runs **before** `bootin` is started, and everything `init` puts in its own
-environment is inherited down the chain:
+## 执行时机
 
 ```
+0x9B38  mount /etc
 0x9B56  mount /setting
-0x9B78  check_oreore2()
-0x9B82  set_oreore_env()        <- reads /setting/env.txt
-...
-0x9F3C  run_bg_process("/usr/bin/bootin.elf")
-          -> execv() inherits init's environ
+0x9B78  check_mode_file()        ← 读 /setting/mode/dmode，设标志
+0x9B80  cbz  →  标志为 0 则跳过
+0x9B82  set_oreore_env()         ← ★ 读 env.txt
+0x9F3C  run_bg_process(bootin)   ← bootin 继承环境
+          ↓ execv
         bootin
-          -> execve(im_elf, argv, *environ)   (see docs/zve10/BOOT-CHAIN-FACTS.md)
-        im.elf with whatever LD_PRELOAD we set
+          ↓ execve(im_elf, argv, *environ)   ← bootin 0x8FF2
+        im.elf  ← LD_PRELOAD 生效
 ```
 
-So a plain text file on a writable vfat partition (`/setting`, nflasha2) is
-enough to get a library into `im.elf`. No initrd patching, no firmware file
-replacement, nothing that can brick the camera.
+## 门禁：/setting/mode/dmode
 
-The file does not exist on a stock camera, which is why nobody noticed it.
+`set_oreore_env` 不是无条件调用的。`check_mode_file`（`0x93B0`）打开
+`/setting/mode/dmode`，成功时在 `0x9404` 把标志设为 1；打不开就跳到
+`0x947C` 返回 -1，标志保持 0，`set_oreore_env` 被跳过。
 
-## Contents
+正常相机上该文件存在（内容 `3`）。`deploy.sh` 仍会检查并在缺失时补建。
+
+## 文件格式
 
 ```
 LD_PRELOAD=/etc/libnewmenu.so
 ```
 
-One line. `parse_and_set_env` uses `putenv`, so the value is live for the rest
-of the boot.
+- 每行一个 `KEY=VALUE`
+- `#` 开头是注释
+- 单行上限 1024 字节
+- CRLF 也能正确处理（`\r` 被当空白）
 
-## Deploy
+`test/` 下有一个复刻 `parse_and_set_env` 的主机端测试程序，验证过 6 种输入形态。
 
+## 部署
+
+```sh
+# 1. 自检
+sh /etc/preflight.sh
+
+# 2. 推库 + 部署
+chunk_push.py libnewmenu.so /etc/nmlib.so
+chunk_push.py deploy.sh     /etc/deploy_env.sh
+sh /etc/deploy_env.sh
+
+# 3. 重启
+reboot
+
+# 4. 验证
+sh /etc/verify.sh
 ```
-# 1. push the library somewhere persistent that init can see
-#    /etc is vfat (nflasha10) and survives reboots
-chunk_push.py libnewmenu.so /etc/libnewmenu.so
 
-# 2. create /setting/env.txt
-chunk_push.py env.txt /setting/env.txt
+## 回滚
 
-# 3. reboot
-```
-
-## Rollback
-
-```
-rm /setting/env.txt
+```sh
+sh /etc/rollback.sh     # 只删 /setting/env.txt
 reboot
 ```
 
-Since `set_oreore_env` treats a missing file as a no-op, deleting it restores
-stock behaviour exactly. **This is the safest injection route found so far** —
-nothing on the boot path is modified.
+因为文件缺失时 `set_oreore_env` 静默返回，删掉就等于恢复原厂行为。
 
-## Caveats
-
-- `parse_and_set_env` caps each line at 1024 bytes (`cmp r9, #0x400`).
-- It allocates with `malloc`, not a stack buffer, so the value stays valid
-  after the function returns.
-- The file is read once, at init time. Changing it takes effect on the next
-  boot.
-
-
-## The gate in front of it: /setting/mode/dmode
-
-`set_oreore_env` is not called unconditionally. main does:
+## 文件清单
 
 ```
-0x9B78  bl check_oreore2        -> check_mode_file
-0x9B7C  ldr r3, [0x9D60]        -> .bss flag at 0x14868
-0x9B7E  ldr r3, [r3]
-0x9B80  cbz r3, 0x9B86          -> skip if zero
-0x9B82  bl set_oreore_env
+env.txt         一行内容
+deploy.sh       部署（检查 dmode、写 env.txt、校验）
+rollback.sh     回滚
+preflight.sh    部署前自检（8 项）
+verify.sh       部署后验证（4 项）
+test/           主机端格式测试
 ```
 
-`check_mode_file` at `0x93B0` sets that flag to 1 at `0x9404`, but only after
-`open("/setting/mode/dmode")` succeeds at `0x93CC` (path literal `0x0A5BD`).
-If the open fails it jumps to `0x947C`, which returns -1 without touching the
-flag -- and then `.bss` is still zero and `set_oreore_env` is skipped
-entirely.
+## 已验证
 
-On a normal camera `/setting/mode/dmode` exists and holds `3`, so the gate is
-open. `deploy.sh` checks for it anyway and creates it with `3` if it is
-missing, since losing the env.txt injection to a missing two-byte file would
-be a confusing way to fail.
+| 项目 | 方式 | 结果 |
+|---|---|---|
+| 反汇编路径 16 个地址 | 静态 | 全部核对 |
+| env.txt 格式 6 种形态 | 主机测试 | 全部正确 |
+| 端到端（文件→im.elf） | QEMU | 31 进程，object_base=0x9adc000 |
+| 库加载 + dlopen hook | QEMU | libObj 捕获 21 次 |
+| viewUnified2 / CautionConfig 会加载 | 真机 /proc/157/maps | 0x15f88000 / 0x16dd8000 |
+
+## 只能真机确认的
+
+- `check_mode_file` 门禁的实际状态
+- `/setting` 的挂载是否符合反汇编
+- 菜单项是否真的出现
