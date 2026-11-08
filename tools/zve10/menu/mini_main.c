@@ -330,9 +330,24 @@ static void nm_try_install(void)
             nm_log("NM warn: string_chars hook failed\n");
     }
 
+    /* ★ 关键：必须同时设置 native_entry.inc 的 ne_modules_installed。
+     *
+     * 这两个是不同的变量：
+     *   nm_installed         —— 控制 nm_try_install 是否还重试
+     *   ne_modules_installed —— 控制 ne_init_wrapper 里的门禁：
+     *
+     *     if (ne_modules_installed && !ne_installed && caller == views_base + 0x301921)
+     *         ne_add_row(root);
+     *
+     * 少了这一句，hook 装得再好，ne_add_row 也永远不会被调用，
+     * 菜单项就不会出现。这是之前一直"装上了但没效果"的根因。
+     */
+    ne_modules_installed = 1;
+
     nm_installed = 1;
-    nm_log("NM installed object=%#lx views=%#lx\n",
-           (unsigned long)object_base, (unsigned long)views_base);
+    nm_log("NM installed object=%#lx views=%#lx modules=%d\n",
+           (unsigned long)object_base, (unsigned long)views_base,
+           ne_modules_installed);
 }
 
 /* ---- 单实例锁 ----
