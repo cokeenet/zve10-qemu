@@ -1,0 +1,2 @@
+# 注释行
+LD_PRELOAD=/etc/a.so
