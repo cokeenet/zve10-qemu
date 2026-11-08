@@ -14,7 +14,7 @@
 
 #define NM_LOG_PATH "/log/newmenu.log"
 
-static int nm_log_budget = 200;      /* 防止写爆 /log */
+static int nm_log_budget = 600;      /* 防止写爆 /log（启动期 dlopen 重试会刷很多行） */
 
 static void nm_log(const char *format, ...)
 {

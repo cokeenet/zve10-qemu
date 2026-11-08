@@ -517,6 +517,24 @@ static void nm_boot(void)
      *   1. 先判断是不是 im.elf，不是就立刻返回（零开销、零副作用）
      *   2. 是的话只在本进程内装 timer
      */
+    /* ★ 启动诊断：把关键环境一次性打进日志。
+     *
+     * 真机只有一次机会看到这些（重启就换新进程），
+     * 而"库进得去但 hook 装不上"这类问题全靠这些信息定位。
+     */
+    {
+        char exe[256];
+        ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
+        if (n > 0) exe[n] = 0; else strcpy(exe, "?");
+
+        const char *envp_ = getenv("LD_PRELOAD");
+        int has_etc_preload = (access("/etc/ld.so.preload", R_OK) == 0);
+
+        nm_log("NM === boot pid=%d exe=%s ===\n", (int)getpid(), exe);
+        nm_log("NM LD_PRELOAD=%s\n", envp_ ? envp_ : "<unset>");
+        nm_log("NM /etc/ld.so.preload readable=%d\n", has_etc_preload);
+    }
+
     if (!nm_is_ui_process()) return;
 
     int have_lock = (nm_acquire_lock() == 0);
