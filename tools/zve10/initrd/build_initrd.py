@@ -121,6 +121,29 @@ def main():
     print()
     print("✓ 输出: %s (%d B)" % (OUT, OUT.stat().st_size))
     print("  md5: %s" % hashlib.md5(OUT.read_bytes()).hexdigest())
+
+    # ★ 最终一致性检查：确认镜像里的 z.so 就是刚编译出来的那个。
+    #   曾经出现过 initrd 里留着旧库、而源码已改的情况，
+    #   直接部署会让上一次修复悄悄失效。
+    lib_md5 = hashlib.md5(LIB.read_bytes()).hexdigest()
+    print()
+    print("═══ 最终校验 ═══")
+    print("  源码库 md5: %s" % lib_md5)
+    r2 = sh(['mount','-o','loop,ro',str(OUT),str(mnt)])
+    if r2.returncode != 0:
+        print("  ✗ 无法挂载输出镜像做校验")
+        return 1
+    try:
+        got = hashlib.md5((mnt / 'z.so').read_bytes()).hexdigest()
+        flag_ok = (mnt / 'z_safe').exists() == (os.environ.get('SAFE_MODE','1') == '1')
+        print("  镜像内 md5: %s" % got)
+        print("  z_safe 与 SAFE_MODE 一致: %s" % ("✓" if flag_ok else "✗"))
+        if got != lib_md5 or not flag_ok:
+            print("  ✗ 校验失败")
+            return 1
+        print("  ✓ 校验通过")
+    finally:
+        sh(['umount', str(mnt)])
     return 0
 
 if __name__ == '__main__':
