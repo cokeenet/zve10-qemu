@@ -1,4 +1,4 @@
-# The env.txt chain is fine; `bootin` unsets the variable afterwards
+# The env.txt chain: what is ruled out, and one conclusion I had to retract
 
 Known blocker A said: write `LD_PRELOAD=/etc/nmlib.so` into `/setting/env.txt`,
 and the variable never shows up in `im.elf`'s `environ`, while all seven variables
@@ -68,7 +68,55 @@ Incidentally, the camera's `dmode` contains `3`, and `'3'` matches none of the
 five cases — every capability bit stays zero. That constrains other behaviour but
 has nothing to do with `env.txt`.
 
-## The actual loss point
+## CORRECTION (same round): `bootin` only unsets when the `preload` argument is present
+
+The first version of this document claimed `bootin` unsets `LD_PRELOAD`
+unconditionally. That is wrong, and the correction matters.
+
+`bootin` reads `/setting/mode/dmode` at `0x9476` and sets its flag word from the
+characters found there:
+
+```asm
+946e  ldr  r0, ='/setting/mode/dmode'   ; 0xA279
+9476  blx  open
+9482  blx  read      (30 bytes)
+948e  loop over characters:
+   '0'..'3'  -> select debug level string
+   'p' | 'P' -> flags |= 0x40        ; 0x94A8
+   'l' | 'L' -> flags |= 0x42        ; 0x94B6
+   'w' | 'W' -> flags |= 0x08        ; 0x94C4
+   'g' | 'G' -> flags |= 0x10        ; 0x94D2
+   's' | 'S' -> flags |= 0x20        ; 0x94E0
+```
+
+There is also a **command-line** route to the same bit, discovered afterwards:
+
+```asm
+95a6  strncmp(arg, "preload", 7)   ; 0x96C4
+95b0  strncmp(arg, "PRELOAD", 7)   ; 0x96C8
+95be  ldr r3, [r4]
+95c0  orr.w r3, r3, #64            ; flags |= 0x40
+```
+
+So `bootin ... preload` sets the bit too.
+
+**The camera's `dmode` contains `3`, not `p`, and its command line is
+`amode=normal` with no `preload` argument.** Therefore `flags & 0x40` is **clear**
+on this camera, and the `unsetenv("LD_PRELOAD")` at `0x9B2C` **does not run**.
+
+That means the `env.txt` variable is *not* being removed by `bootin`, and the
+original blocker-A question is still open. The rest of this document is retained
+because the analysis of `set_oreore_env`, `parse_and_set_env` and
+`check_mode_file` stands on its own, but the conclusion drawn from it was wrong.
+
+What the flag does tell us is the inverse and is still useful:
+
+- `flags & 0x40` set → `bootin` reads `/setting/mode/preload` **and** unsets
+  `LD_PRELOAD`. Adding `preload` to the command line would therefore *remove* an
+  `env.txt`-supplied variable, making things worse, not better.
+- `flags & 0x40` clear (the current state) → neither happens.
+
+## The loss point (as previously believed, now retracted)
 
 `bootin` imports `putenv` and `unsetenv`, and its literal pool contains, under the
 marker string `"Bb clearing env"`:
@@ -107,11 +155,25 @@ That is exactly the observed result: `init`'s own `putenv` variables appear in
 `im.elf` (nothing removes those), and the one line from `env.txt` does not,
 because it is the only one whose name `bootin` explicitly unsets.
 
-## Consequence for delivery
+## Consequence for delivery (revised)
 
-`/setting/env.txt` cannot carry `LD_PRELOAD` on this camera, and no amount of
-fixing the mmap or the parser would change that. The route is closed by `bootin`,
-by name, deliberately.
+The route is **not** closed by `bootin` on this camera, because the flag that would
+close it is clear. What has been established is narrower and still worth having:
+
+- `open`, `fstat`, `mmap` on `/setting/env.txt` and the line parser all behave
+  correctly by inspection, and the only failure that prints (`0xA78B`) never
+  printed.
+- `check_mode_file` cannot be gating it: `g14868` is set unconditionally.
+- `bootin` will *not* remove the variable while `flags & 0x40` is clear.
+
+So the variable is being set and not removed, yet does not reach `im.elf`. That is
+now a sharper question than it was, with three candidates left: something between
+`putenv` and `execve` still unexamined, our observation of `environ` having been
+taken at the wrong moment, or `im.elf` reading `environ` from somewhere else.
+
+That `flags & 0x40` also gates `unsetenv("LD_PRELOAD")` remains a real and useful
+fact: it means adding the `preload` argument to `bootin` would actively *break* an
+`env.txt`-supplied variable.
 
 This also explains why `/etc/ld.so.preload` remains attractive: it is not an
 environment variable, so `unsetenv` cannot touch it, and it was measured to work
