@@ -13,6 +13,7 @@ rm -rf "$OUT"; mkdir -p "$OUT"
 echo "=== $NAME (route A: native-window-v14) ==="
 echo "  kernel: $(md5sum $KERNEL | cut -c1-16)  cpio: $(stat -c %s $CPIO) B"
 systemd-run --unit="$UNIT" --collect --no-block \
+  --setenv=ZVE10_QUIET_GPE=1 \
   --property=MemoryMax=3G \
   --property=StandardError="file:$OUT/qemu.err" \
   --property=StandardOutput="file:$OUT/qemu.out" \
@@ -22,7 +23,7 @@ systemd-run --unit="$UNIT" --collect --no-block \
   -append 'console=ttyAM0,115200n8 cfg.uart=1 mem=1G@0 memrsv=0x1A5E000@0x02E68000 memrsv=128M@0x20000000:uc rdinit=/init loglevel=8' \
   -display none \
   -serial "unix:$SER,server=on,wait=on" \
-  -monitor "unix:$MON,server=on,wait=off" \
+  -qmp "unix:$MON,server=on,wait=off" -monitor none \
   -no-reboot
 sleep 2
 timeout "$TIMEOUT" python3 /tmp/uphost.py "$SER" "$MON" "$OUT" || true
