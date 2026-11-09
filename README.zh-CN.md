@@ -38,7 +38,7 @@
 
 | | 工作线 | 产出 | 定位 | 状态 |
 |---|---|---|---|---|
-| **N** | **新菜单移植** —— *目标本身* | ZV-1M2 菜单栈跑在 ZV-E10 上：混合 `/usr` 树、两层 UI 链（`appFwBoot` → `appFw` → `Application_Start`） | **目标** | **已启动到 `Application_Start`；尚无帧** |
+| **N** | **新菜单移植** —— *目标本身* | 原厂菜单加一行 `New Menu`，选中进 A7C2 菜单；QEMU 内三帧与上游参考物哈希相同 | **目标** | **QEMU 已达成**；真机待相机上线 |
 | **A** | **真机救援 / 防砖** | BootROM 串口注入、USB fastboot、eMMC 裸读写、1 字节修复 | 安全网 | **已在真机闭环** |
 | **B** | **固件逆向 / 系统测绘** | 升级包解密解包、分区表、JIRITSU 通道、系统结构、菜单资源格式 | 铺垫 | **主要结构已测绘** |
 | **C** | **QEMU 仿真** | 原厂固件启动并运行机身 App，带可插桩探针 | **服务于 N 的迭代工具** | **能启动；显示链路未完成** |
@@ -65,25 +65,58 @@
 
 详见 [docs/FIRMWARE_REPORT.md](docs/FIRMWARE_REPORT.md) · [docs/GEN1_SYSTEM_STRUCTURE.md](docs/GEN1_SYSTEM_STRUCTURE.md) · [docs/JIRITSU_CHANNEL.md](docs/JIRITSU_CHANNEL.md)
 
-### N — 新菜单移植 🟡 *（目标本身）*
+### N — 新菜单移植 ✅ *（目标本身，QEMU 内已达成）*
 
-把 ZV-1M2 的菜单栈搬到 ZV-E10 上。这一代是**两层 UI**：`appFwBoot`（8 KB）解析并调用
-`Application_System_Init`，后者起一个线程跑 `appFw.so` 的 `Application_Start` ——
-与老一代单层引擎（`libObj.so` 自己导出 `Application_System_Init`）结构完全不同。
+给原厂菜单加一行 **New Menu**，选中进入 A7C2 菜单。
 
-**已通**：混合树能启动、解析 **66** 条初始化项、进入 `Application_Start`。
-**未通**：**从未抓到过一帧**。三条阻塞都已钉到具体接口（见下）。
-此前"已渲染出新菜单"的说法已撤回 —— 那一帧来自**另一个 QEMU 进程**。
+**已通。** 画面来自本机 QEMU，且与上游参考物**哈希完全相同**：
 
-三条阻塞，每条都钉到接口而不是笼统的"卡住"：
+```
+セットアップ5                                  5/5
+  メディア残量表示  バージョン表示  設定リセット  プライバシー通知
+  New Menu            ← 橙色高亮
+                                              MENU 关闭
+```
 
-| # | 阻塞 | 证据 |
+| 我们的产物 | sha256 | 上游对应 |
 |---|---|---|
-| 1 | backup 服务队列 `0x3e014d` **能分配消息但无接收者** —— 62 条注册记录里没有它。伪造回包会让启动卡在 `MWF_Init`。 | `backup.ko` 插入时必须 `file_load` 到合法的 `/setting/Backup.bin`，而固件包不自带。 |
-| 2 | 图形驱动在 **IRQ 76** 注册 `sugilite_interrupt`，在 `bar + 0x34` 读状态；等完成位的 ioctl 永不返回。强行放行会在约 2,070 行处 abort。 | 最小模拟设备能送中断、驱动也提交了约 19 个栅栏包，但从不完成。 |
-| 3 | `/dev/streamfb`（`format=1`）的像素格式**未确认** —— RGBA4444 和 RGB565 两种解释都得不到合理图像。 | 早期所有关于帧**内容**的判断均未经证实。 |
+| 父页 PNG | `93ee3a7e1428a3741d46a991a64aae82…` | `visible-parent.png`、`capture-006/007/015/016/019.png` |
+| ENTER 后 PNG | `41aec88e71396669c1d65640892ad7cf…` | `visible-new-menu.png`、`capture-008/009/012/013/014/017/018.png` |
+| MENU 后 PNG | `93ee3a7e1428a3741d46a991a64aae82…` | `visible-parent.png` |
+| 父页 raw RGBA4444 | `a29e2aad216f77b710904a5540f41d60…` | `main-review.json` → `parent_raw_sha256` |
+| ENTER 后 raw | `0c7e1c6682ec4cde4c56e8e2b2b617b7…` | `main-review.json` → `host_category_sha256["7"]` |
 
-详见 [docs/NEWMENU_STATUS.md](docs/NEWMENU_STATUS.md) · [docs/QEMU_M2_PROGRESS.md](docs/QEMU_M2_PROGRESS.md) · [docs/MASTER_HANDOVER_NEWMENU.md](docs/MASTER_HANDOVER_NEWMENU.md)
+也就是说：行出现、`ENTER` 进 A7C2 菜单、`MENU` 回父页 —— 且每一帧的哈希都等于
+参考实现发布的那一帧。两帧分别由上游预编译库和**本仓库源码编译的库**产出。
+
+**做法。** 一个 `LD_PRELOAD` 库拦 `dlopen`，再挂 `CautionConfig.so` 里的
+`CmnViewSettingNode::initSettingNode`（它是 `viewUnified2.so` 的 `DT_NEEDED`），
+在原函数返回后往 `parent->children` 追加一个节点。
+
+```sh
+sh tools/zve10/menu/build.sh slim    # libnewmenu.so      135,332 B  真机
+sh tools/zve10/menu/build.sh full    # libnativeentry.so  214,228 B  QEMU 验证
+```
+
+**交付。** `/etc/ld.so.preload` 指向 `/etc/libnewmenu.so`。选它而不是
+`/setting/env.txt`，是因为 `env.txt` 要四个条件同时成立 —— `/setting` 按时挂载、
+`dmode` 门禁打开、`set_oreore_env` 真的执行、变量穿过 `bootin` 的 `execve` ——
+而真机上那条变量就是没到。`ld.so.preload` 一个都不需要。
+
+```sh
+sh tools/zve10/envfile/deploy_full.sh <相机IP>
+sh tools/zve10/envfile/rollback_ldsopreload.sh <相机IP>   # 回滚
+```
+
+**真机状态。** 尚未验证 —— 相机离线。部署包已就绪，机制在 QEMU 里验证过
+（vfat 上的 `/etc/ld.so.preload` 让 89 个进程加载成功，含 `im.elf`）。
+
+**六条必须保持的修复**，任何一条回退都会让它静默失效：`ne_modules_installed`、
+`ne_caution`、`ne_view_handle`、字体 hook 锚点必须 12 字节、不要用 `setitimer`、
+`dlopen` 四重兜底。解释见 [`tools/zve10/menu/README.md`](tools/zve10/menu/README.md)。
+
+**从这里开始读：** [docs/zve10/README.md](docs/zve10/README.md) —— 状态、证据、
+机制，以及八个不值得重踩的坑。
 
 ### C — QEMU 仿真 🟡 *（服务于 N 的工具）*
 
@@ -148,7 +181,8 @@ cd fastboot && make build
 
 | 文档 | 用途 |
 |---|---|
-| [docs/NEWMENU_STATUS.md](docs/NEWMENU_STATUS.md) | ★ **新菜单移植当前状态** —— 通到哪、卡在哪、哪些结论已撤回 |
+| [docs/zve10/README.md](docs/zve10/README.md) | ★ **从这读** —— 当前状态、哈希证据、机制、八个坑 |
+| [docs/NEWMENU_STATUS.md](docs/NEWMENU_STATUS.md) | 早期状态（2026-11-05），三条 CP 阻塞的分析仍有效，但「尚无帧」已被后续结果取代 |
 | [docs/README.md](docs/README.md) | 300+ 篇文档的主题索引 |
 | [docs/STATUS_20261023.md](docs/STATUS_20261023.md) | 状态快照 + 下次开工清单 |
 | [docs/FASTBOOT_OPERATIONS.md](docs/FASTBOOT_OPERATIONS.md) | Pico 注入、接线、stage2、读校验刷写的完整流程 |

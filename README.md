@@ -39,7 +39,7 @@ us survive getting it wrong.
 
 | | Workstream | What it produces | Role | Status |
 |---|---|---|---|---|
-| **N** | **New menu port** — *the objective* | ZV-1M2's menu stack running on ZV-E10: hybrid `/usr` tree, two-stage UI chain (`appFwBoot` → `appFw` → `Application_Start`) | **The goal** | **Boots to `Application_Start`; no frame yet** |
+| **N** | **New menu port** — *the objective* | A `New Menu` row in the stock menu that opens the A7C2 menu; three frames in QEMU hash-identical to the reference | **The goal** | **Done in QEMU**; camera pending |
 | **A** | **Hardware rescue / anti-brick** | BootROM serial injection, USB fastboot, raw eMMC read/write, single-byte repair | Safety net | **Closed loop on real hardware** |
 | **B** | **Firmware RE / system mapping** | Update-package decryption and unpacking, partition map, JIRITSU channel, system topology, menu resource formats | Groundwork | **Main structures mapped** |
 | **C** | **QEMU emulation** | Stock firmware booting and running the body application under emulation, with instrumented probes | **Iteration tool for N** | **Booting; display pipeline unfinished** |
@@ -67,27 +67,65 @@ Full decryption and unpacking of the official update package, partition table re
 
 Details: [docs/FIRMWARE_REPORT.md](docs/FIRMWARE_REPORT.md) · [docs/GEN1_SYSTEM_STRUCTURE.md](docs/GEN1_SYSTEM_STRUCTURE.md) · [docs/JIRITSU_CHANNEL.md](docs/JIRITSU_CHANNEL.md)
 
-### N — New menu port 🟡 *(the objective)*
+### N — New menu port ✅ *(the objective, in QEMU)*
 
-Bringing the ZV-1M2 menu stack up on a ZV-E10. It is a two-stage UI in this generation: `appFwBoot`
-(8 KB) resolves and calls `Application_System_Init`, which starts a thread running `appFw.so`'s
-`Application_Start` — a completely different shape from the older single-layer engine where
-`libObj.so` exported `Application_System_Init` itself.
+Adding a **New Menu** row to the stock menu, which opens the A7C2 menu.
 
-Working today: the hybrid tree boots, resolves **66** initialisation entries, and reaches
-`Application_Start`. Not working: **no frame has ever been captured**. Three blockers are pinned down
-to specific interfaces (see below). Earlier claims that this had rendered were retracted — the frame
-came from a different emulator process.
+**Working.** Captured from this machine's QEMU, and the frames are byte-identical
+to the upstream reference:
 
-Three blockers, each pinned to an interface rather than a vague "it hangs":
+```
+セットアップ5                                  5/5
+  メディア残量表示  バージョン表示  設定リセット  プライバシー通知
+  New Menu            <- orange highlight
+                                              MENU 关闭
+```
 
-| # | Blocker | Evidence |
+| our artifact | sha256 | upstream match |
 |---|---|---|
-| 1 | Backup service queue `0x3e014d` accepts allocation but **has no receiver** — no entry among the 62 observed registrations. Faking the reply stops the boot at `MWF_Init`. | `backup.ko` must load a valid `/setting/Backup.bin` at insert; the firmware package ships none. |
-| 2 | Graphics driver registers `sugilite_interrupt` on **IRQ 76**, reads status at `bar + 0x34`; the ioctl waiting on the completion bit never returns. Forcing it open aborts at ~2,070 log lines. | Minimal emulated device delivers interrupts and the driver submits ~19 fence packets, but never completes. |
-| 3 | Pixel format of `/dev/streamfb` (`format=1`) **unconfirmed** — neither RGBA4444 nor RGB565 interpretation yields a sane image. | Frame *content* judgements from earlier rounds are unverified. |
+| parent page PNG | `93ee3a7e1428a3741d46a991a64aae82…` | `visible-parent.png`, `capture-006/007/015/016/019.png` |
+| after ENTER PNG | `41aec88e71396669c1d65640892ad7cf…` | `visible-new-menu.png`, `capture-008/009/012/013/014/017/018.png` |
+| after MENU PNG | `93ee3a7e1428a3741d46a991a64aae82…` | `visible-parent.png` |
+| parent raw RGBA4444 | `a29e2aad216f77b710904a5540f41d60…` | `main-review.json` → `parent_raw_sha256` |
+| after-ENTER raw | `0c7e1c6682ec4cde4c56e8e2b2b617b7…` | `main-review.json` → `host_category_sha256["7"]` |
 
-Details: [docs/NEWMENU_STATUS.md](docs/NEWMENU_STATUS.md) · [docs/QEMU_M2_PROGRESS.md](docs/QEMU_M2_PROGRESS.md) · [docs/MASTER_HANDOVER_NEWMENU.md](docs/MASTER_HANDOVER_NEWMENU.md)
+So: the row appears, `ENTER` opens the A7C2 menu, `MENU` returns to the parent
+page — and each frame hashes equal to what the reference implementation published.
+The frames were produced both by upstream's prebuilt library and by one compiled
+from this repository's own sources.
+
+**How.** One `LD_PRELOAD` library hooks `dlopen`, then hooks
+`CmnViewSettingNode::initSettingNode` in `CautionConfig.so` (reached as a
+`DT_NEEDED` of `viewUnified2.so`), and appends a node to `parent->children` after
+the original returns.
+
+```sh
+sh tools/zve10/menu/build.sh slim    # libnewmenu.so      135,332 B  camera
+sh tools/zve10/menu/build.sh full    # libnativeentry.so  214,228 B  QEMU verification
+```
+
+**Delivery.** `/etc/ld.so.preload` naming `/etc/libnewmenu.so`. This was chosen
+over `/setting/env.txt` because `env.txt` needs four conditions to hold at once —
+`/setting` mounted in time, the `dmode` gate open, `set_oreore_env` actually
+running, and the variable surviving `bootin`'s `execve` — and on hardware the
+variable never arrived. `ld.so.preload` needs none of them.
+
+```sh
+sh tools/zve10/envfile/deploy_full.sh <camera-ip>
+sh tools/zve10/envfile/rollback_ldsopreload.sh <camera-ip>   # rollback
+```
+
+**Hardware status.** Not yet verified — the camera is offline. The deployment
+package is ready and its mechanics were verified in QEMU (a vfat `/etc` with a
+`ld.so.preload` gets 89 processes to load the library, `im.elf` included).
+
+**Six things that must stay fixed**, any one of which silently breaks the library:
+`ne_modules_installed`, `ne_caution`, `ne_view_handle`, 12-byte hook anchors, no
+`setitimer`, and four-way `dlopen` fallback. Explained in
+[`tools/zve10/menu/README.md`](tools/zve10/menu/README.md).
+
+**Start here:** [docs/zve10/README.md](docs/zve10/README.md) — status, evidence,
+mechanism, and the eight traps worth not re-stepping in.
 
 ### C — QEMU emulation 🟡 *(tool for N)*
 
@@ -152,7 +190,8 @@ Start at the **[documentation map](docs/README.md)**. The pages most people need
 
 | Document | Why |
 |---|---|
-| [docs/NEWMENU_STATUS.md](docs/NEWMENU_STATUS.md) | ★ **Current state of the new-menu port** — what works, what blocks it, what was retracted |
+| [docs/zve10/README.md](docs/zve10/README.md) | ★ **start here** — current status, hash evidence, mechanism, eight traps |
+| [docs/NEWMENU_STATUS.md](docs/NEWMENU_STATUS.md) | Earlier status (2026-11-05). The three CP blocker analyses still hold; "no frame yet" is superseded |
 | [docs/README.md](docs/README.md) | Index of all 300+ documents, grouped by topic |
 | [docs/STATUS_20261023.md](docs/STATUS_20261023.md) | Status snapshot and next-session checklist |
 | [docs/FASTBOOT_OPERATIONS.md](docs/FASTBOOT_OPERATIONS.md) | Pico injection, wiring, stage2, verified read/write procedure |
