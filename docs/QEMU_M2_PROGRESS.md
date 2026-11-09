@@ -40821,3 +40821,142 @@ QEMU 实例：0
 收尾       qemu-system-arm 残留 = 0
 产出       仅写 /root/fw/oss
 ```
+
+# ★★★★★★★★★ 2026-11-10 第四百五十一章（目标轮 48–83）：**渲染链逐层定位到消息泵与一道 r5 门**
+
+## ① 方法升级：实测基址（不再手工推算）
+
+手工推导库基址在 R48–R54 连错三次（`GOTWATCH` 减 `.plt` 偏移、`DFBHOOK` 减入口偏移）。
+R55 起由探针读 `/proc/self/maps` 一次打印 64 个模块基址（`BASEPRINT`），实测结果：
+
+```text
+/usr/lib/libObj.so   base=0xa954000    （此前我推 0xa89a000，差 0x6A000）
+/usr/lib/appFw.so    base=0x2dbf2000   （此前我推 0x2e0eb000）
+/usr/bin/im.elf      base=0x8000
+```
+
+原因：`libObj` 的 `PT_LOAD p_vaddr` 不为 0，所以"运行时地址 − 文件偏移"不等于装载基址。
+**此后所有地址换算都以 BASEPRINT 为准。**
+
+## ② PC 采样按模块归因（R56–R57）
+
+2479 个样本按实测基址归因，用户态 953 / 内核 1526：
+
+```text
+/usr/lib/appFw.so          101
+/lib/libc-2.11.2.so         69
+/lib/ld-2.11.2.so           54
+/usr/lib/libInfraSKD.so     42
+/lib/libstdc++.so.6.0.14    19
+/usr/lib/libObj.so          12
+```
+
+**appFw 样本偏移分布：`0x54exxx–0x54fbxx`（渲染链区）零命中。**
+即应用在跑，但从未进入渲染链。
+
+## ③ 渲染链完整结构（静态解出 + 实测印证）
+
+```text
+Application_Start  0x54d580（dynsym size=72，仅 6 个调用）
+  54d590 blx A
+  54d59a bl  54d154
+  54d5a6 bl  54d2b0 (C)        ← R68 实测：enter=1 / leave=1，正常返回
+  54d5ac bl  54f664 (容器)     ← R71 实测：enter=1
+  54d5b0 blx D
+  54d5b6 bl  E
+```
+
+容器 `0x54f664` 是**消息驱动主循环**（R81 从代码读出）：
+
+```text
+54f6fe  b.n 0x54fb3e
+54fb3e  blx gfxeng@plt
+54fb42  blx GraphicsEngine::processSystemMessage@plt
+54fb46  cmp r0,#0
+54fb48  bne.w 0x54f700          ← 有消息才回渲染路径
+        否则 ldmia.w sp!,{...pc}  ← 直接返回
+54f700  ...
+54f70e  cbz r5, 0x54f752        ← ★ 第二道门：r5==0 则跳过整段
+54f716  bl 0x712100
+54f71a  bl 0x60e2f4
+54f78a  bl 0x54f548             ← 渲染迭代
+```
+
+`0x54f548` 内部：
+
+```text
+54f560  ldr r4,[pc,#236] → 全局字 0x37e39f0
+54f564  ldr r3,[r4,#0]
+54f566  cmp r3,#7               ← 全局状态必须 == 7
+54f56a  bne 0x54f58e
+54f580  bl 0x54f468
+        ...
+54fa72  bcs 0x54fad4            ← 帧节流（常量 0x62F5 = 25333）
+54fa74  bl 0x54f2ae
+54fa7e  ...
+54faae  bl 0x54ed12            ← 渲染一帧
+54ed74  blx notifyDraw@plt
+54ed82  blx drawFramebuffer@plt
+```
+
+## ④ 逐层实测（每层独立 inline hook，均校验 prologue）
+
+| 层 | 地址 | 手段 | 实测 |
+|---|---|---|---|
+| 渲染一帧 | `libObj+0x106524` notifyDraw | inline hook + 禁自调用 | **0** |
+| 渲染一帧 | `libObj+0xe565a` drawFramebuffer | inline hook（12B PC 无关） | **0** |
+| 渲染帧函数 | `appFw+0x54ed12` | inline hook | 安装成功，但该函数在热路径 |
+| 主循环容器 | `appFw+0x54f664` | inline hook（10B） | **enter=1** |
+| 渲染迭代 | `appFw+0x54f548` | inline hook（12B） | **0**（`frameiter_calls=0`） |
+| 容器 call#1 | `appFw+0x54ef74` | 6 段 hook | **1 次** |
+| 容器 call#2 | `appFw+0x712100` | 6 段 hook | **0** |
+| 容器 call#3 | `appFw+0x60e2f4` | 4 段 hook | **0** |
+| 下一层 | `appFw+0x54f468` | 10 段 hook | **0** |
+| 消息泵 | `libObj+0xe5610` processSystemMessage | inline hook（8B） | **1 次，返回 1（非零）** |
+
+## ⑤ 本轮确定的因果链
+
+```text
+Application_Start
+  └─ 0x54f664 主循环（enter=1，容器 call#1 = 1 次）
+       ├─ 0x54fb3e processSystemMessage()   ✅ 实测 1 次、返回 1（非零 → 应 bne 回渲染）
+       ├─ 0x54f700
+       │    └─ 0x54f70e  cbz r5, 0x54f752    ← ★ 剩余唯一未穿过的门
+       ├─ 0x54f716 / 0x54f71a / 0x54f78a     ❌ 全部 0
+       └─ 渲染迭代 → notifyDraw → drawFramebuffer   ❌ 全部 0
+```
+
+**`r5` 是容器从栈参数 `[r7,#44]` 取得的值（`0x54f55a`），来自调用者 `0x54d5ac` 的栈残留。**
+`processSystemMessage` 只被调用 1 次，与"返回非零应继续循环"存在矛盾，尚未解释。
+
+## ⑥ 一处必须记录的更正
+
+`GV_PROBE` 原先读 `appFw+0x37e39ea`，实测该处为 `0xa020f`，据此曾判断"全局状态不是 7，门关着"。
+R69 精确计算 `0x54f560`+`0x54f562` 的 Thumb PC 偏置后确认正确偏移是 `0x37e39f0`（对齐通过）。
+改偏移后实测 **`u32=0x7`**——**门一直是开的，"门关着"这条判断完全错误。**
+
+## ⑦ 已报废并回退的探针
+
+```text
+R45  appFw+0x54ed12 热路径 hook  → 行数 299 / AS 29 / LIBOBJ_SYM 0 / createLayer 0
+R38  global open/ioctl 互操作符   → createLayer 0，已从源码删除
+```
+
+两次均整轮报废并从源码删除、重编回退到干净版本（`argtrace.so` 哈希已核对）。
+
+## ⑧ 约束遵守
+
+```text
+单实例   systemd-run --unit=zve10-{st1,psm1,...} --collect --property=MemoryMax=4G
+收尾     qemu-system-arm 残留 = 0
+基线     全程 createLayer=6 / LIBOBJ_SYM=24，报废轮次已标注
+产出     仅写 /root/fw/oss
+```
+
+## ⑨ 本轮未出帧
+
+```text
+合格 640×480 帧：无
+SHA256 / 物理地址：无
+QEMU 实例：0
+```
