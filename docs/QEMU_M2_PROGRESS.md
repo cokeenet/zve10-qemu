@@ -41202,3 +41202,58 @@ QEMU 实例            0
 基线                 fd5: 1688 / 1014 / createLayer=6 / LIBOBJ_SYM=24
 产出                 仅写 /root/fw/oss
 ```
+
+# ★★★★★★★★★ 2026-11-10 第四百五十五章（目标轮 114–118）：**直接驱动在正确进程内仍不返回；更正上一轮的进程误判**
+
+## ① 一次成功的接线：驱动终于跑在「被证明会执行的线程」上
+
+R116 实测 `pthread_create` 返回 0，但新线程入口从未执行（`force_draw_thread` 一行日志都没有）；
+而 `start_watchdog` 这条 `pthread_create` 出来的线程**确实执行了**
+（fd7 中 spawn 在第 1527 行、watchdog 的 `t=5s` 行在第 1680 行，晚 153 行）。
+
+于是把驱动移到 watchdog 线程内，实测成功（out/fd8，基线完好）：
+
+```text
+FORCEDRAW trigger from watchdog t=5
+FORCE_DRAW base=0xa676000 self_slot=0xa9cd490 self=0xaa3e044
+DFBHOOK call=1 self=0xaa3e044 tid=117 f23a=0x3f80      ← 进入 drawFramebuffer
+FORCEDRAW watchdog returned  → 0 次                      ← 仍未返回
+```
+
+## ② 更正 R117 的一处误判：「在错误进程里调用」不成立
+
+R117 依据 `TS pid=107 comm=bootin.elf` 判断驱动跑在 bootin.elf、而 `Application_Start` 在 im.elf，
+据此提出「跨进程误调用」。**该判断错误，理由如下：**
+
+```text
+FORCEDRAW 的触发条件是 g_in_start != 0
+g_in_start 是该 LD_PRELOAD 库的进程私有静态变量
+每个进程各自 dlopen 一份 argtrace.so，互不共享
+因此能触发 ⇒ 必然与 my_app（Application_Start 包装）同进程
+实测：MY_TID Application_Start pid=115 tid=195
+并行证据：BASEPRINT done modules=64（64 模块的那个进程即 im.elf）
+```
+
+**结论：驱动确实在 pid=115（im.elf）内执行，只是线程不同（tid=117 watchdog vs tid=195 入口线程）。**
+`pid=107 bootin.elf` 那条 TS 是另一进程的常态，与本实验无关。
+
+## ③ 因此真正的结论是：与线程上下文无关，`drawFramebuffer` 必然不返回
+
+```text
+R104  内联在 OSAL 接收路径里调用（属 im.elf）      → 进入，不返回
+R118  在 watchdog 线程里调用（同属 im.elf）        → 进入，不返回
+```
+
+两种上下文都卡住，所以**不是锁上下文/线程归属问题**。
+结合 GPU 侧实测（19 个包全为 init fence、token `12345678`、填充解码器一律返回 6、帧缓冲零非零字节），
+可以下结论：**`drawFramebuffer` 的等待发生在固件内部资源/状态层面（很可能在等
+资源更新或控件树就绪），而不是等 GPU 中断、不是等锁、也不是跨进程。**
+
+## ④ 约束
+
+```text
+QEMU 实例            0
+基线                 fd8: 1670 / 1000 / createLayer=6 / LIBOBJ_SYM=24
+                     fd7: 1685 / 1013 / createLayer=6 / LIBOBJ_SYM=24
+产出                 仅写 /root/fw/oss
+```
