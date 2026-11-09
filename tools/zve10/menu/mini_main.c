@@ -348,26 +348,28 @@ static void nm_try_install(void)
         nm_log("NM no views_base; skipping viewUnified2 hooks\n");
     }
 
-    /* 字体钩子：换标题 */
+    /* 字体钩子：换标题。
+     *
+     * 这两个地址可能已经被别人占用，最典型的是 libuiobserve.so —— 它在 LD_PRELOAD
+     * 里排在我们前面，并且更早在 bootin 进程里就把同样的两个入口 hook 掉了。
+     * 那种情况下 memcmp 失败是正确行为（别覆盖别人的跳板），日志里出现
+     * "string_id hook failed" 是准确报告而不是缺陷。
+     *
+     * 判断方法：把 anchor 打出来看。
+     *   原始字节 90 b5 83 b0 ...           -> 地址空闲，我们的 hook 应当成功
+     *   df f8 00 f0 + 4 字节目标地址       -> 已有跳板，别人装过了
+     *
+     * 真机不加载 libuiobserve，所以那里应当是空闲的。
+     */
     {
-        /* 诊断：锚点处的实际字节。锚点和文件里的字节完全一致却 memcmp 失败，
-         * 说明 object_base 不是这些偏移相对的基址 —— 先把实际字节打出来。 */
-        {
-            const unsigned char *a1 = (const unsigned char *)(object_base + 0x626538);
-            const unsigned char *a2 = (const unsigned char *)(object_base + 0x6266d0);
-            nm_log("NM anchor1=%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x\n",
-                   a1[0],a1[1],a1[2],a1[3],a1[4],a1[5],a1[6],a1[7],a1[8],a1[9],a1[10],a1[11]);
-            nm_log("NM anchor2=%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x\n",
-                   a2[0],a2[1],a2[2],a2[3],a2[4],a2[5],a2[6],a2[7],a2[8],a2[9],a2[10],a2[11]);
-        }
         if (ne_hook(object_base + 0x626538,
                     (const unsigned char[]){0x90,0xb5,0x83,0xb0,0x00,0xaf,0x04,0x46,0x38,0x46,0xea,0xf7},
                     (void *)observe_string_id, &original_string_id))
-            nm_log("NM warn: string_id hook failed\n");
+            nm_log("NM warn: string_id hook failed (anchor occupied?)\n");
         if (ne_hook(object_base + 0x6266d0,
                     (const unsigned char[]){0xf0,0xb5,0x00,0xf1,0x98,0x06,0x85,0xb0,0x04,0x46,0x0d,0x46},
                     (void *)observe_string_chars, &original_string_chars))
-            nm_log("NM warn: string_chars hook failed\n");
+            nm_log("NM warn: string_chars hook failed (anchor occupied?)\n");
     }
 
     /* ★ 关键：必须同时设置 native_entry.inc 的 ne_modules_installed。
