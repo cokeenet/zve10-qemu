@@ -40960,3 +40960,74 @@ R38  global open/ioctl 互操作符   → createLayer 0，已从源码删除
 SHA256 / 物理地址：无
 QEMU 实例：0
 ```
+
+# ★★★★★★★★★ 2026-11-10 第四百五十二章（目标轮 84–101）：**结题——移植库对齐与断言消除完成，但从未出帧**
+
+## 本轮结论
+
+详细报告见 `docs/zve10/m2-port-final/FINAL-REPORT-2026-11-10.md`（268 行）。
+
+摘要：
+
+```text
+移植库对齐          ✅ 71 库 + bootin/im 与 ZV1M2 完全一致（190 文件 0 差异）
+MODEL_SYSTEM_ERROR  ✅ 换库后断言消失（本轮唯一确证修复）
+渲染链结构          ✅ 完整解出（Application_Start→容器→渲染迭代→渲染一帧）
+逐层实测            ✅ 13 层独立 inline hook，全部 prologue 校验通过
+合格 640×480 帧      ❌ 无
+```
+
+## 明确阻塞点
+
+```text
+容器 0x54f664 进入            ✅ enter=1
+容器 stage1 (0x54ef74)       ✅ 1 次
+其后 5 个 PLT 调用 + 0x54e8f0  ❌ 全 0（0x54e8f0 实测 enter=0）
+渲染迭代 / notifyDraw / drawFramebuffer / GRM / LZ77  ❌ 全 0
+线程 195 最终停在 qid=0x1cf60b9 主泵 tmo=-1
+该队列全日志仅 1 条记录（就是那次等待）——无任何生产者
+```
+
+## 为什么停在这里
+
+最后三次「主动驱动」均失败，原因同一：
+
+```text
+R45  appFw+0x54ed12 热路径 hook        → createLayer=0，基线崩塌
+R98  线程 sleep(25) 后调 drawFramebuffer → 25 秒内运行已结束，从未执行
+R99  放进 start_watchdog 块             → 该块本次未执行，从未执行
+```
+
+源码注释已记载根因（ledger 194）：`sleep(5)` 在本 guest 不生效，
+依赖「等一段时间后自动执行」的探针全部无效；而同步调用又会改变固件时序。
+
+## 方法层面的两条重要更正（已写入报告）
+
+1. **库基址手工推算连错三次**，R55 起改由探针读 `/proc/self/maps` 打印 64 个模块基址
+   （`libObj=0xa954000` / `appFw=0x2dbf2000`）。根因：`libObj` 的 `PT_LOAD p_vaddr` 非 0，
+   `appFw` 有两个 `PT_LOAD` 段，不能拿任意段相加减。
+2. **Thumb `add r?,pc` 的 PC = 指令地址 + 4**，最初用指令地址导致全局变量偏移算成
+   `0x37e39ea`（错 6 字节），正确值 `0x37e39f0`。改对后实测该全局字为 **0x7**，
+   此前「门关着」的判断完全错误。
+
+## 与 a7c2-re 的差别
+
+a7c2-re 出帧不靠「让固件自己循环」，而是「显式软件 GPE 执行已核准的绘图请求」。
+本任务走的是前者，阻塞在「主泵无生产者 + 探针基础设施不可靠」，不是可修补的层次。
+
+## 交付
+
+```text
+docs/zve10/m2-port-final/FINAL-REPORT-2026-11-10.md    完整技术报告（268 行）
+docs/zve10/m2-port-final/argtrace.c                    探针源码快照
+docs/zve10/m2-port-final/run-wlist.sh                  运行脚本快照
+/mnt/build/m2qemu/backup-lib-0409/                     usr/lib 回滚备份
+```
+
+## 约束
+
+```text
+单实例   systemd-run --unit=zve10-* --collect --property=MemoryMax=4G
+收尾     qemu-system-arm 残留 = 0
+基线     全部运行 createLayer=6；报废轮次（R38/R45）已标注并回退
+```
