@@ -386,16 +386,39 @@ static void nm_try_install(void)
      *   df f8 00 f0 + 4 字节目标地址       -> 已有跳板，别人装过了
      *
      * 真机不加载 libuiobserve，所以那里应当是空闲的。
+     *
+     * ★ 必须全装或全不装。
+     *
+     * observe_string_id 会转调 native_entry_title，而 native_entry_title 在命中
+     * NE_TITLE 时要调 original_string_chars。如果 string_id 装上了、string_chars
+     * 没装上，original_string_chars 就是 NULL —— 菜单渲染到我们那一行时直接
+     * 跳到地址 0，im.elf 立刻死。
+     *
+     * 所以先只读校验两个 anchor，都空闲才依次安装；任何一个已占用就两个都不装。
      */
     {
-        if (ne_hook(object_base + 0x626538,
-                    (const unsigned char[]){0x90,0xb5,0x83,0xb0,0x00,0xaf,0x04,0x46,0x38,0x46,0xea,0xf7},
-                    (void *)observe_string_id, &original_string_id))
-            nm_log("NM warn: string_id hook failed (anchor occupied?)\n");
-        if (ne_hook(object_base + 0x6266d0,
-                    (const unsigned char[]){0xf0,0xb5,0x00,0xf1,0x98,0x06,0x85,0xb0,0x04,0x46,0x0d,0x46},
-                    (void *)observe_string_chars, &original_string_chars))
-            nm_log("NM warn: string_chars hook failed (anchor occupied?)\n");
+        static const unsigned char pin_id[12] =
+            {0x90,0xb5,0x83,0xb0,0x00,0xaf,0x04,0x46,0x38,0x46,0xea,0xf7};
+        static const unsigned char pin_chars[12] =
+            {0xf0,0xb5,0x00,0xf1,0x98,0x06,0x85,0xb0,0x04,0x46,0x0d,0x46};
+        uintptr_t at_id = object_base + 0x626538;
+        uintptr_t at_chars = object_base + 0x6266d0;
+
+        if (memcmp((void *)at_id, pin_id, 12) ||
+            memcmp((void *)at_chars, pin_chars, 12)) {
+            nm_log("NM skip: font hooks unavailable (anchor occupied); titles stay stock\n");
+        } else if (ne_hook(at_chars, pin_chars,
+                           (void *)observe_string_chars, &original_string_chars)) {
+            nm_log("NM warn: string_chars hook failed; titles stay stock\n");
+        } else if (ne_hook(at_id, pin_id,
+                           (void *)observe_string_id, &original_string_id)) {
+            /* chars 已装、id 未装时是安全的：observe_string_chars 只转调
+             * original_string_chars（有效），而 observe_string_id 从未被挂上，
+             * 所以不会有 NULL 调用。代价只是标题保持原厂。 */
+            nm_log("NM warn: string_id hook failed; titles stay stock\n");
+        } else {
+            nm_log("NM hooked font titles\n");
+        }
     }
 
     /* ★ 关键：必须同时设置 native_entry.inc 的 ne_modules_installed。

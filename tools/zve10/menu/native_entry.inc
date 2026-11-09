@@ -213,6 +213,13 @@ void native_label_text(void *label, uint32_t id)
 }
 static uintptr_t native_entry_title(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d)
 {
+    /* Both trampolines must exist before either hook can be trusted. A missing
+     * original_string_id means observe_string_id should never have been
+     * installed; a missing original_string_chars means we must not rewrite the
+     * title, because the only way to render "New Menu" is through that
+     * trampoline. Returning silently keeps the UI alive instead of jumping to
+     * address 0 mid-render. */
+    if (!original_string_id || !original_string_chars) return 0;
     if (b != NE_TITLE) return original_string_id(a, b, c, d);
     __sync_add_and_fetch(&ne_title_sets, 1);
     return original_string_chars(a, (uintptr_t)"New Menu", c, d);
