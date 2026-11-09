@@ -57,15 +57,44 @@ NE_VERSION {"node":0,"vptr":0,"properties":0,"last":-1}
 NE_ERROR phase=append_row status=-1
 ```
 
-**4. 不要用 `setitimer(ITIMER_REAL)`**
+**4. 字体 hook 的 `expected` 必须是 12 字节**
+
+`ne_hook` 的签名是：
+
+```c
+static int ne_hook(uintptr_t address, const unsigned char expected[12], ...)
+{
+    if (memcmp((void *)address, expected, 12)) return -1;
+```
+
+但调用处一度只给了 8 字节字面量：
+
+```c
+ne_hook(object_base + 0x626538,
+        (const unsigned char[]){0x90,0xb5,0x83,0xb0,0x00,0xaf,0x04,0x46}, ...)
+```
+
+后 4 字节读的是栈上未初始化内存，`memcmp` 必然失败，于是
+
+```
+NM warn: string_id hook failed
+NM warn: string_chars hook failed
+```
+
+补齐为 `libObj.so` 在该偏移的真实 12 字节（`0x626538` 后接 `38 46 ea f7`，
+`0x6266d0` 后接 `04 46 0d 46`）后警告消失，`NM installed: 1`。
+
+教训：`expected` 是按 12 字节比较的，字面量少给字节不会报错，只会静默失败。
+
+**5. 不要用 `setitimer(ITIMER_REAL)`**
 它会往 im.elf 主线程注入 SIGALRM，菜单卡死；且信号处理器里跑 `dl_iterate_phdr`
 不安全。重试改为搭在每次 `dlopen` 结束时。
 
-**5. `dlopen` 必须有四重兜底**
+**6. `dlopen` 必须有四重兜底**
 `dlvsym` / `dlsym` / `libdl` handle via `RTLD_NOLOAD` / `__libc_dlopen_mode`。
 返回 NULL 会破坏 im.elf 里所有 dlopen。
 
-**6. `CautionConfig.so` 不经过 dlopen**
+**7. `CautionConfig.so` 不经过 dlopen**
 它是 `viewUnified2.so` 的 `DT_NEEDED`，靠每次 dlopen 结束时的通用重试覆盖。
 
 ## 不要同时 preload 两个 hook 库
