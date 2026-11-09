@@ -1,0 +1,16 @@
+{
+  "deployed_library": "/usr/lib/libnewmenu_exp.so",
+  "sha256": "bc039e2e73432c33321be4ff46795f0f2b94955f9b32de5928ac8a13f3847b41",
+  "ordinary_process_load": "passed",
+  "reboots_issued": 1,
+  "before_boot_id": "6d5414d1-9c5a-4277-a841-f9ad2fab71f3",
+  "after_boot_id": "ce0db914-14a2-4e0a-8d02-a4cb428ccda9",
+  "ui_mapping": false,
+  "log_bytes": 0,
+  "snapshot_state": "snapshot",
+  "final_preload": "/etc/zve10_agent.so\n/usr/lib/libnewmenu_usr.so\n",
+  "rollback": "verified exact host readback",
+  "second_reboot": false,
+  "image_drop": false,
+  "guardian_run": false
+}

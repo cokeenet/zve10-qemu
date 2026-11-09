@@ -1,0 +1,2 @@
+/etc/zve10_agent.so
+/etc/libnewmenu.so

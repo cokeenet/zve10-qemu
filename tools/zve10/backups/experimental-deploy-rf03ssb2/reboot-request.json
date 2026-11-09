@@ -1,0 +1,6 @@
+{
+  "authorized_reboot_count": 1,
+  "before_boot_id": "6d5414d1-9c5a-4277-a841-f9ad2fab71f3",
+  "command": "/bin/busybox sync; /sbin/reboot",
+  "status": "sending"
+}

@@ -1,0 +1,16 @@
+[
+  {
+    "remote": "/etc/ld.so.preload",
+    "file": "preload.before.txt",
+    "bytes": 39,
+    "md5": "48bdd6a67b20715f7a3680bda52aab22",
+    "sha256": "6335163968267fbe14acbabc8eafb75fd043808ccb6d5c4a9dfbb579ba37ed02"
+  },
+  {
+    "remote": "/etc/libnewmenu.so",
+    "file": "camera-libnewmenu.so",
+    "bytes": 135332,
+    "md5": "40cc0e2f271dbbb13d3e6961017dd852",
+    "sha256": "58360091d415bc68f0748aa31cf718cac286e108fe511e322de296e5d5392123"
+  }
+]

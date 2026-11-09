@@ -25,7 +25,7 @@ CHUNK = 4096
 NFLASHA5_LBA = 0x05800000 // 512
 BAD_MARKER = b'invl'
 
-ARCHIVE = (Path(__file__).resolve().parents[2]
+ARCHIVE = (Path(__file__).resolve().parents[1]
            / 'backups/wbi-A-applied-20261109/live-block0-4096.bin')
 
 
@@ -126,7 +126,10 @@ def main():
     good = Path(a.archive).read_bytes()
     if len(good) < 4096:
         raise SystemExit('archive too small: %d' % len(good))
-    header, good_rest = good[:512], good[512:4096]
+    header = good[:512]
+    # Body means everything after the 4-byte marker, so gate 2 proves the ONLY
+    # difference from the archive is those four bytes.
+    good_rest = good[4:4096]
     print('archive magic     : %r' % header[:4])
     print('archive non-zero  : %d/512' % sum(1 for b in header if b))
 

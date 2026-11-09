@@ -1,0 +1,59 @@
+00008000-0000d000 r-xp 00000000 fc:0f 4075       /usr/bin/im.elf
+00015000-00016000 rw-p 00005000 fc:0f 4075       /usr/bin/im.elf
+00016000-002f2000 rw-p 00000000 00:00 0          [heap]
+04003000-0400b000 r-xp 00000000 fc:0f 46785      /usr/lib/libWlanResource.so
+0400b000-0400c000 rw-p 00008000 fc:0f 46785      /usr/lib/libWlanResource.so
+0400e000-04011000 r-xp 00000000 fc:07 593        /lib/libdl-2.11.2.so
+04011000-04018000 ---p 00003000 fc:07 593        /lib/libdl-2.11.2.so
+04018000-04019000 r--p 00002000 fc:07 593        /lib/libdl-2.11.2.so
+04019000-0401a000 rw-p 00003000 fc:07 593        /lib/libdl-2.11.2.so
+0401a000-0401b000 r--p 00000000 fc:0f 34851      /usr/share/app/viewManualRepair.uxc
+0401b000-0401c000 rw-p 00000000 00:00 0 
+0401c000-0401e000 r-xp 00000000 fc:0f 46756      /usr/lib/libcompassutil.so
+0401e000-04025000 ---p 00002000 fc:0f 46756      /usr/lib/libcompassutil.so
+04025000-04026000 rw-p 00001000 fc:0f 46756      /usr/lib/libcompassutil.so
+04026000-04027000 rw-p 00000000 00:00 0 
+04027000-0402c000 r-xp 00000000 fc:07 481        /lib/librt-2.11.2.so
+0402c000-04033000 ---p 00005000 fc:07 481        /lib/librt-2.11.2.so
+04033000-04034000 r--p 00004000 fc:07 481        /lib/librt-2.11.2.so
+04034000-04035000 rw-p 00005000 fc:07 481        /lib/librt-2.11.2.so
+04035000-04037000 rw-p 00000000 00:00 0 
+04037000-04038000 r-xp 00000000 fc:0f 46854      /usr/lib/libjemalloc_ds.so.1
+04038000-0403f000 ---p 00001000 fc:0f 46854      /usr/lib/libjemalloc_ds.so.1
+0403f000-04040000 rw-p 00000000 fc:0f 46854      /usr/lib/libjemalloc_ds.so.1
+04040000-04041000 r-xp 00000000 fc:0f 46858      /usr/lib/libutil_date.so
+04041000-04049000 ---p 00001000 fc:0f 46858      /usr/lib/libutil_date.so
+04049000-0404a000 rw-p 00001000 fc:0f 46858      /usr/lib/libutil_date.so
+0404a000-0404c000 r-xp 00000000 fc:0f 46757      /usr/lib/libInfraSKD.so
+0404c000-04054000 ---p 00002000 fc:0f 46757      /usr/lib/libInfraSKD.so
+04054000-04055000 rw-p 00002000 fc:0f 46757      /usr/lib/libInfraSKD.so
+04055000-04058000 -w-s 03103000 fc:07 138        /dev/mem
+04058000-04059000 r--s ffff5000 fc:07 138        /dev/mem
+04059000-0405a000 r--p 00000000 fc:0f 34618      /usr/share/app/LayoutMaster_Menu.uxc
+0405b000-0405e000 r-xp 00000000 fc:0f 46837      /usr/lib/libInfraKikiLogGenerator.so
+0405e000-04065000 ---p 00003000 fc:0f 46837      /usr/lib/libInfraKikiLogGenerator.so
+04065000-04066000 rw-p 00002000 fc:0f 46837      /usr/lib/libInfraKikiLogGenerator.so
+04066000-0406e000 r-xp 00000000 fc:0f 46762      /usr/lib/libInfraMediaMount.so
+0406e000-0406f000 rw-p 00008000 fc:0f 46762      /usr/lib/libInfraMediaMount.so
+0406f000-04070000 ---p 00000000 00:00 0 
+04070000-04078000 rw-p 00000000 00:00 0 
+04078000-04079000 r-xp 00000000 fc:07 475        /lib/libSTMcmdexecute.so
+04079000-04080000 ---p 00001000 fc:07 475        /lib/libSTMcmdexecute.so
+04080000-04081000 rw-p 00000000 fc:07 475        /lib/libSTMcmdexecute.so
+04081000-04082000 ---p 00000000 00:00 0 
+04082000-04089000 rw-p 00000000 00:00 0 
+04089000-0408a000 rw-s 1196b000 fc:07 138        /dev/mem
+0408a000-0408b000 r-xp 00000000 fc:0f 46880      /usr/lib/libpro00.so
+0408b000-04092000 ---p 00001000 fc:0f 46880      /usr/lib/libpro00.so
+04092000-04093000 rw-p 00000000 fc:0f 46880      /usr/lib/libpro00.so
+04093000-04094000 rw-p 00000000 00:00 0 
+04094000-04097000 r--p 00000000 fc:0f 34803      /usr/share/app/global.xdb
+04097000-0409e000 r-xp 00000000 fc:0f 46775      /usr/lib/libIMDB.so
+0409e000-040a5000 ---p 00007000 fc:0f 46775      /usr/lib/libIMDB.so
+040a5000-040a8000 rw-p 00006000 fc:0f 46775      /usr/lib/libIMDB.so
+040a8000-040aa000 r-xp 00000000 fc:0f 46778      /usr/lib/libbackup.so
+040aa000-040b1000 ---p 00002000 fc:0f 46778      /usr/lib/libbackup.so
+040b1000-040b2000 rw-p 00001000 fc:0f 46778      /usr/lib/libbackup.so
+040b2000-040b8000 r-xp 00000000 fc:0f 46739      /usr/lib/libosal_uipc.so
+040b8000-040c0000 ---p 00006000 fc:0f 46739      /usr/lib/libosal_uipc.so
+040c0000-040c1000 rw-p 00006000 fc:0f 46739      /usr/lib/libosal_uipc.so

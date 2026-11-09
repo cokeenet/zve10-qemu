@@ -1,0 +1,169 @@
+{
+ "time": "2026-11-08 00:47:50",
+ "parts": {
+  "nflasha2": [
+   {
+    "name": "facerec0.bin",
+    "size": 57888,
+    "cluster": 3
+   },
+   {
+    "name": "updater",
+    "size": 0,
+    "cluster": 5
+   },
+   {
+    "name": ".hasp",
+    "size": 88,
+    "cluster": 410
+   },
+   {
+    "name": "Backup.bin",
+    "size": 1235836,
+    "cluster": 20
+   },
+   {
+    "name": "DmmConfig.bin",
+    "size": 78120,
+    "cluster": 6
+   },
+   {
+    "name": "appfw_infra",
+    "size": 0,
+    "cluster": 88
+   },
+   {
+    "name": "facedmy.bin",
+    "size": 51200,
+    "cluster": 14
+   },
+   {
+    "name": "kemco.txt",
+    "size": 1925,
+    "cluster": 18
+   },
+   {
+    "name": "psd.bin",
+    "size": 4820992,
+    "cluster": 94
+   },
+   {
+    "name": "ulogio.bin",
+    "size": 3796,
+    "cluster": 19
+   },
+   {
+    "name": "Backup.bak",
+    "size": 1235836,
+    "cluster": 548
+   },
+   {
+    "name": "mode",
+    "size": 0,
+    "cluster": 468
+   },
+   {
+    "name": "gps",
+    "size": 0,
+    "cluster": 4
+   },
+   {
+    "name": ".etools",
+    "size": 4096,
+    "cluster": 411
+   },
+   {
+    "name": "zvegisk",
+    "size": 0,
+    "cluster": 394
+   },
+   {
+    "name": "zsd",
+    "size": 4,
+    "cluster": 395
+   },
+   {
+    "name": "zvping.log",
+    "size": 34,
+    "cluster": 408
+   },
+   {
+    "name": "agent_diag.txt",
+    "size": 9013,
+    "cluster": 398
+   },
+   {
+    "name": "unbind_result.txt",
+    "size": 215,
+    "cluster": 405
+   },
+   {
+    "name": "libjit_mark.txt",
+    "size": 54,
+    "cluster": 400
+   },
+   {
+    "name": "libfix_mark.txt",
+    "size": 66,
+    "cluster": 407
+   },
+   {
+    "name": "preload_probe.txt",
+    "size": 117,
+    "cluster": 401
+   }
+  ],
+  "nflasha11": [
+   {
+    "name": "AccessLog.dat",
+    "size": 2097220,
+    "cluster": 3
+   },
+   {
+    "name": "ThreadMonitor.bin",
+    "size": 0,
+    "cluster": 0
+   },
+   {
+    "name": "cleanup_log.txt",
+    "size": 1447,
+    "cluster": 268
+   },
+   {
+    "name": "zve10_agent.log",
+    "size": 16106,
+    "cluster": 267
+   },
+   {
+    "name": "AccessLog.bak",
+    "size": 2097220,
+    "cluster": 729
+   },
+   {
+    "name": "agent_v14.so",
+    "size": 18104,
+    "cluster": 372
+   },
+   {
+    "name": "part.bin",
+    "size": 334008,
+    "cluster": 5959
+   },
+   {
+    "name": "camfs.log",
+    "size": 726,
+    "cluster": 1687
+   },
+   {
+    "name": "p1",
+    "size": 14118912,
+    "cluster": 270
+   },
+   {
+    "name": "libnewmenu.so",
+    "size": 130824,
+    "cluster": 2
+   }
+  ]
+ }
+}

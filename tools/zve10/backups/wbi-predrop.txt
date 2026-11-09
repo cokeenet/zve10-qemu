@@ -1,0 +1,17 @@
+PRE_DROP
+cat: can't open '/sys/kernel/random/boot_id': No such file or directory
+2856.71 7926.13
+image_dev:
+*wbi4
+image_mode:
+2
+ssboot state/mode/resmode:
+snapshot
+optimize
+normal
+dmesg_bytes:
+7934
+bootin_environ_LD_PRELOAD:
+0
+0
+PRE_END

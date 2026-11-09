@@ -1,0 +1,91 @@
+PRE2
+ce0db914-14a2-4e0a-8d02-a4cb428ccda9
+--- dmesg 全文 ---
+ERROR) wl_cfg80211_attach_post : p2p0: p2p_dev_addr=7e:b8:da:ee:91:05
+[    4.106297] wlanMemoryAllocator: [DEBUG] size:22712
+[    4.106463] wlanMemoryAllocator: Provide Allocated Memory. g_pMemGfpAtomic_S[0] = 69f90000
+[    4.106602] wlanMemoryAllocator: [DEBUG] pt:69f90000
+[    4.106704] wlanMemoryAllocator: [DEBUG] size:49180
+[    4.106846] wlanMemoryAllocator: Provide Allocated Memory. g_pMemGfpAtomic_S[1] = 66800000
+[    4.107037] wlanMemoryAllocator: [DEBUG] pt:66800000
+[    4.140858] cfg80211: Updating information on frequency 2412 MHz for a 20 MHz width channel with regulatory rule:
+[    4.140903] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[    4.140930] cfg80211: Updating information on frequency 2417 MHz for a 20 MHz width channel with regulatory rule:
+[    4.140961] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[    4.140987] cfg80211: Updating information on frequency 2422 MHz for a 20 MHz width channel with regulatory rule:
+[    4.141019] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[    4.141044] cfg80211: Updating information on frequency 2427 MHz for a 20 MHz width channel with regulatory rule:
+[    4.141076] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[    4.141101] cfg80211: Updating information on frequency 2432 MHz for a 20 MHz width channel with regulatory rule:
+[    4.141133] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[    4.141158] cfg80211: Updating information on frequency 2437 MHz for a 20 MHz width channel with regulatory rule:
+[    4.141190] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[    4.141216] cfg80211: Updating information on frequency 2442 MHz for a 20 MHz width channel with regulatory rule:
+[    4.141247] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[    4.141273] cfg80211: Updating information on frequency 2447 MHz for a 20 MHz width channel with regulatory rule:
+[    4.141304] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[    4.141330] cfg80211: Updating information on frequency 2452 MHz for a 20 MHz width channel with regulatory rule:
+[    4.141362] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[    4.141387] cfg80211: Updating information on frequency 2457 MHz for a 20 MHz width channel with regulatory rule:
+[    4.141419] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[    4.141444] cfg80211: Updating information on frequency 2462 MHz for a 20 MHz width channel with regulatory rule:
+[    4.141476] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[    4.141502] cfg80211: Updating information on frequency 2467 MHz for a 20 MHz width channel with regulatory rule:
+[    4.141534] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[    4.141559] cfg80211: Updating information on frequency 2472 MHz for a 20 MHz width channel with regulatory rule:
+[    4.141591] cfg80211: 2402000 KHz - 2482000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[    4.141617] cfg80211: Updating information on frequency 5180 MHz for a 20 MHz width channel with regulatory rule:
+[    4.141648] cfg80211: 5140000 KHz - 5360000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[    4.141674] cfg80211: Updating information on frequency 5200 MHz for a 20 MHz width channel with regulatory rule:
+[    4.141705] cfg80211: 5140000 KHz - 5360000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[    4.141731] cfg80211: Updating information on frequency 5220 MHz for a 20 MHz width channel with regulatory rule:
+[    4.141763] cfg80211: 5140000 KHz - 5360000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[    4.141971] cfg80211: Updating information on frequency 5240 MHz for a 20 MHz width channel with regulatory rule:
+[    4.142006] cfg80211: 5140000 KHz - 5360000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[    4.142032] cfg80211: Updating information on frequency 5260 MHz for a 20 MHz width channel with regulatory rule:
+[    4.142064] cfg80211: 5140000 KHz - 5360000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[    4.142090] cfg80211: Updating information on frequency 5280 MHz for a 20 MHz width channel with regulatory rule:
+[    4.142121] cfg80211: 5140000 KHz - 5360000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[    4.142147] cfg80211: Updating information on frequency 5300 MHz for a 20 MHz width channel with regulatory rule:
+[    4.142178] cfg80211: 5140000 KHz - 5360000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[    4.142204] cfg80211: Updating information on frequency 5320 MHz for a 20 MHz width channel with regulatory rule:
+[    4.142236] cfg80211: 5140000 KHz - 5360000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[    4.142262] cfg80211: Updating information on frequency 5745 MHz for a 20 MHz width channel with regulatory rule:
+[    4.142293] cfg80211: 5460000 KHz - 5860000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[    4.142319] cfg80211: Updating information on frequency 5765 MHz for a 20 MHz width channel with regulatory rule:
+[    4.142351] cfg80211: 5460000 KHz - 5860000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[    4.142377] cfg80211: Updating information on frequency 5785 MHz for a 20 MHz width channel with regulatory rule:
+[    4.142409] cfg80211: 5460000 KHz - 5860000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[    4.142435] cfg80211: Updating information on frequency 5805 MHz for a 20 MHz width channel with regulatory rule:
+[    4.142466] cfg80211: 5460000 KHz - 5860000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[    4.142492] cfg80211: Updating information on frequency 5825 MHz for a 20 MHz width channel with regulatory rule:
+[    4.142523] cfg80211: 5460000 KHz - 5860000 KHz @ 40000 KHz), (600 mBi, 2000 mBm)
+[    9.041734] cfg80211: Found new beacon on frequency: 5180 MHz (Ch 36) on phy0
+[    9.041820] cfg80211: Found new beacon on frequency: 5180 MHz (Ch 36) on phy0
+[    9.041872] cfg80211: Found new beacon on frequency: 5180 MHz (Ch 36) on phy0
+[    9.041924] cfg80211: Found new beacon on frequency: 5180 MHz (Ch 36) on phy0
+[    9.041978] cfg80211: Found new beacon on frequency: 5180 MHz (Ch 36) on phy0
+[    9.042031] cfg80211: Found new beacon on frequency: 5180 MHz (Ch 36) on phy0
+[    9.042091] cfg80211: Found new beacon on frequency: 5220 MHz (Ch 44) on phy0
+[    9.042143] cfg80211: Found new beacon on frequency: 5220 MHz (Ch 44) on phy0
+[    9.042284] cfg80211: Found new beacon on frequency: 5745 MHz (Ch 149) on phy0
+[    9.042338] cfg80211: Found new beacon on frequency: 5745 MHz (Ch 149) on phy0
+[    9.042392] cfg80211: Found new beacon on frequency: 5785 MHz (Ch 157) on phy0
+[    9.042588] cfg80211: Found new beacon on frequency: 5180 MHz (Ch 36) on phy0
+[    9.042643] cfg80211: Found new beacon on frequency: 5180 MHz (Ch 36) on phy0
+[    9.042697] cfg80211: Found new beacon on frequency: 5180 MHz (Ch 36) on phy0
+[    9.042749] cfg80211: Found new beacon on frequency: 5180 MHz (Ch 36) on phy0
+[    9.042802] cfg80211: Found new beacon on frequency: 5180 MHz (Ch 36) on phy0
+[    9.042856] cfg80211: Found new beacon on frequency: 5180 MHz (Ch 36) on phy0
+[    9.042909] cfg80211: Found new beacon on frequency: 5220 MHz (Ch 44) on phy0
+[    9.042961] cfg80211: Found new beacon on frequency: 5220 MHz (Ch 44) on phy0
+[    9.043104] cfg80211: Found new beacon on frequency: 5745 MHz (Ch 149) on phy0
+[    9.043158] cfg80211: Found new beacon on frequency: 5745 MHz (Ch 149) on phy0
+[    9.043212] cfg80211: Found new beacon on frequency: 5785 MHz (Ch 157) on phy0
+[    9.043304] cfg80211: Pending regulatory request, waiting for it to be processed...
+[    9.472584] CFG80211-ERROR) wl_cfg80211_connect : Connectting with10:4a:7d:8b:12:a3 channel (6) ssid "CokeeHotspot", len (12)
+[    9.472732] 
+[    9.532401] wl_bss_connect_done succeeded with 10:4a:7d:8b:12:a3
+[    9.597641] wl_bss_connect_done succeeded with 10:4a:7d:8b:12:a3
+[   14.634441] wlan0: no IPv6 routers present
+PRE2_END

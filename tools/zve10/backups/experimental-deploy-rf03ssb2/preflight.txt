@@ -1,0 +1,11 @@
+PREFLIGHT
+6d5414d1-9c5a-4277-a841-f9ad2fab71f3
+3263.89 11308.67
+/etc/zve10_agent.so
+/usr/lib/libnewmenu_usr.so
+40cc0e2f271dbbb13d3e6961017dd852  /usr/lib/libnewmenu_usr.so
+/dev/nflasha15 /usr ext2 ro,relatime,errors=continue 0 0
+ls: /usr/lib/libnewmenu_exp.so: No such file or directory
+ls: /etc/ld.so.preload.before-exp: No such file or directory
+202
+PREFLIGHT_END

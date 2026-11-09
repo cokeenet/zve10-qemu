@@ -1,0 +1,6 @@
+{
+  "kind": "hardware-agent-readonly",
+  "command": "BB=/bin/busybox\necho STATUS_BEGIN\nfor f in /proc/ssboot/state /proc/ssboot/mode /proc/ssboot/resmode /proc/udm/upm_bootmode /sys/power/image_mode /sys/power/image_dev /sys/module/warm/parameters/resume_drop /sys/module/warm/parameters/boot_drop /sys/module/warm/parameters/ignore_drop; do\n if [ -f \"$f\" ]; then echo \"PATH=$f\"; $BB cat \"$f\" 2>&1; fi\ndone\necho BOOT_MESSAGES\n$BB dmesg 2>&1 | $BB grep -iE 'WARMBOOT|SSBI|snapshot|ssboot|resume from' | $BB sed -n '1,20p'\necho STATUS_END\n",
+  "response": "STATUS_BEGIN\nPATH=/proc/ssboot/state\nsnapshot\nPATH=/proc/ssboot/mode\noptimize\nPATH=/proc/ssboot/resmode\nnormal\nPATH=/proc/udm/upm_bootmode\nNORM\nPATH=/sys/power/image_mode\n2\nPATH=/sys/power/image_dev\n*wbi4\nPATH=/sys/module/warm/parameters/resume_drop\n0\nPATH=/sys/module/warm/parameters/boot_drop\nN\nPATH=/sys/module/warm/parameters/ignore_drop\nY\nBOOT_MESSAGES\nSTATUS_END\n",
+  "boot_id_last_observed": "6d5414d1-9c5a-4277-a841-f9ad2fab71f3"
+}

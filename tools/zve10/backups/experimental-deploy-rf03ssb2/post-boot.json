@@ -1,0 +1,4 @@
+{
+  "command": "BB=/bin/busybox\necho POST_BOOT_BEGIN\n$BB cat /proc/sys/kernel/random/boot_id\n$BB cat /proc/uptime\n$BB cat /proc/ssboot/state\n$BB cat /etc/ld.so.preload\n$BB md5sum /usr/lib/libnewmenu_exp.so\n$BB grep ' /usr ' /proc/mounts\nfor pid in 149 157; do\n echo \"PID=$pid\"\n $BB cat /proc/$pid/comm 2>&1\n $BB grep -E 'libnewmenu|zve10_agent' /proc/$pid/maps 2>&1\ndone\nfor f in /log/newmenu.log /tmp/newmenu.log /etc/newmenu.log; do\n if [ -f \"$f\" ]; then\n  echo \"LOG=$f\"\n  $BB wc -c < \"$f\"\n  $BB sed -n '1,100p' \"$f\"\n fi\ndone\necho POST_BOOT_END\n",
+  "response": "POST_BOOT_BEGIN\nce0db914-14a2-4e0a-8d02-a4cb428ccda9\n156.26 454.41\nsnapshot\n/etc/zve10_agent.so\n/usr/lib/libnewmenu_exp.so\n6831935c8517f310fd636c9062a2aa54  /usr/lib/libnewmenu_exp.so\n/dev/nflasha15 /usr ext2 ro,relatime,errors=continue 0 0\nPID=149\nbootin.elf\nPID=157\nim.elf\nLOG=/log/newmenu.log\n0\nPOST_BOOT_END\n"
+}
