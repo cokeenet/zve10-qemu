@@ -39968,3 +39968,77 @@ lsusb 中无 Sony 设备
 ## ② 结论
 staged archive 的 payload 归因已闭合，但当前 Image 仍需在同一 cpio source 配置下重新生成后才能宣称包含这版 payload。此前 source/观察结论只承认同时绑定 Image、cpio、argtrace SHA 的运行。
 
+
+# ★★★★★★★★★ 2026-11-09 第四百四十二章（第 81 轮）：**符号插桩对本库内部调用系统性失效；新增 WLIST 探针读出 singleton 但 inner=0**
+
+## ① 机制修正：为什么 onDrawNotice 计数 0 不能作为"没有绘制"的证据
+
+反汇编 `libObj.so` 证实，库内部对同模块函数的调用是**直接 BL**，不经 PLT：
+
+```asm
+00106524 <_ZN2ux6wgtsys12WidgetSystem10notifyDrawEv@@Base>:
+  10652c: bl 1059bc        ; isFrameDelay 前置闸门
+  10653a: bl 1061c0        ; 取第一个 widget
+  10655a: bl dec04         ; 取下一个 widget
+  106546: blx r3           ; 虚函数槽调用
+```
+
+`onDrawNotice` 在 libObj 中引用 8 处，**全部是 `bl`/`b.w` 直跳，PLT 引用数为 0**：
+
+```text
+libObj 内 bl 到 onDrawNotice 区域：8 处
+libObj 内 onDrawNotice@plt 引用  : 0
+appFw 内 onDrawNotice@plt 引用   : 0
+```
+
+`notifyDraw` / `updateFrame` / `onDrawNotice` 在 `.data.rel.ro` 中的 vtable 槽引用数同样为 0（唯一邻近值 `0x34a9bc -> 0x108b05` 属于另一函数）。
+
+⇒ **LD_PRELOAD 同名符号插桩只能截获跨模块 PLT 调用，无法截获 libObj 自身内部的 BL 调用。**
+此前记录的 `onDrawNotice=0 / GRM_gpermFillrect=0 / WIDGET_CTOR=0 / WNODE ctor=0`
+只能说明"插桩未命中"，**不能说明这些函数没有被调用**。这是方法层的系统性局限，需在后续所有结论中保留此限定。
+
+## ② 新增 WLIST 探针（只读，不调用任何目标函数）
+
+`argtrace.c` 新增 WLIST 段，按 `notifyDraw` 自身第一条指令序列复原其输入：
+
+```text
+0x1061c0: ldr r3,[pc,#32]  (=0x24eb98)
+0x1061c2: ldr r2,[pc,#36]  (=0x1ba8)
+0x1061c4: add r3, pc       -> r3 = lib + 0x354d60  (.got 基址)
+0x1061ca: ldr r3,[r3,r2]    -> *(lib + 0x356908) = WidgetSystem 单例槽
+0x1061cc: ldr r0,[r3,#0]    -> 对象；+0x4b4 = 链表头
+```
+
+运行时实测（`out/wlist1`）：
+
+```text
+WLIST lib=0x3f7dbb0 pslot=0x42d44b8 singleton=0x2a8142d7 inner=0
+```
+
+## ③ 运行归因（严格绑定）
+
+```text
+Image    a28d914dd15b4082fbb4db33b01e50bbbcde1ad00c5040b82a2c1eea5e7ca41b
+cpio     99d288bc25c302bf3508818c0fb7461bd990dc5c235724cd3d19db8f82dc8d49
+argtrace 0aa49fdc202c15f3398a01f8314f8a9497334fa0ab35f0573f78f8b57f8d5453
+QEMU     8457417745b387eae99f6967f63e9599d23640fdcc80f4fabc01803c9790150a
+```
+
+单实例 `systemd-run --unit=zve10-wlist1 --collect --property=MemoryMax=4G`，收尾 `state=inactive`，无残留 QEMU。
+
+## ④ 结果与判读
+
+- 基线：行数 1612、`[AS]` 816、`CREATELAYER n=6`。行数与 `[AS]` 偏离历史 ~1400/~350 是因为本轮 init 同时 preload 了
+  `libnewmenu.so`（另一会话产物），**不是本探针引入**；`createLayer=6` 仍在位。此轮结论按此限定使用。
+- `WLIST` 只出现 1 次，且 `singleton=0x2a8142d7` 与 `lib=0x3f7dbb0` 相减得到一个非模块内偏移（`0x26896727`），
+  说明该槽在当前构建下**不是指向 WidgetSystem 对象的有效指针**，或该槽尚未写入。
+  `inner=0` 因此**不能**判读为"widget 列表为空"，只能判读为"该槽内容不可用作基址"。
+- `GATE_LINK base=0x478f4c v12=0x48c420 NON-EMPTY` 与 `notifyDraw=913571132` 同时出现，说明
+  `notifyDraw` 确实被调用并返回非零，与本轮 WLIST 的 `inner=0` 构成矛盾，需进一步定位
+  `0x356908` 槽的真实语义（可能为 GOT 间接层，而非单例本体）。
+
+## ⑤ 下一步
+
+1. 核 `0x356908` 是否指向 GOT 内的二次间接槽（若是，需再解引用一层）；
+2. 用 QEMU `pc_sample` 精确统计 `0x1061c0` / `0xdec04` / `0x106546`（blx 虚调用点）命中，作为不依赖插桩的独立测量；
+3. 绘制链未出帧，FB 仍 `nonzero=1 unique=2`，无合格 640×480 帧。
