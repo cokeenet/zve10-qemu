@@ -40042,3 +40042,99 @@ QEMU     8457417745b387eae99f6967f63e9599d23640fdcc80f4fabc01803c9790150a
 1. 核 `0x356908` 是否指向 GOT 内的二次间接槽（若是，需再解引用一层）；
 2. 用 QEMU `pc_sample` 精确统计 `0x1061c0` / `0xdec04` / `0x106546`（blx 虚调用点）命中，作为不依赖插桩的独立测量；
 3. 绘制链未出帧，FB 仍 `nonzero=1 unique=2`，无合格 640×480 帧。
+
+# ★★★★★★★★★ 2026-11-09 第四百四十三章（第 86–87 轮）：**widget 链表确认为空；WLIST 探针三路自洽；基线因他库污染曾失效**
+
+## ① 修正：前两轮 WLIST 数据无效，原因有二
+
+**（a）第 81 轮**：base 用 `dlsym(notifyDraw)` 派生。本进程 hook 了该符号，`dlsym` 返回的是 hook，
+推出的 base 落在库外，`singleton` 得到 `0x2a8142d7`（与 lib 相减为 `0x26896727`，非模块内偏移）。
+**这是探针自身错误，不是目标状态。**
+
+**（b）第 85 轮**：`libObj.so` 在该 run 中**根本没有被 dlopen**。证据：
+
+```text
+wlist3: LIBOBJ_SYM 出现 0 次；dlopen 仅 appFwBoot.so / appFw.so
+gotobs76（参考）：LIBOBJ_SYM 出现 24 次
+```
+
+根因是 init 的 preload 串被另一会话改成
+`LD_PRELOAD=/usr/lib/libnewmenu.so:/usr/lib/argtrace.so:/usr/lib/wcp4.so`，
+`libnewmenu.so` 排在 argtrace 之前，改变了加载顺序，libObj 未被加载。
+该 run 的 `WLIST appfw=... psm slot still PLT0` 与 `WLIST2 no psm yet` 均因此产生。
+
+⇒ 按铁律 4，**wlist3 的探针结果整体停用**。已移除 `libnewmenu.so`，恢复已知良好 preload
+`/usr/lib/argtrace.so:/usr/lib/wcp4.so`（`init.bak-newmenu` 保留原文件）。
+
+## ② 修正后的 WLIST（双源派生 + 调用后二次采样）
+
+`argtrace.c` 的 WLIST 段改为：
+
+```text
+base 优先取 g_real_psm（已捕获的真实 processSystemMessage）
+若为空，回落到 g_real_start_off -> appFw base -> appFw+0x377acec GOT 槽
+   delta == 0x5289d0 => 仍是 PLT0，报告并放弃（不猜）
+notifyDraw 调用之后再采一次（WLIST2），分清"列表本就为空"与"遍历前被清空"
+```
+
+## ③ 运行归因（wlist4，基线已恢复）
+
+```text
+Image    c9cfbdf9c333509f4785846084b41a48f2230a78ad8f382059f90b2ee2f85c4b
+cpio     8db5c04a0758a5d07019b9816609de7396569e61b6b6f1b284899c4569c02583
+argtrace 3b57a1ff74218fe7513f218a57acd9fd447938a88eff539b1eb04f031b866c54
+QEMU     8457417745b387eae99f6967f63e9599d23640fdcc80f4fabc01803c9790150a
+```
+
+单实例 `zve10-wlist4`，收尾 `state=inactive`，无残留。
+
+基线哨兵：
+
+```text
+行数 1491   [AS] 824   CREATELAYER n=6   LIBOBJ_SYM 24 次
+```
+
+## ④ 结果：三路独立证据互证，widget 链表为空
+
+```text
+UX_RENDER_TRIGGER wgtsys = 0x4d49e0
+WLIST inner (=singleton)  = 0x4d49e0      ← 一致
+GATE_LINK base            = 0x4d4e94
+WLIST head                = 0x4d4e94      ← 一致
+
+WLIST  head=0x4d4e94 fwd=0x4d4e94 back=0 count=0
+WLIST2 head=0x4d4e94 fwd=0x4d4e94 back=0 count=0
+```
+
+派生 base `lib=0xa898000` 与 `LIBOBJ_SYM` 恢复一致，探针自洽。
+
+判读：
+
+- `fwd == head` 是标准空链表自指形态，`count=0` 在 512 次上限前即 break；
+- notifyDraw **前后两次采样均为 0**，排除"遍历时被清空"；
+- ⇒ `notifyDraw` 的 `for` 循环体一次都不执行，`0x106546` 的 `blx r3` 虚调用从未发生。
+
+这给出先前 `onDrawNotice=0 / GRM_gperm*=0 / FB 全零` 的**真正因果**：
+不是插桩看不到，而是**确实没有 widget 被画**，因为 WidgetSystem 的 widget 链表为空。
+
+`GATE_LINK` 的 `NON-EMPTY` 检查的是 `head+12` 与 `head+16`，与这条 widget 链表不同一结构，不构成矛盾。
+
+## ⑤ 断点已定位：创建侧，而非绘制侧
+
+```text
+createLayer = 6          ✅ 图层建了
+widget 链表 count = 0    ❌ 没有 widget 挂上去
+notifyDraw 被调用        ✅ 泵在跑
+```
+
+⇒ 问题在 widget 的**创建/挂载**，不在绘制遍历。下一步按 a7c2-re 的做法走
+**函数体入口 inline hook**（`menu-observe.c` 用 `mprotect` + 原地跳转，
+`libnativeentry` 用 `ne_hook` + trampoline），在 `Widget` 构造与 `setParent` 入口计数。
+
+## ⑥ 本轮未出帧
+
+```text
+FB_SAMPLE nonzero=1 unique=2（全零）
+合格 640×480 帧：无
+SHA256 / 物理地址：无
+```
