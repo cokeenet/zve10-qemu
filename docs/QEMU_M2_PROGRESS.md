@@ -41031,3 +41031,106 @@ docs/zve10/m2-port-final/run-wlist.sh                  运行脚本快照
 收尾     qemu-system-arm 残留 = 0
 基线     全部运行 createLayer=6；报废轮次（R38/R45）已标注并回退
 ```
+
+# ★★★★★★★★★ 2026-11-10 第四百五十三章（目标轮 102–110）：**直接驱动进入 drawFramebuffer 但不返回；并纠正 PC 采样方法论**
+
+## ① 最重要的新事实：drawFramebuffer 可被调用、能进入、不返回
+
+把「直接驱动」接到 `osal_rcv_msg_tmo` 收尾（该点确定在启动完成后仍被调用），
+并用 `FORCEDRAW=1` 开关控制，实测（out/fd5，基线 createLayer=6 完好）：
+
+```text
+FORCEDRAW trigger at receive path
+FORCE_DRAW base=0xa969000 self_slot=0xacc0490 self=0xad31044
+DFBHOOK call=1 self=0xad31044 tid=151 f23a=0x3f80      ← 进入 drawFramebuffer
+FORCE_DRAW returned                                     ← 0 次，未返回
+```
+
+**这是 110 轮里第一次真正把固件自身的绘制函数调起来。它进去了，没出来。**
+
+## ② 而 GPU 侧的初始化、设备、中断全部就位（此前判断全部推翻）
+
+```text
+MODULE_BEGIN /usr/kmod/grm_gles.ko
+!!! GPE HW: bar remapped 0xf1000000->0xf1000000 size 4000
+MODULE_END /usr/kmod/grm_gles.ko status=0            ← 加载成功，无 request_irq fail
+```
+
+```text
+grm_gles.ko（ARM 反汇编 sugilite_chdev_register）：
+  c8: mov r0, #76
+  d8: bl  request_threaded_irq                        ← 请求 IRQ 76
+
+QEMU hw/arm/zve10.c：
+  gpe->irq = pic[76 - 32];                            ← IRQ 76 已接 GIC
+  qemu_irq_raise(s->irq);
+实测：ZVE10_GPE_INIT_FENCE 19 次                       ← 中断确实 raise 过
+```
+
+**结论：驱动的 BAR（0xf1000000，size 0x4000）与 QEMU 的 GPE 设备完全吻合，
+IRQ 76 已接线且实测 raise 19 次，模块加载返回 0。**
+
+**此前两轮我判断「sugi 设备无中断」「驱动基址是 0xf3400000」——两条都错，已作废。**
+
+## ③ 必须记录的方法论错误：PC 采样对短函数无效
+
+此前多次以「PC 采样在某区间零命中」作为「该函数未执行」的证据。**这是错的。**
+
+```text
+out/fd5：DFBHOOK call=1 证明 drawFramebuffer 确实被进入（日志第 1531 行）
+但 PC 采样在 drawFramebuffer 区间 0xe565a–0xe5b00 内命中数 = 0
+```
+
+原因：采样周期几十毫秒，函数执行微秒级，采样抓不住。
+**「零命中 ≠ 未执行」，该指标只能用于判断「是否长期停留在某处」，不能证明未执行。**
+
+同轮还纠正了一处归因错误：我用 `[base, base+0x3600000)` 作为 libObj 的窗口，
+但 libObj 真实的 `PT_LOAD` 跨度只到 `base+0x27604f0`（`.text` 止于 `0x266e48`），
+所以「+0xb32ec0 占 32/77 样本是自旋」属于把相邻映射错归给 libObj，结论作废。
+
+正确的归因（按各模块真实 `PT_LOAD` 跨度，995 个用户态样本）：
+
+```text
+/usr/lib/appFw.so          706
+/lib/libc-2.11.2.so         82
+(未命中)                    79
+/lib/ld-2.11.2.so           53
+/usr/lib/libObj.so          19      ← 19 个样本、19 个不同 PC，无重复
+/lib/libstdc++.so.6.0.14    17
+```
+
+## ④ 苏哇帧缓冲侧的实测
+
+```text
+FB_SAMPLE 全部为 nonzero=0 unique=1      ← 帧缓冲从头到尾一个非零字节都没有
+FB_FRAME    0
+FB_BOTH     0
+GPE2D_COPY  0
+GPE_FILL    0
+```
+
+**即：QEMU 侧从未收到任何绘图包，帧缓冲从未被写过。**
+
+## ⑤ 当前矛盾（未解决）
+
+```text
+drawFramebuffer 可进入（实测）           ✅
+GPU 驱动加载成功                         ✅
+BAR 与设备吻合                           ✅
+IRQ 76 已接线且 raise 19 次              ✅
+drawFramebuffer 不返回                   ❌
+帧缓冲全零                               ❌
+```
+
+**设备、中断、驱动三者就位而函数仍不返回，说明等待发生在软件层（互斥/资源/线程同步），
+不是硬件模型缺失。这一点已超出剩余轮次可解决的范围。**
+
+## ⑥ 约束遵守
+
+```text
+单实例   systemd-run --unit=zve10-* --collect --property=MemoryMax=4G
+基线     fd5: 行数 1688 / [AS] 1014 / createLayer=6 / LIBOBJ_SYM=24
+         R102（out/fd3）因 createLayer=2 已整轮报废并回退配置
+收尾     qemu-system-arm 残留 = 0
+产出     仅写 /root/fw/oss
+```
