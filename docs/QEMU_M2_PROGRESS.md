@@ -40691,3 +40691,133 @@ a7c2-re 出帧的方式**不是**依赖固件自己循环，而是：
 SHA256 / 物理地址：无
 QEMU 实例：0
 ```
+
+# ★★★★★★★★★ 2026-11-10 第四百五十章（目标轮 34–47）：**渲染函数结构完整解出；热路径 hook 报废并回退**
+
+## ① 本轮最重要的结构发现：渲染帧函数
+
+`appFw` 里 `drawFramebuffer` 只有一个调用点（`.rel.plt` 仅 1 条重定位）：
+
+```asm
+54faae: bl 54ed12                    ← 渲染一帧（唯一调用）
+```
+
+解码核对：字节 `ff f7 30 f9` → BL，target = `0x54ed12` ✅
+
+`appFw+0x54ed12` 是完整的渲染帧函数：
+
+```asm
+54ed12: stmdb.w sp!,{r4,r5,r6,r7,r8,lr}
+54ed16: mov   r4,r0
+54ed18: add   r7,sp,#0
+54ed1a: add.w r4,r4,#0x6a8
+54ed1e: blx   52a490 <UXEngine::wgtsys()@plt>
+54ed22: blx   52a774 <WidgetSystem::updateCurrentTime()@plt>
+54ed28: movw  r1,#0x3f6
+54ed2c: blx   9245a8
+54ed32: blx   52a490 <wgtsys()>
+54ed36: blx   52a0d0 <WidgetSystem::processEvent()@plt>
+```
+
+再往下：
+
+```asm
+54ed4c: blx wgtsys()
+54ed50: blx isFrameDelay@plt
+54ed54: cbz r0, 54ed90              ← 未到帧时间则跳过绘制
+54ed56: blx wgtsys()
+54ed5a: blx updateFrame@plt         ← 只更新，不绘制
+54ed5e: subs r5,#1
+54ed60: beq 54ed90
+54ed62: b   54ed4c                  ← 循环
+
+54ed64 ... 54ed74: blx notifyDraw@plt
+54ed7e: blx gfxeng@plt
+54ed82: blx drawFramebuffer@plt     ← ★ 真正绘制
+```
+
+调用者的门（`0x54fa60`）：
+
+```asm
+54fa72: bcs 54fad4                  ← 64 位时间节流，不足则跳过
+54fa7c: beq 54fae6                  ← bl 54f2ae 返回 0 则退出循环
+54faae: bl  54ed12                  ← 渲染一帧
+```
+
+## ② 一处必须更正的记录
+
+旧记录把 `libObj+0x1059bc`（读 `[wg+0x544]` 的布尔判断）当成 `isFrameDelay`。
+实测反汇编：
+
+```text
+isFrameDelay 符号 = libObj+0x105989，36 字节
+  10598e: bl e2c36           取第一个 64 位时间值
+  105994: add.w r0,r6,#24    读 wg+0x18
+  10599a: bl e2c36           取第二个 64 位时间值
+  10599e: cmp r4,r0 / sbcs.w ← 64 位比较
+  1059a6: movcc r0,#0        now < deadline  → 0
+  1059a8: movcs r0,#1        now >= deadline → 1
+
+libObj+0x1059bc（notifyDraw 首条 bl 的目标）：
+  1059bc: ldr.w r0,[r0,#1348]  读取 wg+0x544
+  1059c6: it ne / movne r0,#1  非零即真
+```
+
+两者是不同函数。**`notifyDraw` 首条读的是 `wg+0x544` 的布尔，不是 isFrameDelay。**
+
+## ③ 热路径 hook 报废（rf1，已回退）
+
+尝试在 `0x54ed12` 挂 inline hook 以确认“渲染函数是否被调用”。12 字节 prologue 逐条核实为
+PC 无关（`stmdb.w / mov / add / add.w`），但结果：
+
+```text
+行数 299 / [AS] 29 / LIBOBJ_SYM 0 / CREATELAYER 0 次
+```
+
+按铁律 4 整轮报废，从源码删除全部 RFHOOK 代码，重编回到 `513ee10f…`（与 dfb1 一致）。
+
+**判断**：这是第一次在**高频热路径**（渲染循环每帧调用）上挂 hook。此前成功的都是
+低频入口（notifyDraw / drawFramebuffer / decodeImpl）。热路径 hook 的时序扰动
+与本次崩塌高度相关，**该手段不再重试**。
+
+## ④ 回退后的基线复核（restore1）
+
+```text
+行数 1437 / [AS] 773 / CREATELAYER n=6 / LIBOBJ_SYM 24      ✅ 恢复
+DFBHOOK installed addr=0xa97f65a tramp=0x93da000 jump_bytes=10
+DFBHOOK call        0
+DRAW_PROBE notifyDraw  0
+GRMHOOK fillrect n=   0
+LZPROBE call          0
+QEMU 残留             0
+```
+
+## ⑤ 当前确定的结构与零调用清单
+
+```text
+渲染帧函数入口        appFw+0x54ed12（结构已完整解出）
+唯一调用者            appFw+0x54faae
+notifyDraw            libObj+0x106524    0 次（inline hook）
+drawFramebuffer       libObj+0xe565a     0 次（inline hook，本轮实证）
+GRM_gperm*            libObj+0x117b4c/c86 0 次（inline hook）
+Lz77Decoder::decode   libObj+0x10bff8    0 次（inline hook）
+```
+
+**四个绘制入口、四种独立 hook、全部零调用，且每个 hook 的安装均已校验
+（prologue memcmp 通过、地址换算正确）。**
+
+## ⑥ 本轮未出帧
+
+```text
+合格 640×480 帧：无
+SHA256 / 物理地址：无
+QEMU 实例：0
+```
+
+## ⑦ 约束遵守
+
+```text
+单实例    systemd-run --unit=zve10-restore1 --collect --property=MemoryMax=4G
+收尾       qemu-system-arm 残留 = 0
+产出       仅写 /root/fw/oss
+```
