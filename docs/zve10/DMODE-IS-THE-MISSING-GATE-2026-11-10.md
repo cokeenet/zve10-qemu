@@ -1,88 +1,70 @@
-# /setting/mode/dmode is the gate that stops env.txt from ever being read
+# What actually stops env.txt: it was never on the partition
 
-## The closed chain
+Earlier notes blamed the vfat `mmap` inside `set_oreore_env`, and a first pass at
+this document blamed a missing `/setting/mode/dmode`. Both are wrong. Reading the
+FAT tree of the two real partition images settles it.
 
-Blocker A said "env.txt is written, but `LD_PRELOAD` never reaches im.elf, and
-the most suspicious point is `mmap` on vfat". The mmap is not reached at all.
-The file that decides whether `set_oreore_env` runs is missing on this camera.
+## What the images contain
 
 ```
-0x9B56  mount /dev/nflasha2 -> /setting                (init)
+nflasha2.img           (2026-10-25)   dmode MISSING   env.txt MISSING
+nflasha2_current.img   (2026-10-27)   dmode = "3\n"   env.txt MISSING
+                                      preload = "\n"
+```
+
+So on the later image, which is the state the camera booted with during the
+env.txt experiments, the gate file **did** exist. The gate was open.
+
+## The chain, corrected
+
+```
+0x9B56  mount /dev/nflasha2 -> /setting
 0x9B78  check_oreore2 -> check_mode_file
-0x93CC    open("/setting/mode/dmode", O_RDONLY)
-0x93D2    subs r4, r0, #0
-0x93D4    blt 0x947C        -> return -1, nothing else happens
-0x9404    str r2(=1), [0x14868]   -> set only when open succeeded
+0x93CC    open("/setting/mode/dmode")   -> succeeds on the 10-27 image
+0x9404    str r2(=1), [0x14868]         -> flag set; contents irrelevant
 0x9B7E  ldr r3, [0x14868]
-0x9B80  cbz r3, 0x9B86      -> flag 0 skips the next call
-0x9B82  set_oreore_env -> open("/setting/env.txt")
+0x9B80  cbz r3, 0x9B86                  -> not taken, flag is 1
+0x9B82  set_oreore_env
+0x98BA    open("/setting/env.txt")      -> FAILS, file is not on the partition
+0x98C4    blt -> return                 -> silent, exactly as observed
 ```
 
-The flag at `0x14868` is set by **file existence alone**. `0x9404` stores a
-constant 1 as soon as the open succeeds; the file's contents only choose among
-five unrelated mode bits (`k/g/d/e`, written to `0x14894`, `0x14890`, `0x1487C`,
-`0x14870`, `0x14864`).
+`0x9404` stores a constant, so the flag depends only on the open succeeding. The
+contents of `dmode` ("3") select a mode string and set none of the `k/g/d/e`
+bits. That means `bootin`'s `flag & 0x40` stays clear and its
+`/setting/mode/preload` path is not read either — but that is a separate route
+and not the reason env.txt failed.
 
-## The measurement
+## Why this is the correct conclusion
 
-`/setting/mode` on this camera contains exactly one file, `zve10_net`, whose
-content is `off\n`. There is no `dmode`. Verified offline against both real
-partition images:
+`set_oreore_env` has exactly three silent exits, and the one that fired is the
+first: `open` returned negative. `st_size == 0` and `mmap == -1` were never
+reachable because the file did not exist. The earlier reasoning assumed the file
+had been written and then failed to parse; the partition says it was never
+written at all.
 
-```
-nflasha2.img (2026-10-25)          /setting/mode: zve10_net only
-nflasha2_current.img (2026-10-27)  /setting/mode: zve10_net only
-```
+This also explains why the on-camera probe that replicated `set_oreore_env`
+succeeded: that probe pointed at a file the probe itself had created.
 
-`/setting` root has no `env.txt` either, in both images. So on every boot so
-far, `check_mode_file` failed, the flag stayed 0, `set_oreore_env` was never
-called, and `/setting/env.txt` was never opened. The vfat `mmap` failure
-hypothesis cannot apply because execution never gets that far.
+## What this changes for the next attempt
 
-## Why this also explains the missing 5GHz menu
-
-`bootin` has a second, independent preload path at `0x9990` gated on
-`flag & 0x40`, and that bit comes from `check_mode_file` too: `dmode` containing
-`p` or `P` at `0x94A0`/`0x94A6` sets `0x40` (`bootin` re-parses the same file at
-`0x946E`..`0x9506`). So the same missing file blocks both delivery routes:
+The env.txt route needs two files present on `/setting`, and neither is there:
 
 ```
-missing /setting/mode/dmode
-  ├─ init never calls set_oreore_env  -> /setting/env.txt unread
-  └─ bootin flag & 0x40 never set     -> /setting/mode/preload unread
+/setting/mode/dmode    mode digits, e.g. "3"    (in place on the 10-27 image)
+/setting/env.txt       LD_PRELOAD=<absolute path to the library>
 ```
 
-## The three things that would have to be true
+Both live on vfat and neither touches the eMMC. The first may already be
+satisfied; the second is the one that was always missing.
 
-**Route 1, env.txt:** create `/setting/mode/dmode` (any content), then write
-`LD_PRELOAD=/usr/lib/libnewmenu_usr.so` into `/setting/env.txt`. The first
-file flips the gate, the second supplies the value.
+Note the ordering hazard: `env.txt` is read by `init` at `0x9B82`, which is
+before `bootin` at `0x9F3C`. A file written after boot has no effect until the
+next boot, and a resumed boot (snapshot mode) may not re-run `init` at all.
 
-**Route 2, preload file:** create `/setting/mode/dmode` containing `p`, then
-write one of the four whitelisted paths into `/setting/mode/preload`. The
-whitelist is exact (`0x0A8DC`, entries 1..4):
+## The route already in use needs neither file
 
-```
-/usr/tool/LeakTracer.so
-/usr/tool/libefence.so
-/usr/tool/libjemalloc_tsh.so
-/usr/tool/libmcheckb.so
-```
-
-This route cannot carry our library without also replacing one of those four
-files, because `0x99EE`/`0x99F0` falls through to a `putenv` of the raw string
-when no entry matches, and `0x99FA` clears it otherwise. It is a debug hook, not
-a general preload channel.
-
-**Route 3, already in place:** `/etc/ld.so.preload`, which is what the agent and
-the earlier menu attempts used and which needs no `dmode`.
-
-## What this means for the next hardware pass
-
-Route 3 needs no `/setting` changes at all, so the very next boot should be used
-to answer the remaining question about it (resolution failure vs. snapshot
-resume) with the read-only probe in
+`/etc/ld.so.preload` is read by the dynamic loader itself, so it needs no
+`dmode`, no `env.txt` and no `bootin` cooperation. That is why it is the route
+worth testing first, with the read-only probe in
 [WHY-PRELOAD-DID-NOT-LOAD-2026-11-10.md](WHY-PRELOAD-DID-NOT-LOAD-2026-11-10.md).
-
-Route 1 is the fallback and is now fully specified: two files, both on vfat,
-neither of which touches the eMMC.
