@@ -1,0 +1,42 @@
+{
+  "operation": "write /dev/nflasha5 sector 0 with fVersion=invl",
+  "changed_bytes": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "before_fVersion": "WBI1",
+  "after_fVersion": "invl",
+  "untouched": "bytes 4..4095 byte-identical to the pre-write block; section table and compressed data untouched",
+  "rationale": "Loader2 is_invl predicate at 0xFE049CCE; kernel warm.c:1131 uses the same marker for an invalid image",
+  "files": {
+    "rollback/live-block0-4096.bin": {
+      "bytes": 4096,
+      "sha256": "f0d60c7df606d5ea8d4337e15f47de5af81a991cb003cef1b7d870a7c4938054"
+    },
+    "rollback/live-header-512.bin": {
+      "bytes": 512,
+      "sha256": "22a99b37abfe94b2c092696856fc3395e2559e08329d570df06e760813c605f5"
+    },
+    "applied-sector0-invl.bin": {
+      "bytes": 512,
+      "sha256": "c64a71a17f14d4e9274355aefaba83d39e01e4c8e149ae5c5d96df3781622642"
+    }
+  },
+  "change_C": {
+    "file": "/setting/kemco.txt (nflasha2, vfat rw)",
+    "edit": "byte 314: 'warm.mode=2' -> 'warm.mode=0'",
+    "size_unchanged": true,
+    "before_sha256": "f381ea714449ac9c66f7155cb4a74bb9274d5453c7effcf34e9693b462cd5aa9",
+    "after_sha256": "e1004ec75ce9015b2cdbe7c4bb24b9c75143e3b76123d3d6d9774da5474362e8",
+    "rollback": "copy rollback/kemco-orig.txt back to /setting/kemco.txt",
+    "takes_effect": "next boot only; this kernel already parsed warm.mode=2"
+  },
+  "caveat": "Route C disables fast boot permanently: image_mode 0 short-circuits image creation, wbi_drop, wbi_resume_drop and warm_boot_pm_prepare.",
+  "verified_before_reboot": {
+    "image_mode": "2",
+    "ssboot_state": "snapshot",
+    "boot_id": "2a94d022-7817-43b8-b67e-e9ee74e3cdab"
+  }
+}
