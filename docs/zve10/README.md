@@ -86,18 +86,24 @@ sh tools/zve10/envfile/rollback_ldsopreload.sh <相机IP>
 
 **结论与证据**
 - `QEMU-OBJECTIVE-ACHIEVED.md` —— 三帧 + 双哈希对照（**先看这个**）
+- `ANCHORS-STABLE-ACROSS-FIRMWARE-VERSIONS.md` —— 5 个锚点在两个固件版本里字节相同
 - `ALL-THREE-QEMU-CRITERIA-PROVEN.md` —— 行出现 / ENTER 进入 / MENU 返回，逐项
 - `OUR-OWN-FULL-BUILD-VERIFIED.md` —— 用本仓库源码编译的库也产出同哈希帧
 - `ROUTE-A-WORKS-ALL-FOUR-STAGES.md` —— 四阶段日志与上游字段对照
+- `BREAKTHROUGH-NE-TREE-ADDED.md` —— 节点插入那一刻的日志与三个未赋值变量
+- `OBJECTIVE-ACHIEVED-IN-QEMU.md` —— 更早一版的达成记录（哈希对照相同）
 
 **机制**
 - `BOOT-CHAIN-FACTS.md` —— init 的挂载与执行顺序（`0x9A1C`…`0x9F3C`）
 - `LDSO-PRELOAD-WORKS-ON-VFAT.md` —— vfat 上的 ld.so.preload 实测可用
+- `LDSO-PRELOAD-IS-THE-ROUTE.md` —— 为什么选它而不是 env.txt（对比四个前置条件）
 - `M2PROBE-IS-THE-KEY.md` —— `libm2probe.so` 是跨过 CP 握手的关键
 - `CAPTURE-PROTOCOL-WORKS.md` —— `CAPTURE`/`KEY`/`ACK` 协议与 151 段帧结构
 
 **踩过的坑（按价值排序）**
 - `FONT-HOOK-12-BYTE-FIX.md` —— 少给 4 字节字面量，`memcmp` 静默失败
+- `FONT-HOOKS-OWNED-BY-UIOBSERVE.md` —— 那两个地址在 QEMU 里已被别人占，warn 是准确报告
+- `QEMU-VS-HARDWARE-THE-UIOBSERVE-DIFFERENCE.md` —— 实测：移除 libuiobserve 后字体 hook 成功，但菜单也不再被构建
 - `TWO-HOOK-LIBRARIES-CANNOT-COEXIST.md` —— 两个库都导出 `dlopen`，后者永远不启动
 - `GPE-TRACE-GATE-AND-MONITOR-LIMIT.md` —— 追踪刷屏与 monitor 8 条命令上限
 - `CALLER-GATE-ANALYSIS.md` / `GATE-WIDENING-AND-WHY-ROUTE-A-STILL-DOES-NOT-FIRE.md`
@@ -110,11 +116,15 @@ sh tools/zve10/envfile/rollback_ldsopreload.sh <相机IP>
 
 **真机**
 - `HARDWARE-TEST-2026-11-09.md` —— 实测记录
+- `OFFLINE-VERIFICATION.md` —— 离线能验证的全部内容清单（236 行，最详尽的真机前检查）
 - `ETC-PARTITION-BEHAVIOUR.md` —— `/etc` 跨重启的行为（新文件会存活）
 - `ENVIRON-FORENSICS.md` —— 真机 `/proc/157/environ` 的解读
+- `QEMU-PROBE-ENVTXT-CHAIN.md` —— env.txt 链路在 QEMU 里（含 vfat）能走通
+- `ENVTXT-PROVEN-IN-QEMU.md` —— 但真机上那条变量就是没到
 
-**未完成**
-- `ROUTE-B-REGRESSION-INVESTIGATION.md` —— 路线 B 佐证环境退化，原因未定
+**路线 B（相机同构环境）**
+- `ROUTE-B-REGRESSION-INVESTIGATION.md` —— 退化现象与排查全部候选
+- `ROUTE-B-RECOVERED.md` —— 根因：initramfs 涨 18 MB 挤占 CP 握手内存（**已修复**）
 
 ## 环境要求
 
