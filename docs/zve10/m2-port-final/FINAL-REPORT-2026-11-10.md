@@ -1,6 +1,6 @@
 # ZV-1M2 Gen5 新菜单移植到 ZV-E10：最终技术报告
 
-2026-11-10。目标轮 1–101（预算 120）。**目标未达成：从未取得任何由 Gen5 固件绘制的帧。**
+2026-11-10。目标轮 1–114（预算 120，本报告在轮 115 更新）。**目标未达成：从未取得任何由 Gen5 固件绘制的帧。**
 本报告只记录实测到的内容，不含推测性结论。
 
 ---
@@ -125,6 +125,68 @@ Application_Start            appFw+0x54d580   （dynsym size = 72，仅 6 个调
 
 ---
 
+## 三之二、（补充，轮 102–113）直接驱动与 GPU 侧的实测
+
+### 3.2.1 drawFramebuffer 可被调用、能进入、不返回
+
+把「直接驱动」接到 `osal_rcv_msg_tmo` 收尾（该点确定在启动完成后仍被调用），
+以 `FORCEDRAW=1` 开关控制。实测（out/fd5，基线 createLayer=6 完好）：
+
+```text
+FORCEDRAW trigger at receive path
+FORCE_DRAW base=0xa969000 self_slot=0xacc0490 self=0xad31044
+DFBHOOK call=1 self=0xad31044 tid=151 f23a=0x3f80      ← 进入 drawFramebuffer
+FORCE_DRAW returned  → 0 次                              ← 未返回
+```
+
+**这是全部轮次里唯一一次把固件自身的绘制函数真正调起来。它进去了，没出来。**
+
+### 3.2.2 GPU 侧的驱动、设备、中断全部就位
+
+```text
+MODULE_BEGIN /usr/kmod/grm_gles.ko
+!!! GPE HW: bar remapped 0xf1000000->0xf1000000 size 4000
+MODULE_END /usr/kmod/grm_gles.ko status=0
+
+grm_gles.ko（ARM 反汇编 sugilite_chdev_register）：
+  c8: mov r0, #76
+  d8: bl  request_threaded_irq                         ← 请求 IRQ 76
+
+QEMU hw/arm/zve10.c：
+  gpe->irq = pic[76 - 32];                             ← IRQ 76 已接 GIC
+  qemu_irq_raise(s->irq);
+实测：ZVE10_GPE_INIT_FENCE 19 次                        ← 中断确实 raise 过
+```
+
+### 3.2.3 固件只提交初始化 fence，零绘图作业
+
+```text
+ZVE10_GPE_KICK         19
+ZVE10_GPE_PACKET       19
+ZVE10_GPE_INIT_FENCE   19
+GPE_FILL                0
+GPE_TICK             5959
+
+19 个包内容完全相同（地址按 0x20 递增）：
+  0116f000 02056db0 0117f000 00000001 0044f000 00000000 0010f000 12345678
+
+按 zve10_gpe_uniform_fill 的字段语义解释：
+  x=0x117f000 y=0x1 w=0x44f000 h=0x0 stride=0x10f000 fmt=0x12345678
+  fmt > 1 → 第一道检查即返回 6
+```
+
+**`0x12345678` 是初始化 fence 的固定 token，不是格式码。19 个包无一是绘图作业。**
+
+### 3.2.4 帧缓冲侧
+
+```text
+FB_SAMPLE 全部 nonzero=0 unique=1     ← 帧缓冲从头到尾没有一个非零字节
+FB_FRAME 0 / FB_BOTH 0 / GPE2D_COPY 0 / GPE_FILL 0
+```
+
+**结论：固件从未抵达「提交绘图作业」这一步；问题在固件内部的软件同步，
+不在 QEMU 的 GPU 设备模型。**
+
 ## 四、方法层面的一次重要修正：库基址
 
 前 50 轮里我用手工推算的库基址做地址换算，**连续三次算错**：
@@ -190,10 +252,13 @@ PC 采样（2479 样本）                   ❌ 0x54dxxx / 0x54exxx / 0x54fxxx 
 
 ## 七、为什么最终出不了帧（诚实分析）
 
-### 7.1 不是缺件，是「没人驱动」
+### 7.1 不是缺件，而是固件从未提交绘图作业
 
 渲染链的每一层都被实测证明是「可达但未被执行」，而不是「执行中失败」。
-容器跑完第一圈后，线程就离开容器区（PC 采样零命中佐证）并回到主泵无限等待。
+容器跑完第一圈后回到主泵等待；直接驱动虽能进入 `drawFramebuffer`，但它在提交作业前不返回。
+GPU 侧 19 个包全部是初始化 fence（token `12345678`），填充解码器对它们一律返回 6，
+帧缓冲从未被写入一个非零字节。**缺的不是库、不是驱动、不是中断，而是固件内部
+「提交绘图作业之前」的那一步软件同步。**
 
 ### 7.2 真正的障碍是探针基础设施，不是固件
 
@@ -266,3 +331,65 @@ SHA256 / 物理地址        ❌ 无
 
 **未达成目标。阻塞点是「固件主泵无生产者 + 本 guest 探针基础设施不可靠」，
 不是可以靠继续增加 hook 解决的层次。**
+
+---
+
+## 十、（补充）两处方法论错误，值得记录
+
+### 10.1 PC 采样对短函数无效
+
+此前多次以「PC 采样在某区间零命中」作为「该函数未执行」的证据。**这是错的。**
+
+```text
+out/fd5：DFBHOOK call=1 证明 drawFramebuffer 确实被进入（日志第 1531 行）
+但 PC 采样在 drawFramebuffer 区间 0xe565a–0xe5b00 内命中数 = 0
+```
+
+采样周期几十毫秒、函数执行微秒级，采样抓不住。
+**「零命中 ≠ 未执行」**，该指标只能判断「是否长期停留在某处」。
+
+### 10.2 归因窗口过宽导致的错归
+
+我曾用 `[base, base+0x3600000)` 作为 libObj 的地址窗口，据此得出
+「+0xb32ec0 占 32/77 样本是自旋」的结论。**该结论作废。**
+
+libObj 真实的 `PT_LOAD` 跨度只到 `base+0x27604f0`（`.text` 止于 `0x266e48`），
+`+0xb32ec0` 落在相邻映射，不属于 libObj。
+
+按各模块真实跨度重新归因（995 个用户态样本）：
+
+```text
+/usr/lib/appFw.so          706
+/lib/libc-2.11.2.so         82
+(未命中)                    79
+/lib/ld-2.11.2.so           53
+/usr/lib/libObj.so          19      ← 19 个样本、19 个不同 PC，无重复
+/lib/libstdc++.so.6.0.14    17
+```
+
+---
+
+## 十一、最终结论（轮 115 定稿）
+
+```text
+移植库对齐                ✅ 完成（71 库 + bootin/im，与 ZV1M2 完全一致）
+MODEL_SYSTEM_ERROR        ✅ 已消除
+渲染链结构                ✅ 完整解出（每个地址、可搬字节数、门控条件）
+逐层测量                  ✅ 13 层独立 hook，均 prologue 校验
+drawFramebuffer 可调用     ✅ 实测进入（DFBHOOK call=1）
+GPU 驱动/BAR/IRQ          ✅ 全部就位（status=0、0xf1000000、IRQ76 raise 19 次）
+
+固件提交绘图作业           ❌ 0 个（19 个包全为 init fence，token 12345678）
+帧缓冲非零字节             ❌ 0
+合格 640×480 帧            ❌ 无
+SHA256 / 物理地址          ❌ 无
+键注入可见变化             ❌ 无
+业务功能验证               ❌ 无
+```
+
+**判据 1–5 全部未满足。**
+
+**已经确认的是：问题不在库缺失、不在断言、不在驱动、不在中断模型，
+而在固件内部「提交绘图作业之前」的一段软件同步。继续在本路线投入，
+正确做法不是增加 hook，而是转用 a7c2-re 的范式——由实验侧构造并执行绘图请求，
+固件只用来创建菜单对象。那需要重做绘制的另一半，不是修补这一半。**
