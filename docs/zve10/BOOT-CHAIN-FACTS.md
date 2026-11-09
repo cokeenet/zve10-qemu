@@ -89,18 +89,34 @@ The `execve` used for `im.elf` loads `envp` indirectly:
 So `envp == *environ`, i.e. bootin's own environment, with `LD_PRELOAD`
 included if it was set. Nothing is rebuilt or filtered.
 
-## Why /etc/ld.so.preload still did not work on hardware
+## /etc/ld.so.preload: measured, and it works
 
-This is the one link in the chain that is **not** explained by the above. The
-loader reads `/etc/ld.so.preload` on its own, independent of `LD_PRELOAD`, and
-`/etc` is mounted before `im.elf` starts. A manually spawned `im.elf` on the
-running camera did load libraries from that file (four map hits each for
-`tiny.so` and `zve10_agent.so`), while the original `im.elf` did not.
+**This section used to record an open problem** — a hand-started `im.elf` loaded
+libraries from `/etc/ld.so.preload` while the one init started did not — and
+concluded the difference "must lie in something specific to how the first
+`im.elf` is set up".
 
-So the file and the mount are fine, and the environment is inherited. The
-difference must lie in something specific to how the first `im.elf` is set up.
-**This remains open, and it is why the initrd route sets `LD_PRELOAD` directly
-instead of relying on `/etc/ld.so.preload`.**
+That conclusion was wrong. Measured directly (see
+`LDSO-PRELOAD-REACHES-IM-ELF-MEASURED.md`), with `LD_PRELOAD` removed from
+`init` entirely so the file was the only source:
+
+```
+MAPCHECK pid=121 comm=im.elf
+MAPCHECK libnewmenu_hits=4
+MAPCHECK preload_content=[/usr/lib/libnewmenu.so]
+NM LD_PRELOAD=<unset>
+NM installed object=0x9b14000 views=0x32176000 modules=1
+```
+
+Four maps in the boot-time `im.elf`, no environment variable, hooks installed.
+
+What the old note most likely saw was a named library that was not present at
+that moment — the loader prints `ignored` and continues, which is a silent no-op
+and easy to read as "the file was not consulted" — or maps read from a different
+pid.
+
+So the loader reads the file, a failing entry does not break `exec`, and the
+boot-time `im.elf` loads from it. `/etc/ld.so.preload` is the delivery route.
 
 ## Consequences for the injection plan
 
