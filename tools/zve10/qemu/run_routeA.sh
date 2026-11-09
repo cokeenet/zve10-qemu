@@ -4,7 +4,7 @@ set -euo pipefail
 NAME="${1:?}"; TIMEOUT="${2:-180}"
 QEMU=/mnt/build/ref-chocotan-zve10/work/qemu-src/build-zve10/qemu-system-arm
 KERNEL=/mnt/build/ref-chocotan-zve10/work/kbuild-ui/arch/arm/boot/Image
-CPIO=/mnt/build/routeA/ui-routeA.cpio
+CPIO=/mnt/build/routeA/ui-final.cpio
 OUT="/tmp/qemu-$NAME"; UNIT="zve10-$NAME"
 SER="$OUT/serial.sock"; MON="$OUT/mon.sock"
 systemctl stop "$UNIT" 2>/dev/null || true

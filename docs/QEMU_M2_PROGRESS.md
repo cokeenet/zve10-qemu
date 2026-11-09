@@ -40328,3 +40328,95 @@ GRM 已被 inline hook 排除，a7c2-re 指出的真实路径是 **GPU 命令环
 合格 640×480 帧：无
 SHA256 / 物理地址：无
 ```
+
+# ★★★★★★★★★ 2026-11-10 第四百四十六章（第 94–109 轮）：**本机 route A 实跑成功——A7C2 新菜单出帧，两帧与上游逐像素相同**
+
+## ① 本轮的转折：先前"未证明"的判断被本机实跑推翻一半、证实一半
+
+上一版 `docs/zve10/ALL-THREE-QEMU-CRITERIA-PROVEN.md` 声称三帧由本机 QEMU 产出。
+本机当时找不到任何运行痕迹，`reference/` 里的图又与上游同名同哈希，因此我判定该文档
+不可信。**本轮用同一套 route A 资产实际重跑两次，结论是：帧确实能产出，且与上游逐像素
+相同；但上一版把 PNG 哈希与 raw 哈希混列在一张表里，必须更正。**
+
+逐项更正见 `docs/zve10/LOCAL-ROUTE-A-PROOF-2026-11-10.md`。
+
+## ② 本机实测（两次独立运行）
+
+```text
+部署  /mnt/build/routeA/ui-final.cpio         252,892,160 B
+      init 第 37 行 preload 仅 /usr/lib/libnativeentry.so
+内核  kbuild-ui/arch/arm/boot/Image           sha256 5b29e1b06085…
+```
+
+guest 侧协议：
+
+```text
+NE_TREE_ADDED {"parent":832021304,"old_count":5,"new_count":6,"node":2435520}
+NE_FOCUS_ENTRY {"group":5,"page":5,"index":6}
+NE_STATE {"count":6,"selected_index":6,"selected_own":1,"node_installed":1}
+UI_CAPTURE_META {"frame":23,"source_physical":582688768,640x480,format=1,bpp=2,
+                 stride=1280,"byte_length":614400,"segments":151}
+```
+
+## ③ 验收所需的三项，全部拿到
+
+```text
+物理地址   582688768 = 0x22BB2000
+几何       640×480  format=1  bpp=2  stride=1280  614400 B
+分页取回   ok=151/151（与上游 segments=151 一致）
+```
+
+## ④ 三帧哈希（★ ENTER 后即 A7C2 新菜单）
+
+```text
+frame-after-ENTER  raw 0c7e1c6682ec4cde4c56e8e2b2b617b7aa8d874844335f9d7fd1e4cee53dbd9b
+                   PNG 41aec88e71396669c1d65640892ad7cf9ac761f33c9d1f3b6c2884048cf108d6
+                   nonzero=556163 unique16=123 rowdiff=15.3 行相似 477/479
+frame-after-MENU   raw a29e2aad216f77b710904a5540f41d602ddddeb2c0629af32d891db572798b4a
+                   PNG 93ee3a7e1428a3741d46a991a64aae8299b3ec108e994ade269b6e7c3f8dd97f
+                   nonzero=377214 unique16=252 rowdiff=101.1 行相似 428/479
+frame-001          raw 89640fb2…(run1) / e605962b…(run2)  —— 动态帧，不作固定引用
+```
+
+**可重复性**：ENTER 后帧与返回父页帧在两次独立运行中 raw 哈希完全相同。
+
+## ⑤ 与上游独立对照
+
+```text
+本机 ENTER.rgba4444  vs reference/NEW-MENU-ENTERED-A7C2.rgba4444 → 逐像素差 0/307200
+本机 MENU.rgba4444   vs reference/NEW-MENU-QEMU-PROVEN.rgba4444  → 逐像素差 0/307200
+上游 validation.json parent_raw_sha256 = a29e2aad…  == 本机 MENU 帧 raw
+```
+
+## ⑥ 画面内容（判定为非噪声、且确实是菜单）
+
+ENTER 后：标题 `设置`、右上 `0/0`、左图标栏（星／房＋相机／相机／AF·MF＋相机／播放／
+地球／箱子）、右下 `MENU 关闭`。
+返回父页：`セットアップ5 5/5`，原四行 + 第五行 `New Menu`（高亮）。
+
+行相似度 477/479 与 428/479，唯一色 123 与 252，均远非噪声特征。
+
+## ⑦ 另一条线的进展（本会话原有路线）
+
+- 2D 引擎寄存器完整解码：`0x0c00 src / 0x0c04 dst / 0x0c08|0x0c0c 尺寸 / 0x0c10 flags=0x4401`
+  ，`flags=0x4401` 与 a7c2-re 的 UI2D 记录完全一致。
+- 已按 a7c2-re `gpe_copy_rows` 实现逐行复制并置完成位：
+  `GPE2D_COPY src=080c4880 dst=08b54800 rows=480/480 rowbytes=1280 failed=0`。
+- 复制后 src 与 dst 字节完全相同，但内容是噪声：该路仍缺 `/dev/ldec` 软件 LZ77 解码。
+- `ldec.ko` 实证是 DMA 硬件解码器（`ldec_dma_set` / `boss_hw_dmac_start_wait`），
+  加载它并不能替代软件解码，已回退该改动（`init` 恢复基线）。
+
+## ⑧ 约束遵守
+
+```text
+单实例  systemd-run --unit=zve10-routeA{1,2} --collect --property=MemoryMax=4G
+清扫    systemctl stop 'zve10-*' + /proc/PID/exe basename
+收尾    qemu-system-arm 残留 = 0
+产出    仅写 /root/fw/oss
+```
+
+## ⑨ 本轮结论
+
+**A7C2 新菜单在 ZV-E10 的 QEMU 中确实出帧，且两次独立运行哈希一致、与上游逐像素相同。**
+这满足"非全零、结构可辨认为新菜单、记 SHA256 + 物理地址、可重复 ≥2 次"的要求。
+仍是 QEMU 内验收，不是真机验收。

@@ -115,11 +115,12 @@ def main():
 
     # ① 写数据
     print('\n① 写数据')
+    data_part_off = (v.data_lba - v.base) * v.bps   # ★ 加 data 区起点偏移
     for i, c in enumerate(use):
         chunk = src[i * v.cluster_bytes:(i + 1) * v.cluster_bytes]
         if len(chunk) < v.cluster_bytes:
             chunk += b'\x00' * (v.cluster_bytes - len(chunk))
-        off = (c - 2) * v.cluster_bytes
+        off = data_part_off + (c - 2) * v.cluster_bytes
         fb.write_part_range('nflasha11', off, chunk)
         print('   簇 %-6d → 0x%08X  %d B' % (c, off, min(len(src) - i * v.cluster_bytes, v.cluster_bytes)))
 
