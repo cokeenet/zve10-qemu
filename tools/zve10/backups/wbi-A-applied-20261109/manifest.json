@@ -38,5 +38,10 @@
     "image_mode": "2",
     "ssboot_state": "snapshot",
     "boot_id": "2a94d022-7817-43b8-b67e-e9ee74e3cdab"
+  },
+  "rollback_files": {
+    "wbi_header_512": "tools/zve10/backups/wbi-A-applied-20261109/live-header-512.bin",
+    "wbi_block0_4096": "tools/zve10/backups/wbi-A-applied-20261109/live-block0-4096.bin",
+    "kemco_txt": "tools/zve10/backups/wbi-A-applied-20261109/kemco-orig.txt"
   }
 }
