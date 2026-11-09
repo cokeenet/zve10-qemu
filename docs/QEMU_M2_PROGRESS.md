@@ -40574,3 +40574,120 @@ GPE2D          仍在（2D 复制 480/480 生效）
 下一步         entry inline hook @ libObj+0x10bff8，先观察后替换
 QEMU 实例      0
 ```
+
+# ★★★★★★★★★ 2026-11-10 第四百四十九章（目标轮 1–33）：**Gen5 应用完成初始化后从不开始绘制——七条假设逐条实测排除**
+
+## ① 本轮系列的核心产出：把测量变干净了
+
+前几轮最重要的纠正不是找到答案，而是**发现一个长期污染的测量**：
+
+```text
+旧记录："notifyDraw 执行 2 次（DRAW_PROBE）"
+实际情况：这 2 次全部来自我们自己的探针
+```
+
+原因：`dlsym(RTLD_DEFAULT, "_ZN2ux6wgtsys12WidgetSystem10notifyDrawEv")` 在
+preload 场景下返回的是**本进程自己的 interposer**。两处探针（`UX_RENDER_TRIGGER`
+与 `DRIVE_AT_SEND`）调 `nd(wg)` 时，都会走进 `DRAW_PROBE` 钩子，看起来像固件在调。
+
+**禁用两处自调用后重跑（obs1）：**
+
+```text
+UX_RENDER_TRIGGER skipped ...（2 次）
+DRAW_PROBE notifyDraw        → 0 次
+基线 1436 / 772 / createLayer=6 / LIBOBJ_SYM=24   ✅
+```
+
+结论：**固件从未调用 notifyDraw。** 从此 GRM/LZ77/notifyDraw 三项「零调用」都建立在干净测量上。
+
+## ② 逐条实测排除的假设（每条都有数据）
+
+| # | 假设 | 实测结果 | 结论 |
+|---|---|---|---|
+| 1 | 缺 Gen5 依赖库 | 71 个库与 ZV1M2 内容不同（`libInfraSKD.so` 10,184 vs 7,259,708，差 700 倍） | **成立**：替换 71 库后 `MODEL_SYSTEM_ERROR` 断言消失 |
+| 2 | 缺按键 | 20 字节 InfraInput 按键 `send=0` 投递成功 | 不成立：无任何变化 |
+| 3 | 启动卡死 | PC 采样 2476 个：`cpu_v7_do_idle`(250) `cxd4115_read_cycles`(308) | **不成立**：CPU 在 WFI 空闲 |
+| 4 | 子系统 13 无应答 | 换库后断言消失，流程继续进入空闲 | 不成立 |
+| 5 | `0x2b2223e` 是主泵处理器 | 反汇编仅 `ldr r0,[r0,#-4]; pop` —— 4 字节访问器 | **不成立**（旧笔记有误） |
+| 6 | `ResourceManager::switchBankEth` 阻塞 | 24 条 RM 记录，每对 ENTER/LEAVE 齐全，`ret=1` | **不成立**：正常返回 |
+| 7 | 直接调 `0x723aac` 可驱动菜单 | 源码注释记载 ledger 180 已死锁过 | 不采用 |
+
+## ③ 移植库的完整对齐（本轮唯一实质改动）
+
+```text
+替换前  PORTED4 vs ZV1M2：相同 119 / 不同 71 / 仅 M2 有 0
+替换后  相同 190 / 不同 0 / 缺失 0
+```
+
+来源判定（按哈希比对四个机型）：
+
+```text
+ZV1M2, ZVE10, ZV1F   98   ← 三机通用
+ZVE10                94   ← 纯 ZVE10 原厂（这次全部换成 ZV1M2）
+ZV1M2, ZV1F          11
+ZV1M2                10   ← 原先只有这 10 个是 M2 的
+ZVE10, ZV1F           1
+```
+
+`libObj.so` / `appFw.so` / `appFwBoot.so` 本来就是 ZV1M2，未改动。
+
+## ④ 当前确定的完整事实链
+
+```text
+createLayer=6                 ✅ UI 层建起来了
+notifyDraw                   0 次（干净测量）
+GRM_gpermFillrect/Rectblit   0 次（inline hook 确证）
+Lz77Decoder::decodeImpl      0 次（入口 hook 确证）
+2D 复制作业                  1 次，但 src/dst 确为非像素（熵 10.6 bits，全谱无行结构）
+FB                           全零
+CPU                          cpu_v7_do_idle（WFI）
+断言                         已消除（71 库对齐后）
+```
+
+**唯一自洽的解释：Gen5 应用完成初始化后进入空闲，从未开始绘制。**
+
+## ⑤ 这解释了此前所有互相矛盾的现象
+
+```text
+为什么 CPU 空闲       → 固件确实没有绘制工作
+为什么资源解码为零    → 固件从未请求资源
+为什么 FB 全零        → 固件从未写 FB
+为什么"notifyDraw 2 次"→ 探针自调用
+为什么 switchBank 正常→ 它从来不是阻塞点
+```
+
+## ⑥ 仍未解决的核心问题
+
+**不是"某个环节坏了"，而是"启动完成后没有任何东西把 UI 驱动起来"。**
+这是一个**状态机起点问题**。
+
+在真机上，`Application_Start` 之后由输入事件驱动主循环；QEMU 里这条驱动链的起点没有被触发，
+而所有尝试触发的方式（按键投递、主动调 notifyDraw、调 builder）要么无效、要么已知会死锁。
+
+## ⑦ 约束遵守
+
+```text
+单实例     systemd-run --unit=zve10-obs1 等 --collect --property=MemoryMax=4G
+收尾       qemu-system-arm 残留 = 0
+基线       全程 createLayer=6，无破坏性偏离（报废轮次已标注）
+产出       仅写 /root/fw/oss
+```
+
+## ⑧ 方向评估（诚实结论）
+
+a7c2-re 出帧的方式**不是**依赖固件自己循环，而是：
+
+> 显式软件 GPE 模型实际执行已核准的绘图请求；缺失的 LZ77 硬件解码由有边界检查的同格式 CPU 解码替代。
+
+即：**他们不等待固件，而是把绘制请求在 QEMU 侧真实执行掉。**
+
+这条路与"让 Gen5 固件自己跑起来"是两种不同方案。当前 ZV-E10 + ZV1M2 组合下，
+前者是可验证出帧的唯一已知路径，后者卡在状态机起点。
+
+## ⑨ 本轮未出帧
+
+```text
+合格 640×480 帧：无
+SHA256 / 物理地址：无
+QEMU 实例：0
+```
