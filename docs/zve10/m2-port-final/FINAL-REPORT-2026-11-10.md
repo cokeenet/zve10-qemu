@@ -1,6 +1,6 @@
 # ZV-1M2 Gen5 新菜单移植到 ZV-E10：最终技术报告
 
-2026-11-10。目标轮 1–114（预算 120，本报告在轮 115 更新）。**目标未达成：从未取得任何由 Gen5 固件绘制的帧。**
+2026-11-10。目标轮 1–119（预算 120）。**目标未达成：从未取得任何由 Gen5 固件绘制的帧。**
 本报告只记录实测到的内容，不含推测性结论。
 
 ---
@@ -334,6 +334,38 @@ SHA256 / 物理地址        ❌ 无
 
 ---
 
+## 九之二、（补充，轮 114–118）把绘制函数真正调起来的三种尝试
+
+### 9.2.1 三种上下文，同一结果
+
+```text
+R104  内联在 OSAL 接收路径里调用（pid=115 im.elf）   → DFBHOOK call=1，不返回
+R116  新起 pthread 线程（pthread_create 返回 0）      → 线程入口从未执行
+R118  watchdog 线程（实测会执行）                     → DFBHOOK call=1，不返回
+```
+
+R116 的失败值得记录：`pthread_create` 返回 0，但线程入口一行日志都没有；
+同一次运行里 `start_watchdog`（同机制的线程）却在 spawn 之后 153 行打印了它的 `t=5s` 行。
+**所以不是「这个 guest 里线程完全不能跑」，而是新起的那条线程当时没得到执行。**
+
+R117 曾据此提出「驱动跑在 bootin.elf、而 Application_Start 在 im.elf」的跨进程误判。**该判断作废：**
+`g_in_start` 是 LD_PRELOAD 库的进程私有变量，各进程各一份，能触发就必然与
+`my_app` 同进程（实测 `MY_TID Application_Start pid=115 tid=195`、`BASEPRINT done modules=64`）。
+
+**最终结论：与线程上下文、锁归属都无关。`drawFramebuffer` 的等待在固件内部。**
+
+### 9.2.2 与 GPU 侧的对照，说明不是硬件模型问题
+
+```text
+grm_gles.ko status=0
+BAR remapped 0xf1000000 size 4000            ← 与 QEMU GPE 设备地址/大小完全吻合
+请求 IRQ 76；QEMU pic[76-32] 已接 GPE；实测 raise 19 次
+19 个 GPU 包全为 init fence（token 12345678），填充解码器对它们一律返回 6
+帧缓冲 FB_SAMPLE 全部 nonzero=0 unique=1
+```
+
+**硬件侧通路完整，而固件没有提交任何绘图作业。**
+
 ## 十、（补充）两处方法论错误，值得记录
 
 ### 10.1 PC 采样对短函数无效
@@ -369,7 +401,7 @@ libObj 真实的 `PT_LOAD` 跨度只到 `base+0x27604f0`（`.text` 止于 `0x266
 
 ---
 
-## 十一、最终结论（轮 115 定稿）
+## 十一、最终结论（轮 119 定稿）
 
 ```text
 移植库对齐                ✅ 完成（71 库 + bootin/im，与 ZV1M2 完全一致）
@@ -389,7 +421,36 @@ SHA256 / 物理地址          ❌ 无
 
 **判据 1–5 全部未满足。**
 
-**已经确认的是：问题不在库缺失、不在断言、不在驱动、不在中断模型，
-而在固件内部「提交绘图作业之前」的一段软件同步。继续在本路线投入，
-正确做法不是增加 hook，而是转用 a7c2-re 的范式——由实验侧构造并执行绘图请求，
+**已经确认的是：问题不在库缺失、不在断言、不在驱动、不在中断模型、不在线程上下文，
+而在固件内部「提交绘图作业之前」的一段资源/状态同步。继续在本路线投入，
+正确做法不是再增加 hook，而是转用 a7c2-re 的范式——由实验侧构造并执行绘图请求，
 固件只用来创建菜单对象。那需要重做绘制的另一半，不是修补这一半。**
+
+### 11.1 若要继续，具体的下一步（按优先级）
+
+```text
+1. 在 drawFramebuffer（libObj+0xe565a）体内按序计次，定位到具体哪个调用不返回。
+   体内共 30 个 bl/blx，其中资源类候选：
+     0xe5694 bl 0x10214a   (ResourceUpdater 相关 +0x2aa)
+     0xe572c bl 0x101ec8   (ResourceUpdater 相关 +0x28)
+     0xe5732 bl 0x101fd4   (ResourceUpdater 相关 +0x134)
+     0xe5738 bl 0x102378   (getAreaCheckExtensionManager 相关 +0x32)
+   逐层计次即可把范围压到一个调用。
+
+2. 若定位到资源更新，则问题回到任务目标里已写的那条：
+   Lz77Decoder::decodeImpl 的软件替换（严格校验 vtable 槽原值）。
+
+3. 替代路线（已被验证能出帧）：a7c2-re 的显式软件 GPE + 软件 LZ77，
+   固件只负责建菜单对象。这条路不依赖固件自己提交作业。
+```
+
+### 11.2 交付物清单
+
+```text
+docs/zve10/m2-port-final/FINAL-REPORT-2026-11-10.md   本报告
+docs/zve10/m2-port-final/argtrace.c                   探针源码快照
+docs/zve10/m2-port-final/run-wlist.sh                 运行脚本快照
+docs/QEMU_M2_PROGRESS.md                              逐轮台账（41259 行）
+/mnt/build/m2qemu/port/PORTED4                       已对齐的移植树
+/mnt/build/m2qemu/backup-lib-0409                     usr/lib 回滚备份
+```

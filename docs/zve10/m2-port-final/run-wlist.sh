@@ -4,8 +4,8 @@
 set -euo pipefail
 
 ROOT=/mnt/build/m2qemu
-OUT=$ROOT/out/fd2
-UNIT=zve10-fd2
+OUT=$ROOT/out/fd8
+UNIT=zve10-fd8
 IMG=$ROOT/work/kbuild-ui2/arch/arm/boot/Image
 QEMU=$ROOT/qsrc/build/qemu-system-arm
 
@@ -62,7 +62,7 @@ echo "pid=$PID" > "$OUT/qpid.txt"
 for i in $(seq 1 120); do
     state=$(systemctl is-active "$UNIT" 2>/dev/null || true)
     [ "$state" = active ] || break
-    grep -aq "FORCE_DRAW" "$OUT/serial0.log" "$OUT/serial0.log" 2>/dev/null && echo "wlist_seen_at=$i" >> "$OUT/launch.txt"
+    grep -aq "FORCEDRAW watchdog returned" "$OUT/serial0.log" "$OUT/serial0.log" 2>/dev/null && echo "wlist_seen_at=$i" >> "$OUT/launch.txt"
     sleep 1
 done
 

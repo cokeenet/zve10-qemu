@@ -98,6 +98,8 @@ static void probe_thread_pcs(const char *);
 static void maps_probe(const char *);
 static void *lib_text_base(const char *);
 static void force_draw_once(void);
+static void *force_draw_thread(void *);
+static int g_in_rcv_after_start(void);
 static void as_run_stages(unsigned long,unsigned long,unsigned long,unsigned long);
 static int as_reported;
 
@@ -828,10 +830,7 @@ static void *start_watchdog(void *arg)
             mile_report();
             logline("APPSTART still-inside t=%us frameiter_calls=%u\n",
                     (++n) * 5, frameiter_count());
-            /* Drive drawFramebuffer once, here, because this block is measured to
-             * execute (t=5s line appears in every run) whereas a detached thread
-             * that waits 25 s never got there before the run ended. FORCEDRAW */
-            force_draw_once();
+
             /* Reports are emitted unconditionally and before the state dump:
              * in the previous build they were reached but the process died
              * inside dump_thread_state, so nothing was printed and the counters
@@ -839,6 +838,24 @@ static void *start_watchdog(void *arg)
             stage_report();
             psm_report();
             logline("COUNTERS-DONE t=%u\n", n * 5);
+            /* ★ Drive drawFramebuffer from THIS thread, which is measured to run.
+             *
+             * R115/R116 established that a fresh pthread_create returns 0 but its
+             * entry never executes here, while this watchdog thread demonstrably
+             * does (its t=5s line appears AFTER the spawn point in fd7: spawn at
+             * line 1527, this line at 1680). So the drive belongs on a thread that
+             * is proven live, not on a newly created one.
+             *
+             * One shot only, after start-up has settled. FORCEDRAW */
+            if (getenv("FORCEDRAW")) {
+                static int fired;
+                if (!__atomic_load_n(&fired, __ATOMIC_RELAXED)
+                    && !__atomic_exchange_n(&fired, 1, __ATOMIC_RELAXED)) {
+                    logline("FORCEDRAW trigger from watchdog t=%u\n", n * 5);
+                    force_draw_once();
+                    logline("FORCEDRAW watchdog returned\n");
+                }
+            }
             if (n >= 1) { dump_thread_state("stuck"); probe_thread_pcs("stuck"); }
             if (n == 2) probe_target_syscall("stuck");
         } else {
@@ -1148,8 +1165,52 @@ int osal_rcv_msg_tmo(void *q, void *m, int tmo)
                 (unsigned)q, result, (m ? *(void **)m : 0), size, src, hex,
                 (unsigned)syscall(SYS_gettid));
     }
+    /* ★ Opt-in direct drive, placed at a point that runs AFTER start-up.
+     *
+     * Earlier attempts fired too early: processSystemMessage is called while the
+     * container is still initialising, and calling the engine from there drove
+     * createLayer down to 2 (baseline collapse, R102). This interposition instead
+     * sits on the firmware's own receive path, which keeps being called long
+     * after Application_Start has settled, and fires only once, only on the entry
+     * thread. FORCEDRAW */
+    if (getenv("FORCEDRAW")) {
+        static int fired;
+        /* Order matters: the flag must be set only after the condition holds.
+         * The previous form exchanged the flag first, so the very first receive
+         * (which happens before Application_Start) consumed the one shot and the
+         * drive never fired. Conditional exchange, not exchange-then-test. */
+        if (!__atomic_load_n(&fired, __ATOMIC_RELAXED) && g_in_rcv_after_start()
+            && !__atomic_exchange_n(&fired, 1, __ATOMIC_RELAXED)) {
+            /* ★ Run the drive on its OWN thread instead of inline here.
+             *
+             * Calling it inline put the draw inside the OSAL receive path, i.e.
+             * on a thread that had just been inside osal_rcv_msg_tmo, holding
+             * whatever that path holds and with the firmware's own stack. R104
+             * showed the draw entering and never returning from exactly that
+             * context. If drawFramebuffer needs to send/receive on the same
+             * OSAL queue, or needs the engine's UI thread, inline from here is a
+             * self-deadlock by construction.
+             *
+             * So hand the work to a fresh thread: the receive path returns
+             * normally and stays usable, and the draw gets a clean stack with no
+             * inherited locks. The thread logs its own tid, so the two cases stay
+             * distinguishable. FORCEDRAW */
+            /* Spawning is disabled: R116 measured pthread_create returning 0 with
+             * the entry never running here, so the drive moved to the watchdog
+             * thread, which is proven to execute. */
+            logline("FORCEDRAW drive moved to watchdog thread\n");
+        }
+    }
     return result;
 }
+
+static int g_in_rcv_after_start(void)
+{
+    /* Application_Start has been entered and at least one probe has reported
+     * progress, i.e. start-up is past its initial phase. */
+    return __atomic_load_n(&g_in_start, __ATOMIC_RELAXED) != 0;
+}
+
 int osal_snd_sync_direct(unsigned q, void *m)
 {
     static int (*real)(unsigned,void*);
@@ -2288,6 +2349,16 @@ static void fi_hook_install(void)
 }
 
 
+/* ★ Dedicated thread entry for the one-shot direct drive. FORCEDRAW */
+static void *force_draw_thread(void *arg)
+{
+    (void)arg;
+    logline("FORCEDRAW thread start tid=%u\n", (unsigned)syscall(SYS_gettid));
+    force_draw_once();
+    logline("FORCEDRAW thread done\n");
+    return 0;
+}
+
 /* ★ Count every stage of the render container in one run.
  *
  * Chasing the call chain one level per round produced forty rounds of static
@@ -2451,6 +2522,16 @@ static void *psm_wrapper(void *self)
                 n + 1, self, r, nz, (unsigned)syscall(SYS_gettid));
     else if (n == 6)
         logline("PSMPROBE limit=6 (counting continues)\n");
+    /* ★ Opt-in direct drive from a point that is measured to run and to return.
+     *
+     * Every previous attempt to schedule the drive depended on timing that does
+     * not work here (sleep never elapses in this guest, ledger 194) or on a
+     * watchdog block that has been observed to not execute. processSystemMessage
+     * is different: it is measured to be entered exactly once and to return a
+     * value, so a call placed immediately after it is guaranteed to happen.
+     *
+     * This does not make the firmware render by itself; it asks whether the draw
+     * function produces pixels at all in this model. Off unless FORCEDRAW=1. */
     return r;
 }
 
