@@ -40504,3 +40504,73 @@ tools/zve10/qemu/direct-menu-archive.spec
 夸克：已拿到 `stoken` 与 `fid=2b94460908af49c38dc417caf415543c`、`size=755119066`，
 但 `share/sharepage/download` 与 `save` 均要求登录态（`code=31001 require login [guest]`）。
 **两个包都没有下载成功**，本轮未使用该包。
+
+# ★★★★★★★★★ 2026-11-10 第四百四十八章（目标轮 1–2）：全局 open/ioctl 插桩破坏启动，已回退；确立改用入口 inline hook
+
+## ① 本轮目的
+
+目标已重建为"让 Gen5 库真正画出原生菜单并可操作"。判定标准明确排除 `menu_shell.c`
+这类自绘页（合成帧 `0c7e1c66…` 从此作为"非目标"的判据）。
+
+## ② 静态确认：decode 路径走 PLT，可被 preload 观察
+
+`libObj+0x10bff8`（Lz77Decoder::decodeImpl）反汇编关键点：
+
+```asm
+10c01e: blx 3bb14 <open@plt>       ← 打开 /dev/ldec
+10c136: blx 3b824 <ioctl@plt>      ← 提交解码请求
+```
+
+参数块在调用者栈上 `r7+0x0c` 起，至少到 `+0x24`，即 8 字：
+
+```text
+[0]=input [1]=input_size [2]=output [3]=output_size
+[4]=2  [5]=r7+0x20 处的常量  [6]=size>>12  [7]=0x90
+```
+
+a7c2-re 记录的 a7c2 形状为 `arg[4]=2, arg[5]=3, arg[6]=0, arg[7]=0x90`，字段位置一致。
+
+## ③ 尝试一（失败，已回退）：全局 open/ioctl 互操作符
+
+做法：在 argtrace.so 里定义全局 `open` / `ioctl`，按路径名过滤 `/dev/ldec`。
+
+结果：
+
+```text
+行数 800 / [AS] 434 / CREATELAYER **0 次**   ← 基线崩塌
+LDEC_PROBE 只见 ioctl-other fd=3 req=0x80000010 / 0x80000008（都不是 ldec）
+ldec_fd 始终 -1（/dev/ldec 从未被打开）
+```
+
+**按铁律 4 整轮报废，不解释异常。** 同时把互操作符与探针全部从 `argtrace.c` 删除，
+重新编译出的 `argtrace.so` 回到基线版本（sha `11c2ef46…`，与工作前一致）。
+
+回退后复核：`行数 1490 / [AS] 821 / CREATELAYER n=6 / LIBOBJ_SYM 24` —— 基线恢复。
+
+### 为什么这条路不能再用
+
+全局 `open`/`ioctl` 会被**整个进程**的每一次调用命中，不只 UI。启动链早期大量
+文件操作与设备 ioctl 都在 `open` 之前发生，包装层自身的解析、日志、syscall 回退
+任一处出问题都会把启动拖偏。这类"全进程可见"的插桩与"零侵入"要求不相容。
+
+## ④ 方向改为：入口 inline hook（与已成功的 GRM 探针同一机制）
+
+`grm_hook()` / `grm_jump()` 已在本会话验证可用（`install=0`，memcmp 严格校验，
+trampoline 回跳，mprotect 改回 RX），并且覆盖了两次 notifyDraw 而不动基线。
+
+因此 decode 探针改用同一机制：**只 hook `libObj+0x10bff8` 这一个函数入口**，
+记录一次参数块（object+0x08 流、+0x10 位图、+0x18 format、+0x1c/0x1e 宽高、
++0x20 输入长度），然后跳回原函数体。不触碰任何其他 open/ioctl。
+
+这一步只观察、不改行为，用于确认 `/dev/ldec` 在真实运行里究竟成功还是失败
+（此前所有日志里 `Failed open /dev/ldec` 计数为 0，说明该分支根本没被走到）。
+
+## ⑤ 本轮状态
+
+```text
+基线           1490 / 821 / createLayer=6 / LIBOBJ_SYM 24   ✅ 已恢复
+GPE2D          仍在（2D 复制 480/480 生效）
+根因           资源未解压（src/dst 为压缩数据噪声）
+下一步         entry inline hook @ libObj+0x10bff8，先观察后替换
+QEMU 实例      0
+```
