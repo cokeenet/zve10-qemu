@@ -40228,3 +40228,103 @@ FB nonzero=1 unique=2      ❌ 仍全零
 合格 640×480 帧：无
 SHA256 / 物理地址：无
 ```
+
+# ★★★★★★★★★ 2026-11-10 第四百四十五章（第 92–93 轮）：**inline hook 首次装上并确证 GRM 两入口零调用**
+
+## ① 采用的机制（照抄 a7c2-re / libnativeentry，不是自创）
+
+a7c2-re `menu-observe.c::patch_uxengine_init2` 与 `libnativeentry::ne_hook` 是同一做法：
+把入口 12 字节复制进匿名 trampoline，入口改写为间接跳转，页面改回 RX。
+本轮 `grm_hook()` / `grm_jump()` 逐行移植 `ne_hook`（ARM32 Thumb 编码
+`ldr.w pc,[pc,#imm]` + 字面量）。
+
+前置校验（任一不符即放弃，不猜）：
+
+```text
+GRM_gpermFillrect  libObj+0x117b4c  12B prologue
+  2d e9 f0 4f 99 b0 14 46 04 af 30 22
+GRM_gpermRectblit  libObj+0x117c86  12B prologue
+  2d e9 f0 4f bb b0 14 46 04 af 9c 22
+```
+
+两处 12 字节全为 PC 无关指令（`stmdb/sub/mov/add/movs/mov`），可整块搬运。
+
+**明确未 hook `onDrawNotice`（0x108b48）**：其前 12 字节含 `f7ff bfe0 = b.w 108b14`，
+PC 相对分支，复制进 trampoline 会算错目标。这个排除是静态验证得出的，不是遗漏。
+
+## ② 首次安装时机错误，已修正
+
+grmh1 运行里 hook 装在第 1 次 notifyDraw **之后**：
+
+```text
+1131 DRAM_PROBE notifyDraw n=1
+1143 GRMHOOK fillrect install=0
+```
+
+⇒ 第一次 pump 调用未被覆盖。把 `grm_hook_install()` 上移到 notifyDraw 调用之前后，
+grmh2 时序正确：
+
+```text
+1129 GRMHOOK fillrect install=0 orig=0x48bf001
+1130 GRMHOOK rectblit install=0 orig=0x50c2001
+1131 DRAW_PROBE notifyDraw n=1
+1228 DRAW_PROBE notifyDraw n=2
+```
+
+两次 pump 调用均在 hook 覆盖之下。
+
+## ③ 结果：GRM 两入口零调用（首次为可信证据）
+
+```text
+GRMHOOK fillrect install=0
+GRMHOOK rectblit install=0
+GRMHOOK fillrect n=...   ← 全程未出现
+GRMHOOK rectblit n=...   ← 全程未出现
+```
+
+`install=0` 表示 memcmp 校验、trampoline 建立、mprotect 全程成功。
+该 0 不再受"libObj 内部 BL 不经 PLT"的观测盲区影响，因为 hook 位于函数体入口。
+
+**⇒ GRM_gpermFillrect / GRM_gpermRectblit 确实从未被调用。**
+这与 a7c2-re 的否定结论（"菜单绘制不经过 GRM_gpermFillrect/Rectblit，整场 0 调用"）
+在方法层与结论层都一致。
+
+## ④ 绘制链完整闭合
+
+```text
+createLayer = 6                    ✅
+widget 链表 NON-EMPTY              ✅
+notifyDraw 执行 2 次                ✅
+GRM_gperm* 零调用（inline hook 证） ✅
+processSystemMessage 零调用         ✅
+FB nonzero=1 unique=2              ❌ 全零
+```
+
+断点精确定位：**notifyDraw 循环体内、0x106546 的 `blx r3` widget 虚调用层**，
+尚未到达 GRM 光栅化。
+
+## ⑤ 运行归因（grmh2，基线完好）
+
+```text
+Image    7c007ceca94038a66e628fccad5329529a4dda9dbdbf506cc88a68e500abc9d3
+cpio     ac885c62e13110014bc855e293a065c17aa5d5bb865b3490cc2e2383cb0d332d
+argtrace 11c2ef466078a4cbdbcd2810d3e625f55dc48332a4e35c48c96bc01afe16323a
+QEMU     8457417745b387eae99f6967f63e9599d23640fdcc80f4fabc01803c9790150a
+```
+
+基线：行数 1483 / `[AS]` 818 / `CREATELAYER n=6` / `LIBOBJ_SYM` 24。
+单实例 `zve10-grmh2`，收尾 `state=inactive`，无残留。
+
+## ⑥ 下一步
+
+GRM 已被 inline hook 排除，a7c2-re 指出的真实路径是 **GPU 命令环**：
+写 `0x1804`=命令缓冲物理地址、写 `0x1800`=4 触发 kick，命令字 `(opcode<<16)|0xf000`。
+下一轮先确认 ZV-E10 的 GPU 寄存器基址与 kick 路径是否与 A7C2/A7M3 同构，
+再决定是否在 QEMU 侧建模或抓取命令缓冲。
+
+## ⑦ 本轮未出帧
+
+```text
+合格 640×480 帧：无
+SHA256 / 物理地址：无
+```
