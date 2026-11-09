@@ -95,3 +95,50 @@ Route B's value was corroboration with the camera's own `viewUnified2.so`; it is
 not the acceptance path, and nothing shipped depends on it. Restoring it means
 reproducing the earlier kernel build exactly -- `cc624d83` is the one that worked
 -- or bisecting the initramfs contents against the state before the cleanup.
+
+## Follow-up (round 31)
+
+Checked the remaining candidates:
+
+| candidate | finding |
+|---|---|
+| `libuiobserve.so` version | two builds exist, `b1027b58` (78,944 B) and `7d387565` (78,948 B). Swapped in the second: identical failure, 21 dlopens. Reverted. |
+| `libm2probe.so` version | `276126d1` in use; `zv_m2probe` has a different one (`653b899e`). |
+| init script | diff against upstream is one line: the `LD_PRELOAD` list. |
+| module list | all 14 identical to the good run, all `status=0`. |
+| device nodes | same six `mknod` entries. |
+| `av-cam.bin` | `cdcae9d4`, the camera build, unchanged. |
+| `im.elf`, `bootin.elf` | byte-identical to `ref_e10`. |
+| `usr/lib` contents | only three files added by me; the other 144 are original. |
+
+One thing did surface: the kernel banner.
+
+```
+back4 (good):  #110  Mon Nov 9 06:28:19 CST 2026
+now:           #518  Mon Nov 9 12:18:28 CST 2026
+```
+
+408 rebuilds separate the two, each of which re-embeds the initramfs and bumps
+the build stamp. The source is unchanged, so this is not a code difference --
+but `libm2probe.so` exists precisely to patch over a CP handshake whose reply
+never arrives, and that kind of shim is sensitive to timing and memory layout
+in ways a `#`-number cannot capture.
+
+So the honest state is: route B's good run depended on a kernel build that no
+longer exists on this machine, and I cannot currently reproduce it by swapping
+libraries or scripts.
+
+## Recovery options, in order of cost
+
+1. Rebuild until the CP handshake completes again. `#110`'s exact bytes are gone
+   but the source is stable, so repeated builds may land on a working layout --
+   the failure is deterministic per build, not per run, which makes this cheap to
+   test: build once, run once.
+2. Bisect `usr/lib` and `usr/kmod` against the state before the cleanup. I have
+   no snapshot of that state, so this would be reconstruction by trial.
+3. Give up route B. It corroborates against the camera's own `viewUnified2.so`
+   but is not the acceptance path, and nothing shipped depends on it.
+
+Option 1 is worth a few attempts because it is a single build-and-run per try.
+Option 3 is what will happen if that fails, and it costs nothing: the verified
+result is complete on route A.
