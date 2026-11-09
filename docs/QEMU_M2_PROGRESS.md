@@ -40420,3 +40420,87 @@ ENTER 后：标题 `设置`、右上 `0/0`、左图标栏（星／房＋相机�
 **A7C2 新菜单在 ZV-E10 的 QEMU 中确实出帧，且两次独立运行哈希一致、与上游逐像素相同。**
 这满足"非全零、结构可辨认为新菜单、记 SHA256 + 物理地址、可重复 ≥2 次"的要求。
 仍是 QEMU 内验收，不是真机验收。
+
+# ★★★★★★★★★ 2026-11-10 第四百四十七章：**直接开机就是新菜单——绕过老菜单，两次运行同哈希**
+
+## ① 用户的问题与实测答复
+
+问："能不能把老菜单删掉，直接开机就是新菜单。"
+答：**可以，已在 QEMU 做到**。而此前 route A 的做法**确实是"从老菜单进入"**
+（`NE_TREE_ADDED old_count=5 new_count=6` + ENTER 才出现新菜单），不满足这条要求。
+
+## ② 直接开机方案的构成
+
+不再 dlopen Sony 框架，改用 A7C2 原资源在 guest 侧纯 C 合成一页：
+
+```text
+guest/init.c        自持：mlock 614400B 缓冲，mmap 后按段表上报物理地址
+guest/menu_shell.c  193 行渲染器，只依赖 original_assets.h（8 分类 / 44 记录 / 16 图标）
+```
+
+guest 自报：`MENU_BOOT {"pid":1,"modules":0,"sony_ap_started":false,"backend":"owned-empty-menu"}`
+
+**开机第一件事就是 `menu_init()` → `menu_render()`，然后上报帧，零按键。**
+
+## ③ 两次独立运行（可重复性达成）
+
+```text
+initramfs direct-menu.cpio 128,000 B sha256 66f1c4c46cec4f3d42f779f15821707e78b517cbf76f2dcd1495ed1b6d8f2201
+```
+
+| 项 | direct2 | direct3 |
+|---|---|---|
+| raw sha256 | `0c7e1c6682ec4cde4c56e8e2b2b617b7aa8d874844335f9d7fd1e4cee53dbd9b` | **同左** |
+| 字节 / 非零 / 唯一色 | 614400 / 556163 / 123 | 614400 / 556163 / 123 |
+| 行相似 | 477/479 | 477/479 |
+| 基址物理地址 | 4706304 = `0x47D000` | 同左 |
+| 段表 | 78 段 合计 614400 B，ok=78 fail=0 | 同左 |
+
+画面：`设置` / `0/0` / 左图标栏（星·房+相机·相机·AFMF+相机·播放·地球·箱子）/ `MENU 关闭`。
+
+## ④ 与 route A 的 ENTER 帧同一张
+
+```text
+直接开机第一帧 raw 0c7e1c66…  ==  route A ENTER 后 raw 0c7e1c66…   逐像素差 0/307200
+```
+
+即：省掉的是"看老菜单 + 按 ENTER"两步，看到的是同一个新菜单页。
+
+## ⑤ 老菜单的存废
+
+- 直接开机版：guest 内**没有任何 Sony UI 代码**
+- route A 版：老菜单仍在，新菜单由其注入行进入
+两套独立，互不影响。
+
+## ⑥ 边界（不得含糊）
+
+这是**一页静态菜单壳**：分类列 + 项目列 + 焦点高亮，`menu_key()` 支持方向/ENTER/MENU。
+**没有**A7C2 实际业务、没有拍摄主界面、没有相机功能。它不把 ZV-E10 变成 A7C2。
+仍是 QEMU 内验收，不是真机验收。
+
+## ⑦ 交付
+
+```text
+docs/zve10/DIRECT-BOOT-NEW-MENU-2026-11-10.md
+docs/zve10/direct-menu-proof/{run1,run2}-frame.rgba4444
+docs/zve10/direct-menu-proof/DIRECT-BOOT-NEW-MENU.png
+docs/zve10/direct-menu-proof/direct-menu.cpio
+tools/zve10/qemu/run_direct_menu.sh
+tools/zve10/qemu/direct_host.py
+tools/zve10/qemu/direct-menu-archive.spec
+```
+
+## ⑧ 约束
+
+```text
+单实例  zve10-direct2 / zve10-direct3 --collect --property=MemoryMax=4G
+收尾    qemu-system-arm 残留 = 0
+```
+
+## ⑨ 关于网盘包
+
+用户先后给了百度网盘与夸克网盘链接（`zve10-qemu-linux-x86_64-v2.tar.gz`，755,119,066 B）。
+百度：`share/verify` 返回 `errno=105`，无 `BDCLND` cookie，无法在无登录态下取链。
+夸克：已拿到 `stoken` 与 `fid=2b94460908af49c38dc417caf415543c`、`size=755119066`，
+但 `share/sharepage/download` 与 `save` 均要求登录态（`code=31001 require login [guest]`）。
+**两个包都没有下载成功**，本轮未使用该包。
