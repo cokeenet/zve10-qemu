@@ -68,10 +68,19 @@ static entry_fn original_string_id, original_string_chars;
 
 #include "native_entry.inc"
 
+/* Experimental hardware presentation path: not enabled in the deployed build.
+ * Requires startup installation before rendering threads begin submitting work. */
+#ifdef NM_EXPERIMENTAL_NATIVE_PRESENT
+#include "full/ui-present.h"
+#include "native_present_adapter.h"
+#include "native_present_install.inc"
+static int nm_present_installed;
+#endif
+
 /* ---- 两个字体钩子的实现（native_entry_title 会调 original_string_chars）---- */
 static uintptr_t observe_string_id(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d)
 {
-    return original_string_id(a, b, c, d);
+    return native_entry_title(a, b, c, d);
 }
 static uintptr_t observe_string_chars(uintptr_t a, uintptr_t b, uintptr_t c, uintptr_t d)
 {
@@ -251,6 +260,10 @@ static int nm_phdr(struct dl_phdr_info *info, size_t sz, void *data)
     if (strstr(path, "viewUnified2.so")) {
         void *h = dlopen(path, RTLD_NOLOAD | RTLD_LAZY);
         if (h) {
+            /* nm_try_install/ne_find_symbol use this handle later. A constructor
+             * scan has no intercepted dlopen return value, so retain the handle
+             * explicitly rather than only deriving views_base from one symbol. */
+            ne_view_handle = h;
             void *sym = dlsym(h, "ViewRootSelectorToInstance");
             if (sym) {
                 Dl_info di;
@@ -320,6 +333,19 @@ static void nm_try_install(void)
         return;
     }
     nm_log("NM caution anchor OK\n");
+
+#ifdef NM_EXPERIMENTAL_NATIVE_PRESENT
+    if (!nm_present_installed) {
+        int present_status = nm_install_present_pair();
+        if (present_status) {
+            nm_log("NM FATAL: native present pair status=%d\n", present_status);
+            nm_install_failed = 1;
+            return;
+        }
+        nm_present_installed = 1;
+        nm_log("NM native present pair installed (experimental)\n");
+    }
+#endif
 
     if (ne_hook(caution + 0xb8dffa, ne_pin_init,
                 (void *)ne_init_wrapper, &ne_original_init)) {

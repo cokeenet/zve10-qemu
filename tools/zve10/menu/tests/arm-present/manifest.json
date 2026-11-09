@@ -1,0 +1,35 @@
+{
+  "scope": "QEMU ARM CPU and camera glibc, mocked GPU functions",
+  "workdir": "/mnt/build/newmenu-arm-5i4q98d9",
+  "files": {
+    "adapter_test": {
+      "path": "/mnt/build/newmenu-arm-5i4q98d9/adapter_test",
+      "bytes": 13712,
+      "sha256": "803a8aa84543009ce325476636e3d35ac6b1f4d4fd755b815558170dca4e067a"
+    },
+    "trampoline_test": {
+      "path": "/mnt/build/newmenu-arm-5i4q98d9/trampoline_test",
+      "bytes": 14488,
+      "sha256": "fd5cc77d0ddcd530f1f62fa33c599f5b3a0e22ffd5531f68450a71df84af0a6c"
+    },
+    "test-kmsg.cpio": {
+      "path": "/mnt/build/newmenu-arm-5i4q98d9/test-kmsg.cpio",
+      "bytes": 2823680,
+      "sha256": "a121550bcc7797daf2a15d5eba0a312a94b871c2e90800ac84c7a43b80c6ff29"
+    },
+    "kmsg.log": {
+      "path": "/mnt/build/newmenu-arm-5i4q98d9/kmsg.log",
+      "bytes": 7537,
+      "sha256": "d0c6e20b8231034d90927ce8da96e158cd8919c8acabf50f0ad55da03b206e43"
+    }
+  },
+  "passed_markers": [
+    "ARM_ADAPTER_BEHAVIOR_PASS",
+    "ARM_TRAMPOLINE_RETURN_AND_BRANCH_PASS",
+    "ARM_OCCUPIED_PIN_REFUSED_PASS",
+    "ARM_RUNNER_DONE",
+    "/tests/adapter_test status=0",
+    "/tests/trampoline_test status=0"
+  ],
+  "cleanup": "all five units inactive; no qemu-system-arm processes"
+}

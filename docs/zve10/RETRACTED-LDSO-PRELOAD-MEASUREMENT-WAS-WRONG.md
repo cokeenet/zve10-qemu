@@ -1,64 +1,53 @@
-# Correcting the record: `/etc/ld.so.preload` does not take effect on this camera
+# RETRACTED — `/etc/ld.so.preload` does work; my measurement was wrong
 
-## What the QEMU work established, and what hardware says
+This document previously claimed the mechanism does not take effect on the camera.
+That claim is **withdrawn**. The measurement behind it was invalid.
 
-QEMU said the file works. Two measurements on the virtual machine:
+## The mistake
 
-- eight failing entries (`missing`, 0-byte, plain text, truncated ELF) all printed
-  `ignored` and left `exec` working
-- with `LD_PRELOAD` unset and only the file in play, the boot-time `im.elf` showed
-  four map hits for the named library
+I checked `/proc/149/maps` (bootin) and `/proc/157/maps` (im.elf), found zero hits
+for the library, and concluded the loader ignores `/etc/ld.so.preload`.
 
-On the real camera, with the file in place, mounted and readable:
-
-```
-$ cat /etc/ld.so.preload
-/etc/zve10_agent.so
-/etc/libnewmenu.so
-$ wc -c < /etc/ld.so.preload
-39
-$ ls -la /etc/libnewmenu.so
--rwxr-xr-x  1 0 0  135332 /etc/libnewmenu.so
-$ md5sum /etc/libnewmenu.so
-40cc0e2f271dbbb13d3e6961017dd852     <- matches the build
-$ cat /proc/mounts | grep ' /etc '
-/dev/nflasha10 /etc vfat rw,sync,... <- mounted, writable
-```
-
-and yet:
+What I failed to account for: **both of those processes were already running before
+the file was written.**
 
 ```
-/proc/149/maps  (bootin.elf)   libnewmenu: 0    zve10_agent: 0
-/proc/157/maps  (im.elf)       libnewmenu: 0    zve10_agent: 0
+bootin  pid 149   starttime 97
+im.elf  pid 157   starttime 104
 ```
 
-**Neither entry loads — not ours, and not the agent library that was already
-there before this session.** `bootin` maps `/lib/*` and `/usr/lib/*` only. So the
-loader is ignoring the file entirely on this boot path, not rejecting one entry in
-it.
+A process that was exec'd before `/etc/ld.so.preload` existed cannot have the
+library mapped, no matter how well the mechanism works. `/proc/PID/maps` is a
+snapshot of what that process loaded at its own exec time — it does not update.
 
-## Why the agent still works
+## What the camera actually shows
 
-The agent is not proof that the mechanism functions. Port 7777 is held by a
-short-lived process named `startBTCore.sh`:
+Scanning every process, not just the interesting two:
 
 ```
-/proc/net/tcp  00000000:1E61  LISTEN  inode 2031
-inode 2031 -> pid 3760 startBTCore.sh
+HIT pid=574   startBTCore.sh  hits=4
+HIT pid=575   sh              hits=4
+HIT pid=683   startBTCore.sh  hits=4
+HIT pid=684   bsa_server      hits=4
+HIT pid=749   startBTCore.sh  hits=4
+HIT pid=1323  wpa_supplicant  hits=4
+HIT pid=1331  pump            hits=4
 ```
 
-Nothing in `bootin`'s or `im.elf`'s maps contains `zve10_agent.so`. So the agent
-runs as its own process, not as something preloaded into the UI. Its availability
-never depended on `/etc/ld.so.preload`.
+Seven live processes, four map entries each, all of them started after the file was
+written. `/etc/ld.so.preload` is working exactly as the QEMU experiments said it
+would.
 
-That also retracts the inference in `LDSO-PRELOAD-IS-NOT-FATAL-MEASURED.md` and
-`LDSO-PRELOAD-REACHES-IM-ELF-MEASURED.md`: those experiments were correct about
-what the loader does *when it reads the file*, but hardware shows it is not
-reading it on this boot path, which those tests could not have detected.
+## Also retracted: the "agent was never preloaded" argument
 
-## Why nothing loads, and the new lead
+I argued that because `zve10_agent.so` was not in `bootin`'s or `im.elf`'s maps,
+preload must be inert and the agent must be running as its own process. Same
+error: those two processes predate the file too. The scan above shows the
+mechanism plainly works, and the agent's delivery is not evidence either way.
 
-PID 1 on this camera is `launch_shell.elf`, not `init`:
+## The one thing that does stand
+
+`PID 1` is `launch_shell.elf`, not `init`:
 
 ```
 /proc/1/comm     launch_shell.el
@@ -66,43 +55,28 @@ PID 1 on this camera is `launch_shell.elf`, not `init`:
 /proc/1/wchan    do_wait
 ```
 
-That means `init` took the fallback branch at `0x9F72`, after the primary launch
-section. The process tree that follows is
-`launch_shell.elf -> ... -> bootin(149) -> sh(154) -> im.elf(157)`, all with
-`ppid=1` because `launch_shell` was started with `SIGCHLD` set to `SIG_IGN`.
+That is a separate observation and is not affected by the maps error. It still says
+the camera took `init`'s fallback branch at `0x9F72`. But it no longer implies
+anything about `/etc/ld.so.preload`.
 
-A plausible mechanism for the loader skipping the file is a **different root or a
-different `/etc`** in that chain: `launch_shell.elf` is at `/usr/bin/` on nflasha15
-(a separate read-only partition), and if it or something between it and `bootin`
-changes root, `/etc` would resolve to a filesystem without our file — while
-`/proc/mounts` read from an unrelated process still shows the expected mounts.
+## What the next measurement actually is
 
-This is a hypothesis, not an established fact. What *is* established:
+The question is no longer "does the mechanism work" — it demonstrably does. It is
+whether `bootin` and `im.elf`, **started fresh**, pick the library up.
 
-1. `/etc/ld.so.preload` is present, readable, and correctly formed.
-2. No process in the boot chain loads anything from it.
-3. PID 1 is `launch_shell.elf`, so the camera is not on its primary boot path.
+That requires a reboot, and then the same maps check on the new pids. `bootin` and
+`im.elf` are the two that matter because they are the UI chain; the seven processes
+above prove the file is live, so a fresh `im.elf` should load it.
 
-## What this changes for delivery
+## Note on the earlier QEMU documents
 
-`/etc/ld.so.preload` is **not** currently a working delivery route on this camera,
-contrary to what the QEMU evidence suggested. The QEMU result stands for QEMU; it
-does not transfer.
+`LDSO-PRELOAD-IS-NOT-FATAL-MEASURED.md` and
+`LDSO-PRELOAD-REACHES-IM-ELF-MEASURED.md` are unaffected and remain correct. The
+error was in this document only — an inference drawn from stale process maps.
 
-The two remaining routes are exactly the ones the firmware itself uses:
+## Method lesson
 
-- `/setting/env.txt` — dead, because `init` blanks `LD_PRELOAD` at `0x9F6A`
-  (`ROOT-CAUSE-FOUND-INIT-CLEARS-LD_PRELOAD.md`)
-- `/setting/mode/preload` — whitelisted to four Sony libraries
-  (`SETTING-MODE-PRELOAD-IS-WHITELISTED.md`)
-
-Both of the vendor's own channels are closed to arbitrary libraries. The next
-question is not "which file do we write" but **"why is this camera on the
-`launch_shell.elf` fallback path"**, because the primary path may well be the one
-where the environment and the preload file behave as documented.
-
-## Method note
-
-Every claim above is a reading taken on the camera through the agent, quoted
-verbatim. The three maps/proc/mounts dumps are the evidence; the mechanism
-suggested in the final section is flagged as a hypothesis and is not relied on.
+`/proc/PID/maps` describes a process's state at its own `execve` time. Checking it
+on a long-running process says nothing about a file written afterwards. The scan
+should have been over all processes with start times compared against when the file
+was created; that is what the corrected measurement above does.

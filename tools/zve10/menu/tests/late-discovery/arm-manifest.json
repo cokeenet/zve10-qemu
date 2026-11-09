@@ -1,0 +1,27 @@
+{
+  "scope": "ARM QEMU late discovery only, synthetic dependencies",
+  "artifacts": {
+    "/mnt/build/newmenu-arm-5i4q98d9/discovery.log": {
+      "bytes": 7457,
+      "sha256": "36dcb8a1e055d7d78c5791f60db41e3ebc197fec20700d8cf0286ef70b532428"
+    },
+    "/mnt/build/newmenu-arm-5i4q98d9/test-discovery-runner.cpio": {
+      "bytes": 2873856,
+      "sha256": "bcc8a10637aeadc408aee1ba074b74fa94978359c5bd4a7da471f77c45db324f"
+    },
+    "/mnt/build/newmenu-arm-5i4q98d9/root/tests/discovery/probe.so": {
+      "bytes": 7648,
+      "sha256": "5ed3a449037ea4c60f7a89220cfd9a1cd327998e43b0e133653e3b32ee952b40"
+    },
+    "/mnt/build/newmenu-arm-5i4q98d9/root/tests/discovery/harness": {
+      "bytes": 9036,
+      "sha256": "d700f00fbbe9e280a784e98ae1822ad11c7a3ed22e4a394de2396514334e1434"
+    },
+    "/root/fw/oss/tools/zve10/menu/tests/late-discovery/probe.c": {
+      "bytes": 2540,
+      "sha256": "781f592823a54ba0788c237c0aff7e7489b04e5121b3f02e1dd217d0309745ce"
+    }
+  },
+  "cleanup": "unit inactive, no qemu-system-arm",
+  "camera_ui_modified": false
+}

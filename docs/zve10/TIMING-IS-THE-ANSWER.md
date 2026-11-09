@@ -1,4 +1,20 @@
-# The answer is timing: `/etc` is not mounted yet when the UI chain starts
+# Historical timing hypothesis — not established
+
+> Correction, 2026-11-09: the mount-timing conclusion below is withdrawn. The
+> process observations remain useful, but no observation measured when `/etc`
+> was mounted. A library absent from `maps` does not establish that its filesystem
+> was absent. `/proc/PID/stat` starttime is process creation time, not exec time;
+> PID 1 becoming `launch_shell.elf` does not establish that bootin failed or that
+> launch_shell started bootin. The camera subsequently reported
+> `/proc/ssboot/state = snapshot`, `/proc/ssboot/mode = optimize`, and
+> `/proc/ssboot/resmode = normal`. Local Sony source recognizes snapshot/resumed
+> as resume states. Startup-image restoration is therefore a supported candidate,
+> not yet proof of exactly which user processes were restored. See
+> [snapshot status findings](SNAPSHOT-BOOT-STATUS-2026-11-09.md).
+>
+> The remainder is retained as the historical argument, not as deployment guidance.
+
+# Original argument: timing
 
 ## The measurement that settles it
 

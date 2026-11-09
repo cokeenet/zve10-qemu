@@ -129,66 +129,19 @@ static int ne_add_row(void *root)
             (unsigned)(uintptr_t)parent, (unsigned)(uintptr_t)added);
     return 0;
 }
-/* Which callers may trigger the row insertion.
- *
- * The upstream gate is a single address, views_base + 0x301921. That is the
- * instruction after the indirect call through vtable slot 2 that happens to
- * reach initSettingNode while the settings page is being built, in one specific
- * kernel+initramfs pair. This project runs several such pairs and the settings
- * page is not always assembled through the same slot, so that single address
- * matches in some environments and not others.
- *
- * Ne_installed already makes insertion a one-shot: the first matching call
- * inserts and sets it, every later call is refused by the !ne_installed test
- * below. So widening what counts as a match cannot insert twice.
- *
- * Accepted callers:
- *   1. views_base + 0x301921 -- the original upstream anchor, kept exact.
- *   2. Any return address inside viewUnified2.so whose call target resolves to
- *      ne_caution + 0xb8dffa. That is the function we actually hooked, so a
- *      caller already proves it dispatched into initSettingNode.
+/* Identify the single verified settings-tree initialization call.
+ * views_base + 0x301921 is the Thumb return address after BLX r4 at +0x30191e.
+ * Accepting another caller requires separate lifecycle/tree evidence. The
+ * !ne_installed check is one-shot state, not proof of correct tree ownership
+ * or synchronization if multiple UI threads could enter this function.
  */
 static int ne_caller_may_insert(uintptr_t caller)
 {
-    if (!views_base) return 0;
-    if (caller == views_base + 0x301921) return 1;
-
-    /* Must return into viewUnified2.so. */
-    Dl_info info;
-    if (!dladdr((void *)(caller - 1u), &info) || !info.dli_fbase) return 0;
-    if ((uintptr_t)info.dli_fbase != views_base) return 0;
-
-    /* The call site must actually reach the function we hooked. A Thumb-2 BL is
-     * 32 bits, decoded as:
-     *
-     *   hw1 = 1111 0S imm10
-     *   hw2 = 11 J1 1 J2 imm11
-     *   offset = SignExtend(S:J1:J2:imm10:imm11:0, 25)
-     *   target = (pc_of_intruction + 4 & ~3) + offset
-     *
-     * and the return address sits 4 bytes past the instruction. Decode it and
-     * compare against ne_caution + 0xb8dffa. Anything else is a different call
-     * that merely happens to return into viewUnified2.so. */
-    const unsigned char *at = (const unsigned char *)(caller - 4u);
-    unsigned hw1 = (unsigned)at[1] << 8 | at[0];
-    unsigned hw2 = (unsigned)at[3] << 8 | at[2];
-    if ((hw1 & 0xf800u) != 0xf000u) return 0;
-    if ((hw2 & 0xd000u) != 0xd000u) return 0;
-
-    unsigned s  = (hw1 >> 10) & 1u;
-    unsigned j1 = (hw2 >> 13) & 1u;
-    unsigned j2 = (hw2 >> 11) & 1u;
-    unsigned imm10 = hw1 & 0x3ffu;
-    unsigned imm11 = hw2 & 0x7ffu;
-    unsigned i1 = !(j1 ^ s);
-    unsigned i2 = !(j2 ^ s);
-    uint32_t u = (s << 24) | (i1 << 23) | (i2 << 22) | (imm10 << 12) | (imm11 << 1);
-    int32_t off = (int32_t)(u << 7) >> 7;              /* sign-extend 25 bits */
-    uintptr_t pc = ((caller - 4u) + 4u) & ~(uintptr_t)3u;
-    uintptr_t target = pc + (uintptr_t)off;
-
-    if (!ne_caution) return 0;
-    return target == (ne_caution + 0xb8dffa);
+    /* Only the byte-verified upstream return site is accepted. The prior
+     * generalized BL decoder was not valid for Thumb-tagged return addresses,
+     * indirect BLX calls or PLT/vtable dispatch, and widening it would risk
+     * inserting into an unrelated live settings tree. */
+    return views_base && caller == views_base + 0x301921;
 }
 
 static void ne_init_wrapper(void *root, void *out, int flags)
