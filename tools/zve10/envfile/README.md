@@ -79,7 +79,27 @@ sh ../menu/build.sh full   # libnativeentry.so  214,228 B  QEMU 验证用
 
 ## 部署后怎么验证
 
-重启后通过 agent 查：
+**一条命令：**
+
+```sh
+sh verify_after_deploy.sh <相机IP>
+```
+
+它按顺序查四件事并给出判读：
+
+1. **前置事实** —— 真机上 `libObj.so` / `viewUnified2.so` / `CautionConfig.so` /
+   `im.elf` 的 md5，确认与原厂一致（锚点偏移依赖它们）
+2. **部署文件** —— `ld.so.preload` 内容、`libnewmenu.so` 的 md5
+3. **库是否真的加载** —— `im.elf` 的 `/proc/PID/maps` 里有没有 `libnewmenu`
+4. **菜单日志** —— 期望看到 `NM installed` 和 `NE_TREE_ADDED`
+
+判读要点也写在脚本输出里。特别地：
+
+- `NM warn: string_id hook failed (anchor occupied?)` 在真机上**更可能是成功**
+  （QEMU 里失败是因为 `libuiobserve.so` 先占了位置，真机不加载它）
+- 没有 `NE_TREE_ADDED` 时按 `NE_VERSION` / `NE_ERROR` 的具体形态定位
+
+**手动查（等价）：**
 
 ```sh
 CAM_IP=<ip> python3 ../../payload/agent/cam.py run '
