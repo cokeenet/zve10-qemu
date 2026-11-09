@@ -40138,3 +40138,93 @@ FB_SAMPLE nonzero=1 unique=2（全零）
 合格 640×480 帧：无
 SHA256 / 物理地址：无
 ```
+
+# ★★★★★★★★★ 2026-11-10 第四百四十四章（第 88–90 轮）：**widget 链表确为非空；上轮"空链表"结论作废；越界读曾打崩基线后被修回**
+
+## ① 推翻上一轮结论：链表不是空的
+
+上一轮 WLIST 用错了指针算术（拿 `head+4` 当 next、拿 `cur==head` 当终止），
+因此报出的 `count=0` **不代表链表为空**。
+
+libObj 自身的判据在 `0x1061ac`：
+
+```asm
+001061ac: ldr  r3,[r0,#12]      ; node = *(head+12)
+          adds r0,#16           ; 期望值 = head+16
+          cmp  r3,r0
+          movne r0,r3           ; 不等 → 返回 node
+          moveq r0,#0           ; 相等 → 空
+```
+
+`0xdeb30` 取后继读的是 `[node+0]`，不是 `[node+4]`。
+
+按正确判据实测（wld2）：
+
+```text
+WLDUMP pre inner=0x4cf6e8 head=0x4cfb9c [8]=0 [12]=0x4ea7c0 expect16=0x4cfbac NON-EMPTY
+GATE_LINK base=0x4cfb9c v12=0x4ea7c0 expect16=0x4cfbac NON-EMPTY
+```
+
+两路独立探针给出同一个 head 与同一个 `*(head+12)`，**链表非空**。
+
+## ② 首个节点的形状
+
+```text
+WLDUMP pre node=0x4ea7c0 q0=0x4ea7b8 q1=0x4cfb9c q2=0x4cfb9c q3=0x4d01a0 sentinel-shaped
+WLDUMP pre head-relative node=0x1ac24 head=0x4cfb9c
+```
+
+`q1 == q2 == head` 说明该结构带双向回指，是 std::list 风格节点；
+`q0 = 0x4ea7b8` 与节点自身相差 −8，不是远端 vtable，因此不能据此认定 widget 类型。
+**节点身份仍未确定**，只确定了"有东西挂在链上"。
+
+## ③ 一次基线崩塌及其原因（按铁律 4 停用该 run，已修回）
+
+wld1 沿 `*(node+0)` 连续走了 8 跳，越走越出对象边界：
+
+```text
+node[0]=0x4e3978  → node[1]=0x4e3970  → node[2]=0xaab4ca8  → node[3]=0xa84f9a1
+node[3] 的 +4=0x9b6803af、+8=0x80479868 明显是指令/文本字节
+```
+
+该 run 基线：`行数=1139 [AS]=613 CREATELAYER n=2` —— `createLayer=2`，哨兵偏离，**整轮数据停用**。
+
+修正：WLDUMP 改为**只读一个候选节点**（4 个字），不再沿链跳，读不到既不越界也不可能改写状态。
+wld2 重新回到干净基线：
+
+```text
+行数 1491  [AS] 827  CREATELAYER n=6  LIBOBJ_SYM 24  DRAW_PROBE notifyDraw 2 次
+```
+
+## ④ 运行归因（wld2）
+
+```text
+Image    bff51f0bd58ffe6e77d59e25ba0c1f10bbf4ea77668be81edb8143d71cada2cb
+cpio     e73c7712148b6ecc5955285a1b59af1203b7692ab963876fc635255744cc1a8d
+argtrace 1f6ae67b8c2bd90319369cd5c2b2365f6f0182a8f569ff7a9ae00a68535a328e
+QEMU     8457417745b387eae99f6967f63e9599d23640fdcc80f4fabc01803c9790150a
+```
+
+单实例 `zve10-wld2`，收尾 `state=inactive`，无残留。
+
+## ⑤ 绘制链现状（较上一轮推进一格）
+
+```text
+createLayer = 6            ✅
+widget 链表 NON-EMPTY      ✅（本轮新确立）
+notifyDraw 被调用 2 次      ✅
+onDrawNotice 计数 0        ⚠ 受插桩局限，libObj 内部 BL 不经 PLT，此 0 不可判读
+GRM_gperm* 计数 0          ⚠ 同上
+FB nonzero=1 unique=2      ❌ 仍全零
+```
+
+⇒ 断点从"没有 widget"修正为"**有 widget 但绘制未到达 GRM**"。
+下一步需要的是**函数体入口 inline hook**（a7c2-re 用 `mprotect` + 原地跳转，
+`libnativeentry` 用 `ne_hook` + trampoline），才能绕过 PLT 继承的观测盲区。
+
+## ⑥ 本轮未出帧
+
+```text
+合格 640×480 帧：无
+SHA256 / 物理地址：无
+```
