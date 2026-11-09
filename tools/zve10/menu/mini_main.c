@@ -586,7 +586,17 @@ static void nm_boot(void)
      *   1. 先判断是不是 im.elf，不是就立刻返回（零开销、零副作用）
      *   2. 是的话只在本进程内装 timer
      */
-    /* ★ 启动诊断：把关键环境一次性打进日志。
+    /* ★ 只有 UI 进程才写任何东西。
+     *
+     * 这段诊断曾经放在 nm_is_ui_process() 之前，结果真机上每次 fork+exec 都写
+     * 三行到 /log/newmenu.log —— 而相机每秒起好几个进程，nm_log_budget 是
+     * 【每进程】的静态变量、每次都从 600 重来，于是 /log 会无限增长。
+     *
+     * 现在先判进程，不是 im.elf 就直接返回，零日志、零文件操作。
+     */
+    if (!nm_is_ui_process()) return;
+
+    /* ★ 确认是 UI 进程后才做启动诊断。
      *
      * 真机只有一次机会看到这些（重启就换新进程），
      * 而"库进得去但 hook 装不上"这类问题全靠这些信息定位。
@@ -602,9 +612,11 @@ static void nm_boot(void)
         nm_log("NM === boot pid=%d exe=%s ===\n", (int)getpid(), exe);
         nm_log("NM LD_PRELOAD=%s\n", envp_ ? envp_ : "<unset>");
         nm_log("NM /etc/ld.so.preload readable=%d\n", has_etc_preload);
+        /* 这一行是排查"库加载了但没有任何输出"的关键：
+         * 如果 log=<none>，说明所有候选路径都写不进去，
+         * 那么"没有日志"就不能当成"没有加载"的证据。 */
+        nm_log("NM log=%s\n", nm_log_where());
     }
-
-    if (!nm_is_ui_process()) return;
 
     int have_lock = (nm_acquire_lock() == 0);
     nm_log("NM ui pid=%d lock=%d\n", (int)getpid(), have_lock);
