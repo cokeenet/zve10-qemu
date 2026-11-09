@@ -350,6 +350,16 @@ static void nm_try_install(void)
 
     /* 字体钩子：换标题 */
     {
+        /* 诊断：锚点处的实际字节。锚点和文件里的字节完全一致却 memcmp 失败，
+         * 说明 object_base 不是这些偏移相对的基址 —— 先把实际字节打出来。 */
+        {
+            const unsigned char *a1 = (const unsigned char *)(object_base + 0x626538);
+            const unsigned char *a2 = (const unsigned char *)(object_base + 0x6266d0);
+            nm_log("NM anchor1=%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x\n",
+                   a1[0],a1[1],a1[2],a1[3],a1[4],a1[5],a1[6],a1[7],a1[8],a1[9],a1[10],a1[11]);
+            nm_log("NM anchor2=%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x\n",
+                   a2[0],a2[1],a2[2],a2[3],a2[4],a2[5],a2[6],a2[7],a2[8],a2[9],a2[10],a2[11]);
+        }
         if (ne_hook(object_base + 0x626538,
                     (const unsigned char[]){0x90,0xb5,0x83,0xb0,0x00,0xaf,0x04,0x46,0x38,0x46,0xea,0xf7},
                     (void *)observe_string_id, &original_string_id))
