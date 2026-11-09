@@ -1,0 +1,32 @@
+{
+  "method": "Sony ud_wbi_drop.elf (dino2048/ZV-E10-5GHz-WiFi-Unlock)",
+  "tool": {
+    "path": "/mnt/build/fw/unpacked/ZVE10_V203_unpacked/updater.img_unpacked/bin/ud_wbi_drop.elf",
+    "bytes": 6200,
+    "sha256": "f2a5b27a0c11d55a612d61e61e82c55278efb744052ecb8ec2cbbd8851d0ea6e",
+    "expected": "f2a5b27a0c11d55a612d61e61e82c55278efb744052ecb8ec2cbbd8851d0ea6e",
+    "match": true
+  },
+  "config": {
+    "bytes": 251,
+    "sha256": "9bb1cba13c10ce88bd88d054dc49a823b3b1409ce6dfbeaeaa180f31d22744a8",
+    "expected": "9bb1cba13c10ce88bd88d054dc49a823b3b1409ce6dfbeaeaa180f31d22744a8",
+    "match": true
+  },
+  "upload_verified": {
+    "tool_readback_identical": true,
+    "config_readback_identical": true
+  },
+  "partition_geometry": {"node": "/dev/nflasha5", "dev": "252:5", "start_sector": 180224, "sectors": 122880, "bytes": 62914560},
+  "before": {"first4": "WBI1", "full_md5": "65d10676d5fc8a9d3155b531c9c0ed17", "matches_archive": true},
+  "execution": {"stdout": "[UD_WBI_DROP] /dev/nflasha5 wbi_drop", "exit": 0},
+  "after": {
+    "first_512_all_zero": true,
+    "bytes_512_to_4095_unchanged": true,
+    "md5_from_byte_512": "fe1594a743c184617c753fc06821d30e",
+    "archive_md5_from_byte_512": "fe1594a743c184617c753fc06821d30e",
+    "rest_identical": true
+  },
+  "cleanup": "uploaded tool and config removed; /tmp/jiritsu/wbi removed",
+  "not_done": "no reboot; cold boot requires battery removal"
+}
