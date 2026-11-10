@@ -43454,3 +43454,77 @@ QEMU 实例   0
 基线        v80: 1936 行 / createLayer=6
 构建        一律走 build-deploy.sh
 ```
+
+# ★★★★★★★★★ 2026-11-11 第四百七十二章（R223–R228）：**绘制流程走完但零像素——排除性结论**
+
+## ① 用 /dev/mem 直接监测真实帧缓冲页（FBWATCH）
+
+`present` 请求记录（已实测，完全合法）：
+
+```text
+PRESENTREC [0]=0x20312200 [1]=0x22d52000 0 0x4 0 0x4401
+           [6..9]=0x280 0x1e0 0x280 0x1e0
+           [10..13]=0 0 0x280 0x1e0
+```
+
+在驱动前 / 驱动后 / 提交后三个时点，直接经 `/dev/mem` 读这两个物理页的非零字节数：
+
+```text
+FBWATCH before_draw   src_nonzero=0  dst_nonzero=0
+FBWATCH after_draw    src_nonzero=0  dst_nonzero=0
+FBWATCH after_submit  src_nonzero=0  dst_nonzero=0
+```
+
+**⇒ 源缓冲与目标缓冲在整个过程中始终全零。**
+
+## ② 同时 GPU 侧也没有收到任何绘制包
+
+```text
+ZVE10_GPE_PACKET   19
+ZVE10_GPE_INIT_FENCE 19      ← 全部是启动栅栏
+ZVE10_GPE_COMPLETE   0
+门铃写入            19 次，全部 val=4（同一批）
+```
+
+**⇒ GPU 从未收到任何绘制命令。**
+
+## ③ 完整的因果链（本轮最终确定）
+
+```text
+[OK]  updateFrame 遍历 5 个 panel
+[OK]  drawFramebuffer 执行并返回（2 次，不同线程）
+[OK]  vdf_if_port_init 被调用，present 拷贝执行并返回 0
+[空]  源缓冲 0x20312200 从未被写
+[空]  目标缓冲 0x22d52000 从未被写
+[空]  GPU 零绘制包
+[空]  decodeImpl 零调用
+```
+
+**⇒ 固件的绘制路径是一套「空转的骨架」：所有该调的函数都调了，
+但没有产生任何像素，也没有提交任何 GPU 作业。**
+
+## ④ 这解释了此前的所有矛盾
+
+```text
+「drawFramebuffer 被调用」      ✓ 真的，但它不画
+「updateFrame 遍历 5 个 panel」  ✓ 真的，但 panel 里没有可绘制资源
+「present 拷贝成功」            ✓ 真的，但源是空的
+```
+
+**根因指向资源层：panel 存在但内容是空的，因为资源从未解码加载。**
+
+**而 `decodeImpl` 零调用正是这一点的直接证据。**
+
+## ⑤ 工具与状态
+
+```text
+QEMU 实例   0
+基线        v86: 1947 行 / createLayer=6
+本轮新增    FBWATCH（/dev/mem 直读帧缓冲三时点快照）
+```
+
+## ⑥ 下一步
+
+**既然资源必须解码而 `decodeImpl` 从未被调用，下一步就是**主动调用 LZ77 解码路径**，
+与驱动 `drawFramebuffer` 的做法相同：用直接调用验证机制是否可用。
+若解码产生有效数据、panel 获得内容，再驱动绘制才可能出像素。**
