@@ -41736,3 +41736,86 @@ state_in_B  字面量 0x279da7c → 全局 0x2cebbc0（.rodata，值 01 00 00 00
 **这条把"构建器被资源切换卡住"排除掉了（与台账 178/180 的旧判断一致但更精确：
 不是它卡住，是它按状态选了一条还没到绘制阶段的分支）。**
 
+
+## ⑨ 补充（R140）：菜单构建器是纯状态机、会正常返回；混装无关，部署树才是真相
+
+### 9.1 构建器 0x723aac 的真实行为（完整读出，推翻两个旧说法）
+
+```text
+723aac  push ; add r7,sp,#0
+723ab0  bl 0x54e140             读 state_B
+723ab4  cmp r0,#0 ; bne 0x723b32
+723aba  bl 0x54e108             读 state_A
+723abe/aa/acc  cmp #1/#2/#0 → 各分支 switchBank(4/3/5)
+723ba6  blx switchBankEth       （各分支汇合处）
+723baa  bl 0x54e108             再读 state_A
+723bae..bcc  cmp #1/#2/#0 → 选 float 常量 0x3f800000 / 0x3f400000 → str
+723bd4  blx UXEngine::wgtsys
+723bd8  blx WidgetSystem::getGestureAnalyzer
+723bdc..be6  读全局 float → 尾跳 GestureAnalyzer::setGestureYRatio
+```
+
+**即：它是一段「按状态设手势比例、切资源 bank」的分发，
+没有循环、没有等待，末尾 `ldmia sp!,{…}` + `b.w` 正常返回。**
+
+**推翻两处旧说法：**
+- 台账 178 称其"状态机驱动，94 个 widget 构造点"——**构造点不在这个函数里**
+- 台账 180 称"直接调用 0x723aac 会死锁"——**我们本轮观察到 `RM switchBank ENTER/LEAVE` 6/6 成对 `ret=1`，
+  它本身不阻塞；旧记录的死锁应另有原因（例如从错误线程调用）**
+
+### 9.2 混装问题：PORTED4 混装属实，但**部署树不是混装**
+
+```text
+PORTED4/usr/lib          168 个 .so：ZV1M2 66 / ZV-E10 94 / 其它 8   ← 混装
+work/initramfs-ui/usr/lib 220 个文件：ZV1M2 190 / ZV-E10 6 / 其它 24  ← 几乎纯 ZV1M2
+```
+
+部署树里来自 ZV-E10 的只有 6 个，且 `appFw.so` 对它们**引用数为 0**：
+
+```text
+githash
+libclema.so
+libInfraCameraAllSetting.so
+libInfraCameraProfile.so
+libInfraExtTransferApp.so
+libInfraLensCommunicator.so
+```
+
+`viewUnified2.so` / `CautionConfig.so` / `libmpr.so` **只存在于 PORTED4，不在部署树里**，
+且 `appFw.so` 对这三个的引用数同样为 0。
+
+**所以「混装导致视图协议对不上」这条判断对实际运行的镜像不成立——作废。**
+部署树的关键依赖（`libInfraSKD.so` 7,259,708 字节 = ZV1M2 原厂、
+`dataflowInfraFramework.so`/`libMWF.so`/`libosal_uipc.so` 均为 ZV1M2 原厂）都是对的。
+
+### 9.3 appFw 的导入覆盖情况（实测）
+
+```text
+appFw.so 共 754 个 UND 符号
+其中由【部署树里的库】能提供的：405 +
+其中需非 ZV1M2 库提供的：349（主要是 Fsys 16 / osal 14 / pthread 12 这类 C/OSAL 层，
+                        由 libInfraFsys / libosal_uipc / libc 正常提供）
+```
+
+**即：符号分辨率层面没有缺失导致的失败。**
+
+### 9.4 因此真正的落点回到 stage1
+
+```text
+容器 0x54f664 进入 → bl 0x54ef74（stage1）→ 内部依次执行
+  0x54ef8c blx r3（虚调用）
+  0x54efa6 bl 0x723aac（构建器，正常返回）
+  0x54efaa 起 8 个 blx（PLT/veneer）
+  0x54efb8 bl 0x558a00
+  0x54efcc bl 0x558cbc
+  0x54efd0 bl 0x7121d4
+  0x54efd4 bl 0x54d668
+  0x54efd8 bl 0x60e228
+  0x54efdc strb 0
+  …
+容器 0x54f68a bl 0x54833c → 返回点 0x54f68e（RET51 hit=0）
+```
+
+**stage1 从未返回，因此容器到不了 0x54f68a。真正的停住在 0x54ef74 内部，
+而我们此前只证明它前段（虚调用 + 构建器）执行过。**
+
