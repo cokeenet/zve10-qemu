@@ -42343,3 +42343,111 @@ QEMU 实例   0
 基线        v16: 1762 / 1094 / createLayer=6 / LIBOBJ_SYM=24
 构建        一律走 build-deploy.sh（sha 比对通过才继续）
 ```
+
+## ⑩（R153–R154）★ 决定性进展：跳过 stage1 后容器第一次走过了它的第一个调用
+
+### 10.1 R153：BRANCH2 探针 pin 修正后仍全零
+
+```text
+out/v18 基线 1741 / 1072 / createLayer=6 / LIBOBJ_SYM=24   通过
+BRANCH2 54f700_renderPath installed at 0x2eb64700
+BRANCH2 54fb4c_cleanup    installed at 0x2eb64b4c
+BRANCH2 report renderPath=0 cleanup=0
+```
+
+（首次尝试 pin 写错，实测字节是 `07 f5 d7 60` 与 `07 f5 fc 60`，已改为实测值。）
+
+### 10.2 R153：STAGE1SKIP 首次尝试失败，原因是**自己覆盖自己**
+
+直接改 `0x54ef74` 的前 2 字节为 `bx lr`，结果报
+`STAGE1SKIP mismatch (got df f8 00 f0)`——`df f8` 正是 `grm_jump` 的
+`ldr.w pc,[pc,#…]`，说明 `stage_hooks_install` 早已把该入口改写过。
+
+**同一条函数上装两个补丁 = 本会话反复作废过的自毁模式。**
+改为复用已有的 STAGEMAP stage-1 wrapper，用标志位让它立即返回。
+
+### 10.3 R154：STAGE1SKIP 生效，容器第一次越过第一个调用
+
+```text
+out/v20 基线 1600 / 1043 / createLayer=6 / LIBOBJ_SYM=24   通过
+STAGE1SKIP flag set (stage1 wrapper will return immediately)
+RENDERENTRY enter=1 a0=0x3689b410 tid=195
+STAGE1SKIP returning early from stage1
+RE71 hit=1 tid=195                    ★ 0x54f67c 第一次被走到
+DRIVE_AT_SEND why=snd gfxinst=0xaad8e71 updres=0x41bd164 wgtsys=0xaadc7d1
+GFXENG enter n=6 caller=0x41bd3dc
+GFXENG_POSCTRL ret=0x49b010
+LAYERGLB nonzero=897 firstoff=0x3d55000 first=0x200a3ae
+```
+
+**对比：跳过之前 RE71 hit=0，跳过之后 RE71 hit=1。**
+**这是 153 轮以来第一次让容器走过 `0x54f674 bl 0x54ef74` 这条调用。**
+
+### 10.4 但 GOT 诊断揭示了更深的原因
+
+```text
+GOTS gfxeng                value=0x2dfd29d0 rel=0x5289d0 PLT0(never-called)
+GOTS processSystemMessage  value=0x2dfd29d0 rel=0x5289d0 PLT0(never-called)
+GOTS drawFramebuffer       value=0x2dfd29d0 rel=0x5289d0 PLT0(never-called)
+GOTS notifyDraw            value=0x2dfd29d0 rel=0x5289d0 PLT0(never-called)
+GOTS updateFrame           value=0x2dfd29d0 rel=0x5289d0 PLT0(never-called)
+GOTS createLayer           value=0x41baf14                        resolved
+```
+
+**除 `createLayer` 外，容器后续要用的每个调用槽都还指向 PLT0（未绑定 = 未调用过）。**
+**这不是「调用失败」，是「还没调用到」。**
+
+### 10.5 容器的新停点：第二个调用 `0x54833c`
+
+```text
+54f67c  add.w r0,r7,#0x7e0
+54f680  movs  r6,#0
+54f682  mov.w r8,#1
+54f686  ldr   r1,[r5,r3]
+54f688  mov   r5,r6
+54f68a  bl    0x54833c          ← 容器现在停在这里
+54f68e  add.w r0,r7,#0x800      ← RET51 探针位置，hit=0
+```
+
+`0x54833c` 是 InfraInput 的注册函数：体内 `blx InfraInput::GetInstance@plt`、
+`blx InfraInput::SetCallback@plt`，即**给输入系统注册回调**。
+
+**它是 0x54f664 里第二个「必须先成功」的调用，与 stage1 同性质。**
+
+### 10.6 R154：RET52 探针已装但未命中，并查明原因
+
+`0x54833c` 的入口是 `ldr r3,[pc,#0x34]`（PC 相对，不可 hook），
+但 `0x54833e` 是 `push {r4,r7,lr}` / `sub sp,#0xc`，4 字节可搬。
+
+```text
+out/v21 基线 1555 / 1010 / createLayer=6 / LIBOBJ_SYM=24   通过
+RET52 installed at 0x2e35233e jump=10
+RE71 hit=1 tid=195
+RET52 hit = 0                      ← 未进入
+```
+
+**而 `grm_jump` 返回 10 字节（`ldr.w pc,[pc,#imm]` + 字面量），
+装在 `0x54833e` 会覆盖 4 字节 prologue 之后的 `0x548342 ldr r2,[pc,#0x34]`
+与 `0x548344 add r3,pc`——但那两条本来就还没执行，属于安全覆盖。
+RET52 未命中说明容器没走到 `0x54833c` 的 +2 处，即卡在 `0x54f68a` 的调用本身或更早。**
+
+### 10.7 结论与下一步
+
+```text
+[已证] stage1 是真实阻塞点之一：跳过它，容器就能走到 0x54f67c
+[已证] 容器现在停在 0x54f68a 的第二个调用（0x54833c）
+[已证] 容器后续所需的 GOT 槽全部未绑定
+[下一步] 同样用地标记法跳过 0x54833c，观察容器是否继续到 0x54fb3e 的消息泵
+         若继续，则逐个跳过，直到走完 0x54f664 的全部 6 个前置调用，
+         届时 BRANCH2 应能判定它走的是 renderPath 还是 cleanup
+```
+
+### 10.8 约束
+
+```text
+QEMU 实例   0
+基线        v21: 1555 / 1010 / createLayer=6 / LIBOBJ_SYM=24
+构建        一律走 build-deploy.sh（sha 比对通过才继续）
+本轮遇到的磁盘 I/O 错误（pcieport AER Correctable）已通过删除并重建
+usr/initramfs_data.cpio 解决，后续 5 次构建全部 deploy ok
+```
