@@ -43671,3 +43671,87 @@ QEMU 实例   0
 **`0x1706085` 的设计意图：谁创建它、谁应该发。**
 **若它对应某个应由驱动或服务层发出的通知，那么在 guest 内补这一条消息
 即可让 UI 初始化继续，资源随之解码，绘制才有内容。**
+
+# ★★★★★★★★★ 2026-11-11 第四百七十五章（R234–R237）：**根因定位到 DMP/VDF 通道——一条要等 GPU 服务端回应的握手**
+
+## ① 阻塞队列与 backup key 同源
+
+```text
+BACKUP_nread n=12 key=0x1700000 len=4 ret=4 tid=137 caller=libObj+0x12519e
+RCVC n=25 qid=0x1706085 tmo=-1 off=libObj+0x127b59 tid=137
+```
+
+**同一线程（tid=137）、`0x170` 同前缀。⇒ 队列号由 backup 配置派生。**
+
+## ② `vdf_if_port_init` 的真实结构（从 libObj 字符串读出）
+
+```text
+vdf_if_port_init / vdf_if_port_term
+vdf_if_port_create_thr / destroy_thr
+vdf_if_port_send_update / send_exec / send_mute / send_break
+vdf_if_port_exec_cb / break_cb / update_cb
+grm_dn_vdf_if                      ← 设备节点名
+cmd_proc_vdf.cpp
+dmpNative::CmdProcessorVdf::proc_connect / proc_disconnect / proc_get_comp(OSAL_ID)
+dmpNative::CmdProcessorVdf::proc_connect_comp / proc_request_connect
+N9dmpNative9SingletonINS_5VdfIfEEE
+```
+
+**⇒ 这是**两阶段握手**：`vdf_if_port_init` 起线程 → 发 OSAL 连接请求 →
+等服务端回 `proc_connect_comp` 完成消息。**
+
+**而 `tid=137` 在 `0x1706085` 上等的那条消息，就是「连接完成」。**
+
+## ③ 服务端是谁：GPU 驱动的 DMP 层
+
+**`dmpNative` 不是独立 .so（四个机型树均为 0 个文件），
+`CmdProcessorVdf` 只出现在 `libObj.so` 内部的客户端侧代码里。**
+
+**⇒ 服务端应由 `grm_gles.ko` 经 `/dev/dmpgles2`（248:29）提供。**
+
+**`/dev/dmpgles2` 用 `mknod` 建了节点、`BASEPRINT` 显示已映射，
+但**没有任何 open/ioctl 记录**——设备从未被真正使用。**
+
+## ④ 因此完整因果链闭合
+
+```text
+[通]  libObj 从 OSAL 消息拿到帧缓冲基址 0x20312000，派生 0x20312200
+[通]  vdf_if_port_init 被实现、可调用
+[断]  ★ 它发连接请求后等 proc_connect_comp 完成消息
+       —— 该消息需 GPU 驱动侧的 DMP VDF 服务端发出
+       —— 我们的 QEMU 里 /dev/dmpgles2 只是节点，没有协议实现
+[断]  消息永不发出 → tid=137 永久等待（实测 400 次发送中零次发往 0x1706085）
+[断]  → UI 初始化卡住 → decodeImpl 零调用 → panel 无内容 → 零像素
+```
+
+## ⑤ 这是本项目最根本的一层缺口
+
+```text
+不在 appFw 的业务逻辑里
+不在 libObj 的 UI 框架里
+不在资源解码里
+而在【GPU 驱动设备 /dev/dmpgles2 的 DMP/VDF 连接协议】上
+```
+
+**参考实现能出帧，正是因为它把这一层换成了自己的软件路径
+（`software_fill/blit/present/engine_wait` + `software_slow_clear`），
+从而完全不需要这个握手成功。**
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v89: 2313 行 / createLayer=6
+```
+
+## ⑦ 下一步的两条路线
+
+```text
+A. 在 QEMU 侧为 /dev/dmpgles2 实现最小 VDF 连接协议（回 proc_connect_comp）
+   —— 让固件自己的 UI 初始化走通，资源随之解码
+B. 完全模仿参考实现：不等握手，直接用软件后端接管绘制
+   —— 已具备全部后端（present/clear/engine_wait/软件 LZ77），
+      但需要先有内容，而内容依赖 A 或固件自身的资源加载
+```
+
+**判断：先走 A。它比 B 更接近"固件自身绘制路径"这一验收要求。**
