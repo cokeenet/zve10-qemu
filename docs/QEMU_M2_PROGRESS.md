@@ -42585,3 +42585,103 @@ QEMU 实例   0
 构建        一律走 build-deploy.sh（sha 比对通过才继续）
 原则        一个地址只允许一套 hook；pro_len 必须 >= grm_jump 的 stub 长度且落在指令边界
 ```
+
+# ★★★★★★★★★ 2026-11-11 第四百六十三章（R158–R160）：**自毁式 hook 已全部清除；阻塞点收敛到「stage1 首条指令即失败」**
+
+## ① R158：stage1 入口 hook 禁用后，容器仍不返回
+
+```text
+out/v26  基线 1779 / 1109 / createLayer=6 / LIBOBJ_SYM=24   通过
+stage1 入口 0x54ef74 完全不装 hook
+RE71 hit=0 / RET51 hit=0 / RENDERENTRY leave=0
+```
+
+**⇒ "我们的 hook 打断了固件" 这个怀疑被排除。stage1 在本环境里自己就跑不完。**
+
+## ② R159：发现 GOTS 报告一直误导
+
+`report_got_slots()` 挂在 `createLayer` 的**第一次调用**上——那发生在启动早期，
+远早于容器被走到。从那个快照说「drawFramebuffer 等槽仍在 PLT0」证明不了后期状态。
+
+**已改为在 t=5/10/15 s 的周期报告里重新读一次。**
+
+## ③ R160：三个「只有 4 字节可搬」的 hook 是结构性错误，已全部清除
+
+`s1_hooks_install` 装了三个目标，全部是：
+
+```text
+0x54d668  push {r4,r5,r7,lr}(2) + add r7,sp,#0(2) + blx 0x925cc8(4)   ← 只有 4 字节可搬
+0x60e228  push {r4,r5,r7,lr}(2) + add r7,sp,#0(2) + bl   0x54e140(4)
+0x723aac  push {r4,r5,r7,lr}(2) + add r7,sp,#0(2) + bl   0x54e140(4)
+```
+
+而 `grm_jump` 对 4 对齐目标**始终写 8 字节**（`ldr.w pc,[pc,#0]` + 紧随的字面量）。
+字面量落在 `+4..+7`，正好覆盖那条第 3 指令——而 trampoline 跳回的就是 `+4`。
+
+**⇒ 这三个函数只要被调用一次，执行的就是被抹掉的字节。**
+
+**已全部退役（`pro_len` 置 0，安装循环跳过并打印原因）。**
+
+## ④ R160：trampoline 字节实测，结构完全正确
+
+新增 `RENDERENTRY tramp` 转储，实测：
+
+```text
+RENDERENTRY tramp 2d e9 f0 4f ad f5 00 6d 87 b0 df f8 04 f0 00 bf
+                  push.w {r4-r11,lr}
+                  sub.w  sp,sp,#0x800
+                  sub    sp,#0x1c        ← 复制的 10 字节到此为止
+                  ldr.w  pc,[pc,#4]      ← 跳回 0x54f66f
+                  nop
+```
+
+**⇒ hook 本身没有缺陷。**
+
+## ⑤ 由此收敛出的唯一解释
+
+```text
+容器 0x54f664 进入              RENDERENTRY enter=1
+trampoline 正确                 RENDERENTRY tramp 字节已验证
+跳回 0x54f66e                   结构正确
+但 0x54ef74..0x54f000 区 PC 采样 0 命中
+且 0x54f67c（容器 continuation）0 命中
+```
+
+**⇒ 控制流在执行到 `0x54f66e` 之后、`0x54ef74` 之前就离开了用户态。**
+
+最可能的两种机制：
+
+```text
+A. 栈溢出：容器一进入就 sub.w sp,#0x800（2KB 局部缓冲），
+   stage1 再 sub sp,#0xc，之后还有更深的调用。
+   实体机日志明确写着「All 2,730 static constructors executed on 16MB stack safely」，
+   说明 Gen5 这个 UI 线程需要大栈。若我们的线程栈只有默认的几百 KB 甚至更小，
+   第一次下探就可能落到 guard page，触发 data abort，此后不再有用户态指令执行。
+B. 非法指针访问：a0+0x10 的值被读到（0x36b04cac），但它指向的对象若不在映射区内，
+   后续 ldr 会 abort。
+```
+
+**两者都会表现为「PC 采样零命中、无后续日志、线程看起来停住」。**
+
+## ⑥ 下一步（可直接验证，成本极低）
+
+在 QEMU 侧钩住 guest 的异常入口，记录第一次 data abort / prefetch abort 的
+fault address 与当时的 PC：
+
+```text
+如果 fault address 落在栈附近 → 结论 A，加大线程栈即可
+如果 fault address 是 a0 相关指针 → 结论 B，定位到具体对象
+```
+
+**这是从「猜」到「测」的关键一步。**
+
+## ⑦ 约束
+
+```text
+QEMU 实例   0
+基线        v28 1796/1120, v29 1756/-  均 createLayer=6 / LIBOBJ_SYM=24
+构建        一律走 build-deploy.sh（sha 比对通过才继续）
+新增铁律    pro_len 必须 >= grm_jump 的 stub 长度（4 对齐恒为 8）且落在指令边界；
+            一个地址只允许一套 hook；
+            只有 4 字节可搬的函数（2+2+4 形态）根本不可 hook
+```
