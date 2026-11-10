@@ -42685,3 +42685,99 @@ QEMU 实例   0
             一个地址只允许一套 hook；
             只有 4 字节可搬的函数（2+2+4 形态）根本不可 hook
 ```
+
+# ★★★★★★★★★ 2026-11-11 第四百六十四章（R161–R163，新 goal 第 1–3 轮）：**用户异常已全量捕获；dma330_stub 试验报废**
+
+## ① R161：在 QEMU 侧建立用户态异常全量记录（关键新工具）
+
+在 `target/arm/helper.c` 的 `arm_cpu_do_interrupt_aarch32` 里加入只读记录：
+仅当 `cpsr & 0x1f == 0x10`（用户态）时打印一次，字段为
+`dfar / ifar / pc / sp / lr / cpsr / dfsr_ns / ifsr_ns`，上限 128 条。
+
+**实测（out/v32，基线 1794 / createLayer=6 / LIBOBJ_SYM=24）：**
+
+```text
+用户态异常总数            128（上限打满）
+pc 范围                   0x0406f790 .. 0x04081290
+落在 appFw 映射区的        0
+```
+
+**⇒ 128 条异常全部来自 `bootin.elf`，appFw 一条都没有。**
+
+**这直接排除了两个长期猜测：**
+
+```text
+[否证] 栈溢出       —— 若栈溢出，必产生来自 appFw 的 data abort
+[否证] 非法指针     —— 同理
+```
+
+**同时纠正了一个误读：容器进入后那 226 行日志全部来自我的 watchdog 线程
+（`INJECT_INPUT` / `GOTS` / `GFXENG`），不是容器产生的。容器进入后确实没有任何产出，
+但它也没有崩溃。**
+
+## ② R162：`tid=195` 的最后动作
+
+```text
+MY_TID Application_Start pid=115 tid=195
+RENDERENTRY enter=1 a0=0x3716c410 tid=195
+...
+STATQ n=20 qid=0x5503e0 ret=0 used=0 tid=195
+BACKUP_nread n=14 key=0x2cf1844 len=1 ret=-1 tid=195      ← 单字节状态位读取失败
+```
+
+**`ret=-1` 表示这次读取失败。**
+
+## ③ R163：与参考实现的做法层对照，发现一个明确的 init 差异
+
+```text
+参考 source/initramfs/init-ui.sh:
+  load /usr/kmod/osal_uipc.ko
+  load /usr/kmod/dma330_stub.ko        ← 关键
+  load /usr/kmod/backup.ko Backup_load=1 Backup_save=0
+  ...
+
+我们的 init（改动前）:
+  load /usr/kmod/osal_utm.ko
+  load /usr/kmod/osal_uipc.ko
+  load /usr/kmod/backup.ko Backup_load=1 Backup_save=0 Backup_debug=1
+  ...（没有 dma330_stub）
+```
+
+**`dma330_stub.ko` 就在我们的树里（24,216 字节），却从未被加载。**
+它是 PL330 DMA 控制器的桩实现，导出 `dmac_mem_transfer_async`。
+
+**已按参考做法加入 `init` 第 20 行并实测。**
+
+## ④ R163 实测结果：报废（按铁律 4）
+
+```text
+out/v33  行数 805 / createLayer = 0 / LIBOBJ_SYM = 1
+MODULE_BEGIN /usr/kmod/dma330_stub.ko
+MODULE_END   /usr/kmod/dma330_stub.ko status=0      ← 模块本身加载成功
+随后 backup / utimer / ulogio / kikilog / stream / stream2 / dmm /
+     grm_ma / grm_gles / udate 全部 status=0
+之后启动链崩溃：停在 udate.ko 之后，无任何 appFw 日志
+```
+
+**本轮按铁律 4 整体报废，不做任何解释性延伸。**
+
+**已回滚 `init`（恢复 `init.bak-0221`，与改动前逐字节一致），
+并重跑验证基线恢复：**
+
+```text
+out/v34  行数 1778 / createLayer=6 / LIBOBJ_SYM=24     ✅ 基线已恢复
+```
+
+**一个不做定论但必须记录的事实：`init` 里 `dmac.ko` 在
+`dma330_stub.ko` 之前加载，两者都涉及 DMA 控制器；
+`dma330_stub.ko` 的符号表里也没有 `dmac_mem_transfer_async` 定义态符号。
+若要再试，需要先查这两者的加载顺序与设备注册冲突，而不是盲目再装一次。**
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v34（回滚后）1778 / createLayer=6 / LIBOBJ_SYM=24
+构建        一律走 build-deploy.sh（sha 比对通过才继续）
+新增工具    QEMU 侧用户态异常全量记录（ZVE10FAULT），上限 128 条
+```
