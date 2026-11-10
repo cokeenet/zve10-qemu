@@ -41257,3 +41257,79 @@ QEMU 实例            0
                      fd7: 1685 / 1013 / createLayer=6 / LIBOBJ_SYM=24
 产出                 仅写 /root/fw/oss
 ```
+
+# ★★★★★★★★★ 2026-11-10 第四百五十六章（目标轮 120–128）：**卡点收敛到 libObj+0x11f618；并记录两次 PC 相对搬移错误**
+
+## ① 一次有效的逐层收敛（最终定位）
+
+用一个组「仅计次」hook，沿 `drawFramebuffer` 实际走的那条分支逐层下钻：
+
+```text
+drawFramebuffer            libObj+0xe565a     enter=1（DFBHOOK call=1）
+  └─ 0x113e8c              thunk             无法 hook（首条 ldr r3,[pc,#16]）
+       └─ 0x10ee08         enter=1 leave=1   ← 正常返回（ds5 实测）
+            └─ 0x11f618    enter=1 leave=0   ← ★ 不返回（ds5 实测）
+                 ├─ 0x11f32c / 0x11f5a8 / 0x11e6f4 / 0x128808 / 0x12874c
+```
+
+**实测输出（out/ds5，基线 1686 / 1012 / createLayer=6 / LIBOBJ_SYM=24）：**
+
+```text
+DRAWSTAGE enter 0 =1 tid=117
+DRAWSTAGE singleton slot=0xab802d0 obj=0xab801bc
+DRAWSTAGE obj+0x14=0xa8c6e09  ->  mod=/usr/lib/libObj.so off=0x10ee09
+DRAWSTAGE leave 0 =1
+DRAWSTAGE enter 1 =1 tid=117          ← 进入 0x11f618，之后无 leave
+```
+
+**逐点计数：idx0 1/1、idx1 1/0、idx2..5 全 0/0。**
+即 `0x10ee08` 正常返回，而 `0x11f618` 进入后不返回。
+
+`0x11f618` 体内第一个调用是 `0x11f32c`（`f8 b5` push / `00 af` add），
+第二层五个入口已全部装好 hook（out/ds6：installed 全部成功、0 blocked）。
+
+## ② 两次技术错误，同一条规则被违反两次
+
+**规则：inline hook 的 trampoline 只能搬运「PC 无关」指令；遇到 `ldr r?, [pc, …]` 必须停在其之前。**
+
+```text
+R122  对 0x113e8c 用 4 字节：04 4b 就是 ldr r3,[pc,#16]  ← 违反
+      结果：trampoline 里读未初始化字面量 → blx 跳到垃圾 → 报出「0x113e8c 卡住」的假象
+R124  对 0x10ee08 用 6 字节：98 b5 | 00 20 | 14 4c，第三条是 ldr r4,[pc,#80]  ← 又违反
+      结果：同样跳飞，深层探针拿不到数据
+R125  改为 4 字节（push + movs 两条）后立即正确：enter=1 / leave=1
+```
+
+**这两次都是「只看前两条指令就判断安全」。教训写死：**
+**必须逐条解码到搬移长度为止，遇到任何 PC 相对指令就把长度截断在它前面。**
+
+## ③ 触发时机仍是未解问题（三种位置实测）
+
+```text
+R104  OSAL 接收路径内联          → drawFramebuffer 进入不返回
+R118  watchdog 线程（会执行）    → 进入不返回
+R127  watchdog 第一次唤醒        → 触发点落在运行末尾（第 1678 行 / 共 1680 行）
+R128  processSystemMessage 返回点 → 进入且 0x10ee08 正常返回，
+                                   但基线崩塌：createLayer 2 / 行数 1399 → 整轮报废
+```
+
+R128 已按铁律 4 整轮报废，触发路径从源码删除并注明不得重新启用；
+回退后复核 out/rb4 = **1680 / 1004 / createLayer=6 / LIBOBJ_SYM=24**。
+
+## ④ 本轮确立的净结论
+
+```text
+drawFramebuffer 的可观测链已推进到 libObj+0x11f618
+它前面的 0x10ee08 被实测证明正常返回，因此「0x113e8c 卡住」的旧结论作废
+0x11f618 内部不返回，其第一层调用为 0x11f32c
+触发时机（既不破坏启动、又能在启动完成后执行）仍未找到
+```
+
+## ⑤ 约束
+
+```text
+单实例   systemd-run --unit=zve10-* --collect --property=MemoryMax=4G
+收尾     qemu-system-arm 残留 = 0
+基线     有效轮次 createLayer 全部 = 6；R128 报废并回退
+产出     仅写 /root/fw/oss
+```
