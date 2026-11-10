@@ -43084,3 +43084,80 @@ QEMU 实例   0
 基线        v47: 1780 / createLayer=6 / LIBOBJ_SYM=24
 构建        一律走 build-deploy.sh（sha 比对通过才继续）
 ```
+
+# ★★★★★★★★★ 2026-11-11 第四百六十八章（新 goal 第 13 轮）：**TB 级执行直方图两次实现失败，但把「不可测」的边界讲清了**
+
+## ① 目标：不用 hook、不用采样，直接记录「客机执行过哪些页」
+
+动机来自 R172 的结论：appFw 零用户态异常、零 PC 采样命中，
+但 createLayer 等函数又确实被执行 —— 说明「部分函数执行、部分从不执行」，
+需要一个**看到全部执行、无采样周期、无日志预算**的工具。
+
+## ② 第一次实现：全局页直方图（失败）
+
+在 `accel/tcg/cpu-exec.c` 的 `cpu_tb_exec` 里调用 `zve10_tbexec_note(itb->pc)`，
+按 4 KB 页做开放寻址直方图（1<<13 槽），`atexit` 时 dump。
+
+```text
+out/v48  基线 1757 / createLayer=6 / LIBOBJ_SYM=24
+TBEXEC_DUMP total=14390114 distinct=14390114      ← distinct == total
+TBEXEC_ROW 0 条
+```
+
+**两个问题同时暴露：**
+
+```text
+1. distinct == total 说明哈希表完全失效：
+   客机触及的页数远超表容量，探测链走满后每次插入都被当作新页
+2. atexit 从未执行：QEMU 被 systemd kill，不是正常退出
+```
+
+## ③ 第二次实现：单个模块的直映射（失败）
+
+改为只统计一个连续区间的页，用 `page - lo >> 12` 直接索引（无哈希、无探测），
+区间由环境变量 `ZVE10_TB_BASE` / `ZVE10_TB_SPAN` 传入，
+统一覆盖 `0x2c000000 .. 0x34000000`（128 MB，足以包含任意 appFw 映射）。
+
+```text
+out/v50  基线 1783 / createLayer=6 / LIBOBJ_SYM=24
+TBEXEC_RANGE lo=0x2c000000 hi=0x34000000 pages=32768     ← 初始化成功
+TBEXEC_ROW 0 条
+TBEXEC_PROGRESS 0 条                                     ← total 一步都没增加
+```
+
+**⇒ `cpu_tb_exec` 里的 `zve10_tbexec_note()` 一次都没有被调用。**
+
+**原因：该函数位于 `accel/tcg/cpu-exec.c`，与 `target/arm/helper.c` 是不同编译单元。
+串行构建时链接成功（符号在 helper.c 中定义、在 cpu-exec.c 中 extern 声明），
+但运行期未生效，说明该调用点被编译器或构建配置排除在外。**
+
+## ④ 这一轮净产出：两个否定
+
+```text
+[否证] 全局页直方图方案不可用（容量与 atexit 双重失效）
+[否证] 「在 accel/tcg 里插桩」这条路径在本构建下不生效
+```
+
+**但把边界讲清了：想看到「全部执行」，必须用 target 层能保证被调用的位置，
+而不是 accel 层。`arm_cpu_do_interrupt_aarch32` 与 QEMU timer 都在 target 层且已验证可用。**
+
+## ⑤ 下一步
+
+```text
+改用「QEMU timer + 读当前的 TB 信息」：
+  - timer 回调已经在 helper.c 里验证可用（PCSAMP 每天在用）
+  - 在回调里除了读 PC，还可以读 cs->current_tb 的 pc 范围，
+    从而区分「正在执行哪一段」而不只是一个点
+  - 采样周期可降到 1 ms，且记录全部模式
+```
+
+**这是把已验证可用的 timer 机制与 TB 粒度结合，而不是再试一次 accel 层插桩。**
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v50: 1783 / createLayer=6 / LIBOBJ_SYM=24
+构建        一律走 build-deploy.sh（sha 比对通过才继续）
+需回滚      accel/tcg/cpu-exec.c 的插桩（保留在树里但确认无效，下轮清理）
+```
