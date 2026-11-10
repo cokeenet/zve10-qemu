@@ -42781,3 +42781,125 @@ QEMU 实例   0
 构建        一律走 build-deploy.sh（sha 比对通过才继续）
 新增工具    QEMU 侧用户态异常全量记录（ZVE10FAULT），上限 128 条
 ```
+
+# ★★★★★★★★★ 2026-11-11 第四百六十五章（新 goal 第 5–8 轮）：**LZ77 vtable 槽替换严格校验通过；GPU 门铃不完成被确认为阻塞机制**
+
+## ① 第 5 轮：vtable 槽替换按目标要求实现并严格校验通过
+
+```text
+out/v36  基线 1773 / createLayer=6 / LIBOBJ_SYM=24  通过
+
+LZ77SWAP anchoring on libObj+0x34abcc (vtable)
+LZ77SWAP slot @ 0xab0fbdc value=0xa8d0ff9 want=0xa8d0ff9    ← 完全匹配
+LZ77SWAP installed slot=0xab0fbdc -> 0x40ac5a4 (readback 0x40ac5a4)
+```
+
+**严格按目标要求的三层校验：**
+
+```text
+1. vtable 位于 libObj+0x34abcc
+2. decodeImpl 槽 = vtable + 0x10 = libObj+0x34abdc
+3. 槽原值必须等于 base + 0x10bff9 —— 实测 0xa8d0ff9 == 0xa8d0000 + 0x10bff9  通过
+   不符即放弃的逻辑已实现（返回前先 logline mismatch 并 return）
+```
+
+## ② 纠正了自己上一轮的一个误判
+
+上一轮把 `libObj+0x34abbc` 当作 type_info 头，校验「首字必须是 0x8」，
+实测得到 `0x42c4e50 != 0x8` 就放弃了。**实际文件内容是：**
+
+```text
+0x34abbc:  08 00 00 00   → 0x8（不是类型标识）
+0x34abc0:  89 bb 29 00   → 0x29bb89（rodata 偏移）
+0x34abc4:  d8 ac 34 00   → 0x34acd8（vtable 指针）
+```
+
+**所以正确的锚点是 vtable 的槽值本身，不是前两个字。已改为只按槽值校验。**
+
+## ③ 第 6 轮：decodeImpl 的第一件事就是 open("/dev/ldec")
+
+完整反汇编 `libObj+0x10bff8` 得到：
+
+```text
+0x10c018  ldr  r0, [pc, #428]   → 字面量 0x10c1c8 = 0x18fb81
+0x10c01a  movs r1, #2
+0x10c01c  add  r0, pc           → 字符串 vaddr 0x29bba1
+0x10c01e  blx  open@plt
+0x10c022  cmp  r0, #0
+0x10c026  bge.n 0x10c036        ← 打开成功才继续
+
+字符串 0x29bba1 = "/dev/ldec"
+失败消息         = "Failed open /dev/ldec <UX_LOG_"
+```
+
+**这是目标描述的直接代码级印证：资源确由 `/dev/ldec` 解码，
+而我们的 init 从不创建该节点。**
+
+**已把 thunk 从「只记录返回 -5」改为「记录 + 转发原函数」，
+保证固件行为不被改变（out/v37 基线 1778 / createLayer=6 / LIBOBJ_SYM=24 通过）。**
+
+**实测 `LZ77SWAP call=` 计数为 0 —— decodeImpl 一次都没被调用。**
+
+## ④ 第 7 轮：线程状态报告直接指出阻塞在 GPU ioctl
+
+固件自己的线程报告（`TS pid=115 comm=im.elf nthread=64 nrunning=1`）：
+
+```text
+futex_wait_queue_me:30   osal_rcv_msg_tmo:23   __k_4u_wait_cb:4
+hrtimer_nanosleep:2      utimer_res_sleep:1
+poll_schedule_timeout:2
+sugilite_ioctl:1         ← ★ 一个线程卡在 GPU 驱动 ioctl
+nrunning = 1
+```
+
+**`sugilite_ioctl` 是 GRM/sugi GPU 驱动的 ioctl：提交一个包，然后等 fence 中断。**
+
+## ⑤ 第 8 轮：根因在机器模型里，代码位置明确
+
+`qsrc/hw/arm/zve10.c` 的 `gpe_write`：
+
+```c
+if (off == 0x1800 && value == 4) {          /* 门铃 */
+    ...读 128 字节包...
+    /* shortcut: only this captured startup fence completes;
+       other GPU packets need a verified decoder. */
+    if (zve10_gpe_init_packet(words)) {     ← 只有 init fence 才完成
+        s->regs[0x1080/4] = words[7];
+        s->regs[0x34/4] |= 0x80000000u;
+        qemu_irq_raise(s->irq);
+    }
+}
+```
+
+**实测的包统计：**
+
+```text
+ZVE10_GPE_PACKET   19
+ZVE10_GPE_INIT    19        （19 个全是 init fence）
+其他类型的包        0
+```
+
+**⇒ 固件任何真实绘制包都不会被完成 ⇒ `sugilite_ioctl` 永远等 fence ⇒
+线程睡掉 ⇒ CPU 只剩内核串口轮询（与 PCRING 256/256 内核态样本完全一致）。**
+
+**这就是「无唤醒者」的机制本体。**
+
+## ⑥ 第 8 轮：dma330_stub 试验可复现地报废
+
+```text
+out/v37（未加 dma330） 行数 1778 / createLayer=6 / LIBOBJ_SYM=24   通过
+out/v38（加 dma330）   行数  805 / createLayer 缺失 / LIBOBJ_SYM=1  ← 与 out/v33 完全相同
+```
+
+**两次独立实验得到同一结果（都是 805 行），说明这不是随机失败，
+而是 `dma330_stub.ko` 与现有 `dmac.ko` 之间的确定性冲突。
+按铁律 4 两轮均报废，`init` 已回滚至 `init.bak-0221`（逐字节一致）。**
+
+## ⑦ 约束
+
+```text
+QEMU 实例   0
+基线        v37（回滚后）1778 / createLayer=6 / LIBOBJ_SYM=24
+构建        一律走 build-deploy.sh（sha 比对通过才继续）
+已就绪      LZ77Decoder vtable 槽替换（校验通过、转发中、尚未被调用）
+```
