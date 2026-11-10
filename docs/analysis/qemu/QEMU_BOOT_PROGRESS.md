@@ -4176,7 +4176,7 @@ Illeagle Instruction at 0x042ee796        （libc+0x15796，即 tgkill/abort 路
 ```
 author=DMP/Sony
 description=SUGILITE Driver
-/home/jp10239/.../Guiengine_161H/driver/grm_gles/./src/sugi_hw.c
+/home/<user>/.../Guiengine_161H/driver/grm_gles/./src/sugi_hw.c
 dmpgles2                       ← 注册 /dev/dmpgles2
 sugilite_dev->int_status_lock / suspend_status_lock / event_list_lock
 ```

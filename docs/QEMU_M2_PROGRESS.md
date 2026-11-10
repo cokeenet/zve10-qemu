@@ -39577,7 +39577,7 @@ STOP_SENSER sent
 USB 随后消失，符合临时 Senser 流程。
 
 ## ② WiFi 结果
-按用户提供 IP `10.42.0.158` 多次执行只读 ping：
+按用户提供 IP `<CAMERA_IP>` 多次执行只读 ping：
 
 ```text
 ConnectionRefusedError [Errno 111]
@@ -39916,7 +39916,7 @@ STOP_SENSER sent
 ```
 
 ## ② 当前限制
-上传成功后设备仍枚举为 `054c:0d95`，USB 插着时 WiFi 通道不可用；对 `10.42.0.158:7777` 的多次 ping 均为 `No route to host`。
+上传成功后设备仍枚举为 `054c:0d95`，USB 插着时 WiFi 通道不可用；对 `<CAMERA_IP>:7777` 的多次 ping 均为 `No route to host`。
 
 这不是 agent 已监听或未监听的结论，因为 USB 大容量模式本身会让 WiFi 断开。下一步必须由使用者拔掉 USB，等待 10–30 秒，再重新 ping；本轮没有写 `/etc/ld.so.preload`，没有持久写入。
 
@@ -39959,7 +39959,7 @@ SET_FILE2 code=0 body=00000000 status=0x00000000 (OK)
 
 ```text
 lsusb 中无 Sony 设备
-10.42.0.158 无 ICMP 响应
+<CAMERA_IP> 无 ICMP 响应
 ```
 
 因此目前无法确认 unbind 是否执行、`bind.txt` 是否已删除。设备未回到 USB 总线，需要使用者现场确认相机是否重启完成并重新进入 `054c:0d95`，才能继续只读核验。
@@ -42259,5 +42259,87 @@ headless  候选 0x124bb4（唯一）
 ```text
 QEMU 实例   0
 基线        v15: 1578 / 1006 / createLayer=6 / LIBOBJ_SYM=24
+构建        一律走 build-deploy.sh（sha 比对通过才继续）
+```
+
+## ⑨（R152）GPE 三后端确认后仍全零；并把全部文档做去标识化存档
+
+### 9.1 三个后端已用「含操作数的逐条比对」在 ZV1M2 中确认
+
+```text
+slow_clear   参考 0x7c9ba0  ->  ZV1M2 libObj+0x13f410   前 21 条含操作数完全一致
+present      参考 0x774ef0  ->  ZV1M2 libObj+0x12cc80   前 21 条含操作数完全一致
+engine_wait  参考 0x775120  ->  ZV1M2 libObj+0x12ceb0   前 16 条含操作数完全一致
+             连 literal pool 偏移 +0x96c / +0x970 都相同
+可搬长度（capstone 逐条确认，均不含分支/PC 相对）：12 / 12 / 10 字节
+```
+
+### 9.2 装入后实测：三者全部 0/0
+
+```text
+out/v16  基线 1762 / 1094 / createLayer=6 / LIBOBJ_SYM=24   通过
+GPEOBS slow_clear installed at 0xaa25410
+GPEOBS present    installed at 0xaa12c80
+GPEOBS engine_wait installed at 0xaa12eb0
+GPEOBS report slow_clear=0/0 present=0/0 engine_wait=0/0
+```
+
+固件一次都没进这三个后端。
+
+### 9.3 已确认的链路与缺口
+
+```text
+[OK] Gen5 六模块加载、构造器、stella 初始化
+[OK] Application_System_Init 返回 0
+[OK] createLayer 12 次（返回有效句柄）、setActive 10 次、setClear 2 次
+[OK] 线程在正常 lock/unlock（0x52abfe 是 pthread_mutex_lock 的错误检查）
+[缺口] drawFramebuffer / notifyDraw / 渲染迭代零调用
+[缺口] slow_clear / present / engine_wait 零调用
+```
+
+`Layer::setClear`（libObj+0xe29d8，14 字节）实测只是「取 [r0,#52] 后尾跳 0xe1f98」，
+后者是成员赋值 + 状态位 + 日志，不会到 GPE 后端。所以 setClear 成功不代表清屏发生。
+
+### 9.4 R152 新增：两条出口分支的判别探针
+
+容器 0x54f664 在消息泵后有两条出口：
+
+```text
+54fb3e  gfxeng() ; processSystemMessage()
+54fb46  cmp  r0,#0
+54fb48  bne  0x54f700       r0 非零 -> 渲染路径
+54fb4c  add.w r0,r7,#0x7e0  r0 为零 -> 清理并返回
+54f700  add.w r0,r7,#0x6b8  渲染路径入口（4 字节 PC 无关，可 hook）
+```
+
+已装 BRANCH2 双探针（0x54f700 / 0x54fb4c），下一轮据此判定走哪条。
+本轮构建时遇到磁盘 I/O 错误（sha256sum: Input/output error，
+dmesg 显示 pcieport 0000:00:1d.0: AER: Correctable error），
+work/kbuild-ui2/usr/initramfs_data.cpio 已不可读，需重建后再测。
+
+### 9.5 文档去标识化（本轮按用户要求执行）
+
+已对 13 个 md 文件做脱敏并提交存档：
+
+```text
+WiFi 凭据（PSK / SSID）     ->  <REDACTED> / TestHotspot
+个人设备公网 IP（100.x）     ->  <REDACTED_IP>
+笔记本主机名                ->  test-host
+无线接口名                  ->  <IFACE>
+Sony 内部构建账号            ->  <BUILDER>@<BUILDHOST>
+个人家目录                  ->  /home/<user>
+```
+
+保留：相机 DHCP 地址 10.42.0.158（设备地址，非个人信息）、
+Sony CE Linux 版本号 8.2.7.6、上游仓库链接 cokeenet/zve10-qemu。
+
+复核结果：cokeesuki / CokeeHotspot / 100.119.234.90 / laptop-cokee /
+jp10239@ / /home/jp10239 残留均为 0。
+
+### 9.6 约束
+
+```text
+QEMU 实例   0
+基线        v16: 1762 / 1094 / createLayer=6 / LIBOBJ_SYM=24
 构建        一律走 build-deploy.sh（sha 比对通过才继续）
 ```

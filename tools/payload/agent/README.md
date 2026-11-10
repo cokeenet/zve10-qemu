@@ -4,7 +4,7 @@
 让你可以像 SSH 一样直接跑 shell 命令，不需要插 USB、不需要服务模式。
 
 ```
-$ python3 cam.py --ip 10.42.0.158 run "cat /proc/version"
+$ python3 cam.py --ip <CAMERA_IP> run "cat /proc/version"
 Linux version 3.0.27_nl-rt106+ ...
 ```
 
@@ -64,16 +64,16 @@ ZV-E10 的官方调试入口有两个：
 
 ```bash
 # 检查连通
-python3 cam.py --ip 10.42.0.158 ping
+python3 cam.py --ip <CAMERA_IP> ping
 
 # 跑命令
-python3 cam.py --ip 10.42.0.158 run "cat /proc/mounts"
+python3 cam.py --ip <CAMERA_IP> run "cat /proc/mounts"
 
 # 拉文件
-python3 cam.py --ip 10.42.0.158 pull /log/zve10_agent.log --out agent.log
+python3 cam.py --ip <CAMERA_IP> pull /log/zve10_agent.log --out agent.log
 
 # 推文件（注意：--file 是本地源，第一个参数是远程路径）
-python3 cam.py --ip 10.42.0.158 push /etc/foo.so --file ./foo.so
+python3 cam.py --ip <CAMERA_IP> push /etc/foo.so --file ./foo.so
 ```
 
 > ⚠️ `PUSH` 协议有 8 KB 缓冲区上限。大于 8 KB 的文件请分块推：

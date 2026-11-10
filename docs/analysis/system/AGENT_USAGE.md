@@ -11,8 +11,8 @@
 ① 相机处于【正常开机】状态（老菜单可用、WiFi 已连上）
    —— 因为 Jiritsu 注入需要 app 在跑（大容量模式 054c:0d95）
 ② 电脑与相机在同一网段
-   当前常用: 电脑 wlp5s0 = 10.42.0.1/24（热点 CokeeHotspot / PSK cokeesuki）
-             相机      = 10.42.0.158 (DHCP)
+   当前常用: 电脑 <IFACE> = 10.42.0.1/24（热点 TestHotspot / PSK <REDACTED>）
+             相机      = <CAMERA_IP> (DHCP)
 ③ busybox 的 applet 很多被裁掉了（od/head/tail/tr/id/find -size 等），
    一律用 /bin/busybox <applet> 形式调用，或改用 md5sum/ls/cat/dd/cp/mv/rm/mkdir
 ```
@@ -45,12 +45,12 @@ cd /root/fw/oss/tools/payload
 
 python3 cam.py ping                      # 期望: PONG
 python3 cam.py run "uname -a"
-python3 cam.py --ip 10.42.0.158 ping     # IP 不同时显式指定
+python3 cam.py --ip <CAMERA_IP> ping     # IP 不同时显式指定
 ```
 
 **找不到 IP 时：**
 ```bash
-ip neigh show dev wlp5s0 | grep -v FAILED
+ip neigh show dev <IFACE> | grep -v FAILED
 for i in $(seq 2 254); do
   (timeout 0.2 bash -c "echo > /dev/tcp/10.42.0.$i/7777" 2>/dev/null && echo "★ 10.42.0.$i") &
 done; wait
@@ -98,7 +98,7 @@ python3 cam.py ping
 **Python 最小客户端：**
 ```python
 import socket
-s = socket.create_connection(("10.42.0.158", 7777), timeout=20)
+s = socket.create_connection(("<CAMERA_IP>", 7777), timeout=20)
 
 def read_line():
     b = b""

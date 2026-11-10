@@ -22,7 +22,7 @@
 
 | 项 | A6400 | ZV-E10 | ZV-1F | ZV-E10 II |
 | --- | --- | --- | --- | --- |
-| 内核版本字符串 | 3.0.27_nl-rt106+ (jp10239@dic-build-scm-150) (gcc version 4.5.1 (20170415 (Sony CE Linux 8.2.5.7)) ) #1 SMP PREEMPT RT Mon May 27 14:09:40 JST 2019 | 3.0.27_nl-rt106+ (jp10239@dic-build-scm-u20-009) (gcc version 4.5.1 (20220614 (Sony CE Linux 8.2.7.6)) ) #1 SMP PREEMPT RT Fri Jun 5 03:41:12 JST 2026 | 3.0.27_nl-rt106+ (jp10239@dic-build-scm-u20-022) (gcc version 4.5.1 (20220614 (Sony CE Linux 8.2.7.6)) ) #1 SMP PREEMPT RT Sat Apr 26 03:02:54 JST 2025 | 4.9.337-scel+ (jp10239@dic-build-scm-u20-009) (gcc version 6.4.0 (20201211 (Sony CE Linux 14.0.1.0)) ) #1 SMP PREEMPT Sat Oct 11 04:27:40 JST 2025 |
+| 内核版本字符串 | 3.0.27_nl-rt106+ (<BUILDER>@<BUILDHOST>) (gcc version 4.5.1 (20170415 (Sony CE Linux 8.2.5.7)) ) #1 SMP PREEMPT RT Mon May 27 14:09:40 JST 2019 | 3.0.27_nl-rt106+ (<BUILDER>@<BUILDHOST>) (gcc version 4.5.1 (20220614 (Sony CE Linux 8.2.7.6)) ) #1 SMP PREEMPT RT Fri Jun 5 03:41:12 JST 2026 | 3.0.27_nl-rt106+ (<BUILDER>@<BUILDHOST>) (gcc version 4.5.1 (20220614 (Sony CE Linux 8.2.7.6)) ) #1 SMP PREEMPT RT Sat Apr 26 03:02:54 JST 2025 | 4.9.337-scel+ (<BUILDER>@<BUILDHOST>) (gcc version 6.4.0 (20201211 (Sony CE Linux 14.0.1.0)) ) #1 SMP PREEMPT Sat Oct 11 04:27:40 JST 2025 |
 | 文件类型 | data | data | data | Linux kernel ARM64 boot executable Image, little-endian, 4K pages |
 | 字节 | 4085888 | 4117760 | 3804032 | 6610952 |
 | kernel md5[:12] | c46b7442b507 | 7e42c73f86eb | 5b0f46742d3e | 168dd4e06baa |

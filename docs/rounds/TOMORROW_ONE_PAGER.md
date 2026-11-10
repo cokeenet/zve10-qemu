@@ -11,7 +11,7 @@
 
 ### 前提
 - 相机正常开机、进老菜单、WiFi 已连
-- 电脑在同网段（热点 `CokeeHotspot`，相机通常 10.42.0.158）
+- 电脑在同网段（热点 `TestHotspot`，相机通常 <CAMERA_IP>）
 - agent 在跑（`python3 /root/fw/oss/tools/payload/cam.py ping` → PONG）
   - 若没跑：插 USB 线 → `cd tools/payload && source env.sh && python3 send_payload.py vendor/agent_v14.so --pid 0x0D95` → 拔线等 WiFi
 

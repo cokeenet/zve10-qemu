@@ -56,7 +56,7 @@ glibc 2.11.2 支持冒号分隔、单条失败不致命（已从 ld-2.11.2.so �
   - 分块推 + 相机上 `cat` 拼接可用，实测 2.3 MB/s
 - **autonet_wifi.so**（/log，12,532 B）：开机自动连 WiFi
   - 开关 `/setting/mode/zve10_net` = "on" 或 `/log/zve10_net.on`
-  - 内置 SSID=CokeeHotspot / PSK=cokeesuki / 静态 10.42.0.158 / GW 10.42.0.1
+  - 内置 SSID=TestHotspot / PSK=<REDACTED> / 静态 <CAMERA_IP> / GW 10.42.0.1
   - 等 40 秒，若 wlan0 已有 IP 则跳过；否则自己起 wpa_supplicant
 - **兜底通道**（不依赖 WiFi）：Jiritsu USB 写 `/tmp/jiritsu/tmmc.jit` → agent 执行 → 读 `/tmp/jiritsu/DIAC.csv`
 
@@ -123,7 +123,7 @@ libInfraLensCommunicator.so  只在 E10（8,196 B），ZV1F/ZV1M2 都没有
 
 ```
 USB    054c:0994 = 充电/关机模式
-WiFi   不通（ping 10.42.0.158 失败）
+WiFi   不通（ping <CAMERA_IP> 失败）
 /usr   libObj.so 只剩 12,996,608 B（应 21,305,528）— 半截
        libIMDB.so 37,204 B ✓ 已正确恢复
        老 UI 的 10 个 .so 已删除（备份在 /log/zvegisk/ui_backup/，md5 已核对）

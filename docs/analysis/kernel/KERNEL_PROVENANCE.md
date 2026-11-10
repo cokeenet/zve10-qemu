@@ -8,7 +8,7 @@
 | 项 | Sony 真机 | 我们构建的 |
 |---|---|---|
 | 版本串 | `3.0.27_nl-rt106+` | `3.0.27_nl-rt106-qemu` |
-| 构建者 | `jp10239@dic-build-scm-u20-009`，gcc 4.5.1 (Sony CE Linux 8.2.7.6) | 本地交叉工具链 gcc 6.4 |
+| 构建者 | `<BUILDER>@<BUILDHOST>`，gcc 4.5.1 (Sony CE Linux 8.2.7.6) | 本地交叉工具链 gcc 6.4 |
 | 构建时间 | `Fri Jun 5 03:41:12 JST 2026` | 2026-10 期间 |
 | 模块 vermagic | `3.0.27_nl-rt106+ SMP preempt mod_unload ARMv7` | `3.0.27_nl-rt106-qemu SMP preempt mod_unload ARMv7` |
 

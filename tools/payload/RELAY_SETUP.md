@@ -2,7 +2,7 @@
 
 ## 前提
 
-- 笔记本上装了 tailscale 并已登录（tailnet 里叫 `laptop-cokee`，IP `100.119.234.90`）
+- 笔记本上装了 tailscale 并已登录（tailnet 里叫 `test-host`，IP `<REDACTED_IP>`）
 - 相机能连上笔记本的热点
 
 ## 步骤
@@ -24,7 +24,7 @@ Windows: 设置 → 网络和 Internet → 移动热点 → 打开
 ```bash
 python relay.py            # 自动扫描找相机
 # 或
-python relay.py 10.42.0.158   # 已知 IP
+python relay.py <CAMERA_IP>   # 已知 IP
 ```
 
 **看到 `✓ relay 就绪: 0.0.0.0:7777 → <相机IP>:7777` 就成了。**
@@ -34,7 +34,7 @@ python relay.py 10.42.0.158   # 已知 IP
 ## 我这边怎么连
 
 ```bash
-python3 cam.py --host 100.119.234.90 --port 7777 run "..."
+python3 cam.py --host <REDACTED_IP> --port 7777 run "..."
 ```
 
 ## 排查
