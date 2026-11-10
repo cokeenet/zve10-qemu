@@ -41902,3 +41902,50 @@ QEMU 实例   0
 基线        四次校验运行全部 createLayer=6 / LIBOBJ_SYM=24
 构建        一律走 /mnt/build/m2qemu/build-deploy.sh（内含 sha 比对）
 ```
+
+## ⑥（R143 续）三条自我作废，以及由此得到的清晰边界
+
+### 6.1 CASCADE 探针自毁：8 字节 stub 塞不进 6 字节间距
+
+stage1 的四个调用继续点 `0x54ef8e / 0x54ef94 / 0x54ef9a / 0x54efa0` 相距只有 6 字节，
+而 `grm_jump` 写的是 8 字节间接跳转。实测 `54ef8e installed` 后紧接
+`54ef94 mismatch`——那是我自己写坏的字节。**该探针组已删除并注明原因。**
+
+### 6.2 RE71 的 pin 曾写错一次
+
+`0x54f67c` 实际字节是 `07 f5 fc 60`（`add.w r0,r7,#0x7e0`），我最初写成
+`07 f5 e0 70`。修正后 `RE71 installed addr=0x2e89e67c jump_bytes=8`，
+**`RE71 hit` 仍为 0 ⇒ stage1 确实不返回。**
+
+### 6.3 由此确立的清晰边界
+
+```text
+容器 0x54f664 进入                         ✅ RENDERENTRY enter=1
+  bl 0x54ef74 (stage1)
+    0x54ef80 ldr r0,[r0,#16] 取到 a0+0x10   ✅ 实测 obj10=0x36e14408+0x10 处非空
+    0x54ef8c blx r3（vtable slot0）          ← 唯一无法再细分的位置
+  continuation 0x54f67c                     ❌ RE71 hit=0
+stage1 的三个深层 callee                    ❌ 全部 0/0
+```
+
+**stage1 内部从 0x54ef8c 到 0x54efd8 是「2 字节 + 4 字节 bl/blx」交织的指令链，
+间距 6 字节，无法用 8 字节 stub 逐点观测。**
+**要再细分，只能整体替换 `0x54ef74`（12 字节 prologue 是否 PC 无关尚未核对），
+或改用 QEMU 侧 PC 采样在 `0x54ef74..0x54f0fc` 区间取证。**
+
+### 6.4 已确认的 vtable 运行时内容（关键证据）
+
+```text
+STAGE1TEL vtable 0=0x2e57005d 1=0x2e570063 2=0x2e570069 3=0x2e57006f 4=0x2e570075
+                  5=0                      6=0x4245e50  7=0x30d0e040
+→ slot0..slot4 全部落在 appFw+0x54d05c..0x54d074，是一组 push/pop 空实现
+→ slot5 = 0，slot6/slot7 为数据
+```
+
+**这说明 stage1 收到的对象（`a0+0x10`）是一个「vtable 前五个槽全是空函数」的对象。
+`0x54ef8c blx r3` 调的就是这种空实现，因此它本身不会阻塞。**
+
+**结论：`0x54ef8c` 正常返回后，停住在紧随其后的四次 `blx` veneer
+（0x925fb0 / 0x923900 / 0x9246b8 / 0x9240d4）之一，而这四个 veneer
+间距 6 字节，同样无法逐点 hook。**
+
