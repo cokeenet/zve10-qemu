@@ -42993,3 +42993,94 @@ QEMU 实例   0
 基线        v43: 1773 / createLayer=6 / LIBOBJ_SYM=24
 构建        一律走 build-deploy.sh（sha 比对通过才继续）
 ```
+
+# ★★★★★★★★★ 2026-11-11 第四百六十七章（新 goal 第 11–12 轮）：**连续三次分桶错误后，改用页直方图得到可信结论**
+
+## ① 第 11 轮：我自己连续犯了三次同类错误
+
+```text
+第 1 次  按 regs[15] 分桶
+         到 arm_cpu_do_interrupt_aarch32 时 regs[15] 已是异常向量 0xffff0fcc
+         → 全部落进同一桶，"appFw=4774" 毫无意义
+
+第 2 次  按固定阈值 0x2c000000 分桶
+         把 0x752f3d48 算成 appFw，而它属于 bootin 的调用者
+         → 又一次误标
+
+第 3 次  改为「按出错页直方图」
+         → 这次可信
+```
+
+**根因始终相同：`appFw` / `libObj` / `bootin` 的映射基址每轮都不同，
+任何硬编码阈值必然误标。**
+
+## ② 第 12 轮：页直方图实现与实测
+
+在 `arm_cpu_do_interrupt_aarch32` 内，仅对用户态，用出错指令地址
+（`regs[14] & ~1`）取其所属 4 KB 页，做有界开放寻址直方图（4096 槽），
+进程退出时整体 dump。**无阈值、无日志预算，不可能饱和成假零。**
+
+**实测（out/v47，基线 1780 / createLayer=6 / LIBOBJ_SYM=24 通过）：**
+
+```text
+ZVE10FPAGE_DUMP total=97787 distinct=44
+
+最高 8 页：
+   0xf000       count=96045      ← 内核异常向量本身
+   0x4091000    count=313
+   0x408d000    count=220
+   0x40aa000    count=164
+   0x408c000    count=140
+   0x4095000    count=108
+   0x40ab000    count=94
+   0x4088000    count=93
+```
+
+**与 BASEPRINT 记录的各模块基址归因（105 个模块）：**
+
+```text
+落在 appFw 映射区（base=0x2de3f000 .. +0x343eab0）的页： 0 个 / 0 次异常
+其余全部在 0x0408_0000-0x040a_b000，即 bootin.elf 区
+```
+
+**⇒ appFw 在整个运行中一次用户态异常都没有。**
+**这次是可信的：按出错页归因，无阈值、无预算、不可能饱和。**
+
+## ③ 这否证了什么
+
+```text
+[否证] appFw 因非法访问/栈溢出而崩 —— 零异常，不成立
+[否证] 「appFw=4774 次异常」—— 那是我第 1/2 次分桶的误标
+[保留] appFw 代码确实在跑（createLayer 12 次、setActive 10 次、GFXENG 5 进 5 出）
+[保留] stage1 区 PC 采样零命中
+```
+
+**所以现在的矛盾是：appFw 的某些函数（createLayer 等）由 hook 证明被执行，
+但其他函数（stage1 体、drawFramebuffer、notifyDraw、decodeImpl）既不执行、
+也不产生异常、也不发出日志。**
+
+**唯一的解释是这些函数从未被调用 —— 而不是它们被调用后失败。**
+
+## ④ 下一步的方向必须改变
+
+```text
+此前一直在问：stage1 为什么执行到一半停住？
+现在应当问：  谁应该调用 stage1，而它为什么没被调用？
+```
+
+**stage1 的调用点是 `appFw+0x54f674`（容器 `0x54f664` 内），
+而容器的调用点是 `appFw+0x54d5ac`（`Application_Start` 内）。
+后者所在的 `Application_Start` 已被证实进入（`MY_TID Application_Start pid=115 tid=195`），
+但容器 wrapper 的 `enter=1` 是**我们自己的 inline hook 打出来的**，
+并不等于固件真的执行到 `0x54f664`。**
+
+**下一轮要验证的是：`0x54f664` 的入口字节在运行中是否被固件执行过
+（用现有的 PC 采样 + 页直方图都无法回答，因为它们只覆盖已执行的指令）。**
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v47: 1780 / createLayer=6 / LIBOBJ_SYM=24
+构建        一律走 build-deploy.sh（sha 比对通过才继续）
+```
