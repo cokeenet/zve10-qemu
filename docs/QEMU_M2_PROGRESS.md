@@ -41610,3 +41610,96 @@ software_engine_wait` 这一组上；gemini 那四个只是被观测（probe 后
 
 这修正了我第 ① 节的表述——之前我把 `ui-gemini-backend` 当成主替换点，
 实际主替换点是上面这组，gemini 只做 probe。
+
+# ★★★★★★★★★ 2026-11-10 第四百五十九章（R137–R138）：**参考机型下 Gen5 仍零帧；逐层证据确认阻塞在 appFw 容器而非 GPU**
+
+## ① 已把 QEMU 机型换成参考版最小模型，基线完好
+
+```text
+qsrc/hw/arm/zve10.c            254 行（参考版，无 GPE tick/PC 采样/2D copy 等我们额外加的行为）
+qsrc/hw/arm/zve10-gpe-init.h   ec2b6754…
+qsrc/build/qemu-system-arm     626eeea4…  （重编成功）
+```
+
+**用该机型跑我们的移植树（out/sem1/sem2），基线全程 createLayer=6。**
+
+## ② 参考机型下 Gen5 固件的逐层计数（与之前一致，没有改善）
+
+```text
+RENDERENTRY enter        1          ← 容器进入
+STAGEMAP stage=1         1          ← 容器第一个调用
+STAGEMAP stage2/3/4/5    0
+RET51 hit                0          ← 0x54833c 的返回点从未到达
+frameiter_calls          0
+DFBHOOK call             0
+DRAWSTAGE enter          0
+GPU: ZVE10_GPE_PACKET 19 / GPE_FILL 0（全为 init fence）
+```
+
+**即：换掉机型后现象不变——容器进入、执行第一个调用、然后不再前进。**
+
+## ③ 新增一条排除：InfraInput::GetInstance 的无限等待不是阻塞点
+
+`libObj+0x208004`（`InfraInput::GetInstance`，184 字节）在 +0x32 做
+`blx osal_wai_sem_tmo(..., -1)`。加探针后实测：
+
+```text
+SEMINF sem=0x7a008c tmo=-1 mod=/usr/lib/libObj.so off=0x20803b tid=115
+SEMINF-RET idx=0 sem=0x7a008c ret=0 tid=115          ← 正常返回
+```
+
+**同类 12 条 SEMINF 全部 ret=0。该无限等待是短暂的（正常路径），不是阻塞点。**
+
+## ④ 新增一条排除：容器所在线程最后停在 appFw 主泵的两个 tmo=-1 等待
+
+```text
+[AS]RCVC n=87 qid=0x1cf60b9 tmo=-1 mod=/usr/lib/appFw.so off=0x2b22ddd
+[AS]RCVC n=88 qid=0x1cf60ba tmo=-1 mod=/usr/lib/dataflowInfraFramework.so off=0x22eb7
+[AS]RCVC n=89 qid=0x2a0116 tmo=-1 mod=/usr/lib/appFw.so off=0x2b22fe9
+```
+
+**与之前 v2 参考包的工作状态对照：参考包的 ZV-E10 运行里
+`drawFramebuffer.enter 15 / return 15`、`notifyDraw 15 / 15`；
+我们同一机型下 `DFBHOOK call 0`。**
+
+## ⑤ 找到一条**结构性**差异（这是本轮最重要的发现）
+
+```text
+ZV-E10 原厂：Application_Start 不由 libObj/viewUnified2/CautionConfig 导出（0 处）
+ZV1M2  原厂：Application_Start 由 appFw.so 导出（libObj+0x54d581 之外唯一）
+```
+
+```text
+ZV-E10 usr/lib  207 个模块，含 viewUnified2/3/4/5/6/7/8 + CautionConfig + ModelCautionConfig
+ZV1M2  usr/lib  201 个模块，**完全没有 view* 家族**（grep -ic unified = 0）
+```
+
+**即：两代的视图系统归属不同。ZV-E10 的视图在 viewUnified2 里
+（`views_base + 0x2fccc0` 是它的 main，参考实现 hook 的就是它）；
+ZV1M2 没有 viewUnified2，视图/绘制由 `appFw.so` 自己承担。**
+
+**这解释了为什么参考实现的 17 个 hook 里，有 5 个是 `views_base + …`
+（ZV-E10 的 viewUnified2），在 ZV1M2 里根本找不到对应目标——
+不是偏移不同，是那个模块不存在。**
+
+## ⑥ 而我们 PORTED4 里 `viewUnified2.so` / `CautionConfig.so` 来自 **ZV-E10 原厂**
+
+```text
+PORTED4 168 个 .so 来源：ZV1M2 原厂 66 / ZV-E10 原厂 94 / 其它 8
+  viewUnified2.so   → ZV-E10 原厂
+  CautionConfig.so  → ZV-E10 原厂
+  libObj.so         → ZV1M2 原厂
+  appFw.so          → ZV1M2 原厂
+```
+
+**PORTED4 是「ZV1M2 的 libObj+appFw」与「ZV-E10 的 viewUnified2+CautionConfig」的混装。**
+两代 libObj 的 vtable/视图基址不同，混装后 appFw 与 viewUnified2 之间的视图协议很可能对不上。
+**这是当前移植树的结构性缺陷，也是「容器进入后不前进」的强候选原因。**
+
+## ⑦ 约束
+
+```text
+QEMU 实例        0
+基线             sem2: 1754 / 1085 / createLayer=6 / LIBOBJ_SYM=24
+产出             仅写 /root/fw/oss
+```
