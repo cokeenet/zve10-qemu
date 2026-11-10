@@ -43216,3 +43216,160 @@ QEMU 实例   0
 基线        v52: 1769 / createLayer=6 / LIBOBJ_SYM=24
 构建        一律走 build-deploy.sh（sha 比对通过才继续）
 ```
+
+# ★★★★★★★★★ 2026-11-11 第四百七十章（R200–R214）：**连续修掉三处自阻塞，首次真正执行固件渲染函数**
+
+## ① R199–R203：三处「我自己的探针在阻塞执行链」
+
+### 1. `report_got_slots()`（R159 加入 watchdog 循环）
+
+```text
+现象：APPSTART still-inside t=5s 打印后，COUNTERS-DONE 永不出现
+根因：它遍历各模块 GOT 页，而我们的 hook 已把这些页 mprotect 过
+修正：从 watchdog 循环移除  →  COUNTERS-DONE 立即出现
+```
+
+### 2. `dump_thread_state("pre-drive")`（扫描 /proc/<pid>/task）
+
+```text
+现象：COUNTERS-DONE 后出现 "TSTATE pre-drive scanning /proc/115/task" 然后停死
+根因：遍历 64 个线程的 wchan，在某个线程上阻塞
+修正：移出驱动路径  →  RENDEREXEC 标记第一次出现
+```
+
+### 3. `g_appfw_base == 0`
+
+```text
+现象：RENDEREXEC reached n=1 a0=0x36e88410 base=0
+根因：该全局在 watchdog 阶段尚未赋值
+修正：改用与其他安装器相同的推导
+      st = g_real_start_off;  ab = st - 0x54d580
+```
+
+**前两处说明：R127–R135 时代「watchdog 驱动无效」的结论，很可能都是这两个阻塞点造成的。**
+
+## ② R204–R214：把渲染驱动搬进容器 wrapper —— 决定性改进
+
+### 为什么换线程
+
+三轮连续测量（v69a1/a2/a3）：
+
+```text
+run 1: 行数 1783  COUNTERS-DONE=1
+run 2: 行数 1759  COUNTERS-DONE=0
+run 3: 行数 1790  COUNTERS-DONE=0
+```
+
+**⇒ watchdog 线程 3 次里只有 1 次走到 COUNTERS-DONE，之后所有代码都不可靠。**
+
+**而 `re_wrapper`（容器入口）在每一轮都必然被进入（`RENDERENTRY enter=1`），
+且运行在固件自己的 UI 线程（tid=195）、用它自己的栈、手上已有渲染函数需要的那个参数。**
+
+### 改动
+
+在 `re_wrapper` 内加一次驱动：
+
+```c
+if (!__atomic_exchange_n(&once,1,...)) {
+    st = g_real_start_off;  ab = st - 0x54d580;
+    rf = (void(*)(void*))(ab + 0x54ed12 + 1);   /* 固件的「渲染一帧」 */
+    rf(a0);
+}
+```
+
+## ③ R214 实测：固件渲染链第一次真的跑起来（out/v70 / v71 / v73）
+
+```text
+RENDEREXEC2 calling 0x54ed12 a0=0x36ca4410 base=0x2deb3000 tid=195
+[AS]UPDTIME  updateCurrentTime n=1 self=0x4d0ed8          ✓
+[AS]UXLOOP   processEvent    n=1 ret=0 self=0x4d0ed8      ✓
+[AS]RM       getInst n=12 -> 0xac24058                     ✓
+[AS]RM       processCommands ENTER / LEAVE ret=0           ✓
+ENTRY_LOCK / ENTRY_UNLOCK 成对                              ✓
+[AS]FRAMEAPI isFrameDelay ret=1 caller=appfw+0x54ed54      ✓ → 走 updateFrame 分支
+UPDATEWATCH  1059ac_gate hit=1..8  self=0x4ce398           ✓
+UPDATEWATCH  105f98_panel hit=1..5                          ✓ ★ 遍历了 5 个不同 panel
+             a=0x4e95a8 / 0x4d3bb0 / 0x4d3e48 / 0x4d40e0 / 0x4d4378
+GFXENG enter n=7 caller=0x2e1b6d83 → leave ret=0x4cdb78    ✓
+DFBHOOK call=1 self=0x4cdb78 tid=195 f23a=0xddc87400      ✓ ★ drawFramebuffer 被调用
+DRAWSTAGE enter 0 =1 caller=libObj+0x11f622               ✓ 深链第一个节点
+DRAWSTAGE leave 0 =1                                       ✓ 正常返回
+```
+
+**⇒ 150+ 轮以来第一次：固件的 `updateFrame` 真实遍历了 5 个 panel，
+`notifyDraw` 与 `drawFramebuffer` 都被真实调用。**
+
+## ④ 同时确认「不是崩溃」而是「阻塞」
+
+用 QEMU 侧异常页直方图（ZVE10FPAGE）检查驱动之后：
+
+```text
+用户态异常总数 53,097
+页数 33
+appFw 区异常页   0
+libObj 区异常页  0
+最高页 0xf000（异常向量）57,328 次
+```
+
+**⇒ 驱动期间 appFw / libObj 零用户态异常 —— 是阻塞，不是崩溃。**
+
+## ⑤ 当前停点：`drawFramebuffer` 的第一个深层调用之后
+
+```text
+DRAWSTAGE enter 0..7 中只有 index 0 命中，1..5 全零
+```
+
+`drawFramebuffer`（libObj+0xe565a）前段指令序列（已完整解码）：
+
+```text
+e565a  push {r4,r5,r6,r7,r8,lr}
+e565e  mov  r4,r0
+e5660  sub  sp,#8
+e5662  add.w r5,r4,#116
+e5666  add  r7,sp,#0
+e5668  bl   0x113e8c        ← 深链入口（已执行并返回）
+e566c  bl   0x10fe8c        ← 未执行
+e5670  mov  r0,r5
+e5672  bl   0x1004f8        ← 未执行
+e5676  ldrb.w r3,[r4,#570]
+e567a  cbnz r3, e5698
+...
+e5696  cbz  r0, e5692       ← 按返回值分叉
+e5692  bl   0x10214a        ← ResourceUpdater 分支
+```
+
+**`DFBHOOK` 的 pro_len=12 落在 `0xe5666`（`add r7,sp,#0`）指令边界，跳转结构正确。**
+
+**⇒ 停点在 `0xe5668` 返回后、`0xe566c` 之前 —— 期间只有 `e5666 add r7,sp,#0` 一条指令，
+说明 `0x113e8c` 的返回没有把控制交回，而不是后续逻辑分支。**
+
+## ⑥ 新增的有效工具（可复用）
+
+```text
+build-deploy.sh           部署链 sha 校验（防外来 cpio 污染）
+ZVE10FPAGE                QEMU 侧用户态异常页直方图（无预算、不饱和）
+PCSAMP / PCRING           QEMU 侧 PC 采样（含 SP 与 mode）
+GPE 全包完成              门铃对任何包都回 fence
+软件后端                  present / range-clear / engine-wait / 软件 LZ77
+LZ77 vtable 槽替换        严格校验 base+0x10bff9 通过
+参考资源解码器            在 ZV1M2 .uxc 上跑通（配色 #111111/#000000/#dddddd）
+BK4 格式权威解读          Data_SearchId / GetDataSizePt / GetCount / GetCookie
+```
+
+## ⑦ 新增铁律（本会话累计）
+
+```text
+1. pro_len 必须 >= grm_jump 的 stub 长度（4 对齐恒为 8）且落在指令边界
+2. 一个地址只允许一套 hook
+3. 只有 4 字节可搬的函数（2+2+4 形态）根本不可 hook
+4. 把 OBJDUMP 打印的 halfword 写进 pin 时必须按小端交换字节
+5. 探针自己可能阻塞执行链：任何「之后代码不执行」先怀疑探针
+```
+
+## ⑧ 约束
+
+```text
+QEMU 实例   0
+基线        各轮 createLayer 均为 6（日志里 CREATELAYER 行数 12 = 6 次 × 2 行）
+构建        一律走 build-deploy.sh
+```
