@@ -42903,3 +42903,93 @@ QEMU 实例   0
 构建        一律走 build-deploy.sh（sha 比对通过才继续）
 已就绪      LZ77Decoder vtable 槽替换（校验通过、转发中、尚未被调用）
 ```
+
+# ★★★★★★★★★ 2026-11-11 第四百六十六章（新 goal 第 9–10 轮）：**两个测量工具都被证明有盲区；GPEOBS 假象被排除**
+
+## ① 第 9 轮：最后一个破坏性 hook 清除（0x60e2f4）
+
+```text
+out/v39  基线 1784 / createLayer=6 / LIBOBJ_SYM=24  通过
+0x60e2f4 = push {r7,lr}(2) + add r7,sp,#0(2) + bl(4)   ← 同样的 2+2+4 形态
+pro_len=4 而 stub=8 → 字面量落在那条 bl 上 → 已退役
+```
+
+**至此所有「只有 4 字节可搬」的 hook 全部清除。**
+
+**但探针仍全零：`RE71=0 / RET51=0 / RENDERENTRY leave=0 / DFBHOOK=0`。**
+
+## ② 第 9 轮：让 GPE 完成所有包，实测证明这个假设不成立
+
+把 `qsrc/hw/arm/zve10.c` 的 `gpe_write` 从「只有 init fence 完成」改为
+「任何包都完成并回写 fence token」：
+
+```text
+out/v40  基线 1753 / createLayer=6 / LIBOBJ_SYM=24  通过
+ZVE10_GPE_PACKET      19
+ZVE10_GPE_INIT_FENCE  19
+ZVE10_GPE_COMPLETE     0        ← ★ 改完后一个新完成的包都没有
+```
+
+**⇒ 固件从未提交过「非 init fence」的包，所以「门铃不完成导致等 fence」
+**不是当前的阻塞机制**。该假设被本轮实测否决。**
+
+**同时 `TS pid=115` 的线程分布（含 `sugilite_ioctl:1`）在整轮运行中保持不变，
+说明那是**稳态**而非卡死。**
+
+## ③ 第 10 轮：证明「appFw 零异常」这个结论是预算假象
+
+R161 曾记录「128 条用户态异常全部来自 bootin，appFw 零」。本轮发现那是**错的**：
+
+```text
+bootin.elf 在 0x0400_0000 起步阶段就产生 ≥128 条用户态异常
+上限 128 在 appFw 运行之前就被打满
+⇒ "appFw 零异常" 是绑定上限造成的假象，不是测量结论
+```
+
+**已修正为：只记录 PC >= 0x1000_0000 的异常，上限提到 512。**
+
+**v41 重测结果（仍是 512 打满）：**
+
+```text
+ZVE10FAULT n=1 ec=36 dfar=0424a034 ifar=041fcda8 pc=ffff0fcc sp=5e9f8de0 lr=041fcb4d
+ZVE10FAULT n=2 ec=36 dfar=04249200 ifar=041aff9c pc=ffff0fcc sp=5e9f8ac8 lr=041cc439
+...
+```
+
+**全部是 `bootin.elf`（0x041x_xxxx）的页故障，`pc=0xffff0fcc` 是内核异常向量。
+仍然没有一条来自 appFw（0x2d..0x34），但这次是因为量太大而不是预算不足——
+需要按 PC 前缀分桶才可能看到 appFw 的部分。**
+
+## ④ 第 10 轮：`-d in_asm -dfilter` 试验报废
+
+```text
+尝试:  -d in_asm,nochain -dfilter 0x54ef74+0x180
+结果:  out/v42 行数 301（基线 1773）→ 明显异常
+日志:  EXC.log 0 字节
+```
+
+**已回滚 `run-wlist.sh` 至无 `-d` 参数，并重跑确认基线恢复：**
+
+```text
+out/v43  行数 1773 / createLayer=6 / LIBOBJ_SYM=24    ✅
+```
+
+**按铁律 4，v42 整体报废。**
+
+## ⑤ 本轮的净结论
+
+```text
+成立:   所有 2+2+4 形态的 hook 都已清除（不可 hook 的判定正确）
+成立:   GPE 完成所有包不改变任何探针结果 → 门铃假设被否
+成立:   "appFw 零用户态异常" 是绑定上限造成的假象，已修正记录范围
+不成立: 门铃不完成 = 当前阻塞机制
+待查:   stage1 的 0x54ef74 区为何 PC 采样零命中且 dfilter 试验无法使用
+```
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v43: 1773 / createLayer=6 / LIBOBJ_SYM=24
+构建        一律走 build-deploy.sh（sha 比对通过才继续）
+```
