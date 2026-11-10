@@ -43373,3 +43373,84 @@ QEMU 实例   0
 基线        各轮 createLayer 均为 6（日志里 CREATELAYER 行数 12 = 6 次 × 2 行）
 构建        一律走 build-deploy.sh
 ```
+
+# ★★★★★★★★★ 2026-11-11 第四百七十一章（R215–R222）：**drawFramebuffer 完整执行完毕**
+
+## ① R215–R218：六个主探针里四个是坏的，修正后绘制链大幅推进
+
+对 `drefs` 的六个主探针做了一次完整审计（判据：`pro_len >= stub` 且落在指令边界）：
+
+```text
+0x113e8c  stub=8  pro_len=4   PC 相对在字节 0        → 不可 hook
+0x10fe8c  stub=8  pro_len=6   bl 在第 6 字节          → 只可搬 6
+0x1004f8  stub=8  pro_len=6   需 10（push/sub/add/add.w）  → 改 10
+0x10214a  stub=10 pro_len=8   需 10                    → 改 10
+0x101ec8  stub=8  pro_len=8   OK
+0x101fd4  stub=8  pro_len=8   OK
+```
+
+**修正前后对比：**
+
+```text
+v77（修正前）   DRAWSTAGE 只到 index 0，随后停住
+v80（修正后）   DRAWSTAGE 命中 16 次，覆盖 index 2/3/4/5，caller 分别是
+               0xe5676（drawFramebuffer 体内）、0xe5730、0xe5736
+```
+
+## ② R219：`drawFramebuffer` 现在完整执行并返回
+
+```text
+DFBHOOK call=1  self=0x1554d5e0 tid=195 f23a=0xd9a00000
+DFBHOOK call=2  self=0x1554d5e0 tid=117
+DFBHOOK leave=1 ret=0
+DFBHOOK leave=2 ret=0
+```
+
+**⇒ 这是 150+ 轮以来 `drawFramebuffer` 第一次**进入并正常返回**。**
+
+**而且它被调用了两次（tid=195 与 tid=117），说明固件自己的渲染节奏在工作。**
+
+## ③ 但 GPE 提交层仍未到达
+
+```text
+SUBMITPROBE (libObj+0x12b4e0) hits = 0
+GPEOBS report slow_clear=0/0 present=0/0 engine_wait=0/0
+UI_SOFTFB 0
+```
+
+**已定位 present / engine_wait 的调用点：**
+
+```text
+engine_wait 0x12ceb0 ← 12b4fa / 12b558 / 12b796 / 12d074 / 12d0d0
+present     0x12cc80 ← 12b552 / 12b790 / 12d218
+slow_clear  0x13f410 ← 13faba / 14011e
+```
+
+**而 `0x12b4e0`（提交层入口）在 libObj 全文中没有直接 `bl` 调用者
+—— 它可能通过函数指针或表被调用，而不是直接调用。**
+
+## ④ 状态总结
+
+```text
+[OK]   updateFrame 遍历 5 个 panel
+[OK]   drawFramebuffer 进入并返回（2 次）
+[OK]   内部 8 个调用中 5-6 个确认执行
+[OK]   软件后端全部就位（present/clear/engine_wait/软件 LZ77）
+[缺口] GPE 提交层未到达 → 后端零调用 → 零像素
+[缺口] [obj+0x5c] 状态值为 0（已强制为 1 才打开渲染分支）
+```
+
+## ⑤ 当前唯一剩余断点
+
+**`drawFramebuffer` 走完后，固件需要把结果提交到 GPE。而提交层 `0x12b4e0`
+没有任何直接调用者 —— 它必然是通过间接调用（函数指针/表）进入。**
+
+**下一轮方向：找 `0x12b4e0` 的地址被存到哪个表里，从而知道谁在什么条件下调用它。**
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v80: 1936 行 / createLayer=6
+构建        一律走 build-deploy.sh
+```
