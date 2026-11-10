@@ -41431,3 +41431,142 @@ QEMU 实例            0
                      R128 报废并回退（rb4 复核 1680 / 1004 / createLayer=6）
 产出                 仅写 /root/fw/oss
 ```
+
+# ★★★★★★★★★ 2026-11-10 第四百五十八章（用户给出 v2 参考包）：**拿到参考实现的原生菜单帧；定位其机制与我们的差异**
+
+## ① 参考包已落地并实跑成功
+
+压缩包 `/mnt/build/zve10-qemu-linux-x86_64-v2.tar.gz`（755,119,066 B）解到
+`/mnt/build/bundle-v2/zve10-qemu-linux-x86_64-v2`（5761 个 manifest 条目，
+5613 个常规文件字节数全部吻合、148 个 symlink 条目、0 缺失）。
+
+**依赖补齐后实跑成功**：宿主机缺 `libsdl3`（其 `libSDL2-2.0.so.0` 是 sdl2-compat shim，
+`readelf -d` 只有 libc，但运行时 `Failed loading SDL3 library` → abort）。
+`apt-get -o Acquire::http::Proxy=false install libsdl3-0` 后 QEMU 11.1.2 可启动。
+
+**实跑产物（真实原生帧，非合成）：**
+
+```text
+output/menu-dcac1e7b7239/capture-001.rgba4444
+  bytes    = 614400          bpp = 2        640×480
+  非零字节 = 381064          唯一色数 = 216   相邻行相同率 87.6%
+  source_physical = 0x22c48000 (583303168)
+  SHA256(raw)     = d68731fe95f31577c8766a5b89039db105c1aca5fac9b1d416b2a8ab9c164b93
+```
+
+画面为原厂「画質/画像サイズ1」菜单页（顶部分类图标条 + 橙色选中条 + 日文条目）。
+**该帧由 guest 内原生 AP 绘制，host 未合成。**
+
+## ② 参考实现的机制（这是本轮最重要的收获）
+
+### 2.1 绘制后端整个替换在 guest 侧
+
+```text
+source/ui/ui-gemini-backend.h   gemini solid/rect/quad/line → 软件实现
+source/ui/ui-gemini-raster.h    RGBA4444 + linear/Morton + blend/scissor 真光栅
+source/ui/ui-lz77.h             软件 LZ77（Sony 原格式，长度表 {3,4,…,64}）
+source/ui/ui-image-decode.h     在 guest 内替换 /dev/ldec 的 DMA 路径
+source/ui/ui-present.h          12 字描述符校验 + 行垂直翻转
+```
+
+**关键：不等待固件自己画，而是把绘制后端换成软件实现；固件照原生命周期走。**
+
+### 2.2 帧导出用 pagemap（判据要求物理地址正是这么得的）
+
+```text
+mlock(pixels, 614400) → /proc/self/pagemap 逐页取 PFN
+→ 151 段 (physical, offset, length) → 串口 UI_OUTPUT_COMMITTED / UI_CAPTURE_READY
+→ host 用 QMP 按段读回
+```
+
+### 2.3 hook 机制与我们的完全一致，但**先定 12 字节再反汇编验证**
+
+`scripts/menu_build.py` 对每个 hook 做：
+
+```python
+prologue = va_bytes(raw, address, 12)
+instructions = list(Cs(CS_ARCH_ARM, CS_MODE_THUMB).disasm(prologue, address))
+if sum(i.size for i in instructions) != 12 or any('pc' in i.op_str or i.mnemonic.startswith(('b','cb','it')) ...):
+    raise ValueError('Native trampoline would relocate unsupported instructions')
+```
+
+**即：固定 12 字节 → 反汇编 → 逐条确认含 pc / 分支 / it 就拒绝。**
+这正是我在 R122/R124 两次犯错的规则，它是用工具强制执行的。
+
+### 2.4 它的实测边界（docs/menu-validation.json / shoot-model-assessment.md）
+
+```text
+原厂菜单（默认）      passed，15 帧，4 次原生输入被消费
+A7C2 可选菜单         partial，新增行/高亮/进入空页/返回通
+拍摄页→菜单切换       未通过
+取景/拍照/录像        未通过
+-smp 2                CPU1 在 [platform_secondary_init..cpu_idle) 确定性覆写内存
+```
+
+## ③ 与我们 ZV1M2 目标的差异（已实测定位）
+
+### 3.1 参考包的 libObj 是 ZV-E10 原厂，不是 ZV1M2
+
+```text
+参考包   libObj.so  cfdc59b94fa56116e9d99154ca03a2c1aaf6039dd272679b78b0b76e21c722ac
+我们     libObj.so  4cd654f1a8bc1aed40b6a4c87732263f  （ZV1M2 原厂）
+```
+
+**所以它那 17 个 `ne_hook` 的 12 字节 pin 一个都不能直接用。**
+
+### 3.2 gemini 四函数在 ZV1M2 中的对应体已用指纹搜出
+
+```text
+参考 solid 0x848478  前24字节指纹 → ZV1M2 0x19b7e0   （唯一命中，调用者 1 个，与参考同）
+参考 quad  0x847e78  前24字节指纹 → ZV1M2 0x19b034   （唯一命中，调用者 2 个，与参考同）
+ZV1M2 line 候选 0x19b31c（e92d4ff0 + ed2d8b06 + b08d，参数 6 个）
+ZV1M2 rect 未直接命中：ZV1M2 的 rect/quad 序言与参考不同（参考 b087+4698，
+ZV1M2 b087+4699 / b08d+4699），需按调用点重新配对
+```
+
+**两者 solid 的断言行号常量都是 `movw r3,#279 (0x117)`，可交叉确认是同一函数族。**
+
+### 3.3 参考包没有 appFw.so，我们是 Gen5（ZV1M2）的 appFw 驱动新菜单
+
+```text
+参考：ZVE10 libObj(cfdc59b9) + viewUnified2/bdf0690f + CautionConfig/5ad8746a
+我们：ZV1M2 libObj(4cd654f1) + appFw(f08c9eb7)  ← 新菜单由 appFw 的 Gen5 库驱动
+```
+
+**参考包走的是「ZV-E10 原菜单」，我们要的是「ZV1M2 新菜单」。**
+两者的 hook 表、vtable 偏移、管理器结构都不同，**机制可搬，表必须重算**。
+
+### 3.4 我们的 QEMU 机型已换成参考版最小模型并重编
+
+```text
+备份    /mnt/build/m2qemu/zve10.c.instrumented.bak  (d9c61bb25e959d30cae78d69dacd9ffd)
+现用    qsrc/hw/arm/zve10.c = aaa6187c0fe10abe46d1123a6caf7808022e3097 （参考版 254 行）
+        qsrc/hw/arm/zve10-gpe-init.h = ec2b67541d5b49c34a518ac2a84b184377ce7391
+重编    qsrc/build/qemu-system-arm 626eeea404c0a990f7ade461e55a5b1b91a679cb
+```
+
+**用参考版机型跑我们的移植树（out/ref1）：基线完好 `行数 1711 / [AS] 1036 /
+createLayer=6 / LIBOBJ_SYM=24`，GPE 侧 `ZVE10_GPE_PACKET 19 / GPE_FILL 0`。**
+
+**即：去掉我们此前加的全部额外行为（GPE tick 常驻完成位、PC 采样、2D copy 探针）
+之后，Gen5 固件的 GPU 行为与参考包同一现象——19 个 init fence、零绘图作业。**
+
+## ④ 本轮得出的方向
+
+```text
+参考实现证明：出帧靠「把绘制后端换成软件实现」，不是靠「让固件自己循环」。
+这条路对 ZV1M2 也可行，但要重做：
+  a) 在 ZV1M2 libObj 中定位 gemini solid/rect/quad/line 的真实入口（solid/quad 已定位）
+  b) 按 ZV1M2 的偏移重算 12 字节 pin，并用 capstone 逐条验证
+  c) 把 ui-gemini-raster / ui-lz77 / ui-image-decode / ui-present / ui-headless
+     五个模块移植到 ZV1M2 的 native 观察器上
+  d) 用 pagemap 导出物理段，host 按段读回
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例        0（参考包实跑后已清理）
+基线             out/ref1: 1711 / 1036 / createLayer=6 / LIBOBJ_SYM=24
+产出             仅写 /root/fw/oss；参考包解包在 /mnt/build/bundle-v2
+```
