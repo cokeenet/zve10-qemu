@@ -42168,3 +42168,96 @@ QEMU 实例   0
 产出        仅写 /root/fw/oss
 工作区      /mnt/build/m2qemu
 ```
+
+# ★★★★★★★★★ 2026-11-10 第四百六十二章（R146–R149）：**Gen5 UI 栈已完整跑起来，只在最后一步没有像素**
+
+## ① 决定性更正：`Application_System_Init` 成功返回
+
+此前多轮记作「init 卡住」。R146 复读 v15 日志，实际是：
+
+```text
+INITSEQ resolve Application_System_Init
+hooked Application_System_Init = 0x1324f271
+ARGTRACE init enter arg=0x41a9601 str="AppConfig.so"
+...
+ARGTRACE dlopen path=appFw.so flags=0x101 -> 0xa21f8
+ARGTRACE start target captured = 0x2ded6581
+I/stella(115): Created HeapAllocator: 0x4ad990((nil))
+I/stella(115): Replaced log-hook: 0xa9bf6d5 => 0xa9114dd
+ARGTRACE init return 0x0                      ← ★ 成功返回
+```
+
+**`stella`（Gen5 的 GUI 引擎）在 `im.elf` 里真的初始化了：建了 HeapAllocator、替换了 log-hook。**
+**`appFwBoot.so` → dlopen `appFw.so` → 解析 `Application_Start` 这条链与对方实体机日志的 Step 5→7 完全对应。**
+
+## ② 跑起来的证据（v15 逐项计数）
+
+```text
+CREATELAYER n=1..12        ret=5078304 / 5078688 …（非零，NULL=0）
+  caller = libObj+0x10796e / 0x107978（stella 内部，不是 appFw）
+LAYERVT setActive n=1..10  ret=0
+LAYERVT setClear  n=1..2   caller=appfw+0x7239d8 / 0x723a08
+GFXENG enter/leave 5/5     ret=0x4d6b48
+```
+
+**`WidgetSystem::createLayer`（libObj+0x1059e8）实测被调 12 次且全部返回有效句柄。
+`Layer::setActive` / `Layer::setClear` 都被调用且返回 0。**
+
+## ③ 唯一缺的一步：绘制三入口全零
+
+```text
+DFBHOOK call     0     GraphicsEngine::drawFramebuffer   (libObj+0xe5656)
+DRAW_PROBE       0     WidgetSystem::notifyDraw         (libObj+0x106524)
+frameiter_calls  0     渲染迭代 0x54f548
+```
+
+**三个绘制入口一次都没进。而 `drawFramebuffer` 体内前 22 个调用全是
+`ResourceUpdater` / `setScreenRotate` / `getFramebufferWidth|Height` / 布局写入，
+没有任何直接写像素的指令——它把活儿交给下游后端。**
+
+## ④ 日志尾部显示线程仍在 lock/unlock 循环里活着
+
+```text
+ENTRY_LOCK n=1..11 mutex=0x353adc08 caller=appFw+0x52abfe
+GV_PROBE at_lock u32=0x7
+ENTRY_FRAME lvl=1 fp=0x36779a0c next=0x2deb3bff ra[-1]=0
+ENTRY_UNLOCK n=...
+```
+
+`0x52abfe` 已反汇编确认是 `pthread_mutex_lock` 包装后的错误检查
+（`blx pthread_mutex_lock@plt` → `cbz r0` → 失败则 `__throw_system_error`）。
+**即：Gen5 的 UI 线程在正常地反复加锁/解锁，不是死锁。**
+
+## ⑤ 结论
+
+```text
+✅ Gen5 六模块加载、构造器执行、stella 引擎初始化
+✅ Application_System_Init 返回 0
+✅ createLayer 12 次成功、setActive 10 次成功、setClear 2 次成功
+✅ GFXENG 进出成对
+✅ 线程在正常 lock/unlock 循环
+❌ drawFramebuffer / notifyDraw / 渲染迭代 三个入口零调用
+```
+
+**差距只在「谁去调那三个入口」。参考实现的答案是：
+它不依赖固件自己调，而是把 GPU 后端（solid/rect/quad/line + fill/blit/present/engine_wait）
+换成软件光栅，固件一旦走到绘制就落到软件实现里。**
+
+**我们在 ZV1M2 中已定位的对应点：**
+
+```text
+notify  libObj+0x106524   与参考 0x617c74 同签名（WidgetSystem::notifyDraw）已交叉验证
+lz      libObj+0x10bff8   与参考 0x63e170 同签名（Lz77Decoder::decodeImpl）已交叉验证
+fill/blit 候选 0x182410 / 0x1824a0 / 0x1825e0 / 0x1826b0（前 20 字节与参考 0x7d5bf0 逐条一致）
+present   候选 0x82384 … 0x22c1d6（9 处）
+engwait   候选 0x12ceb0（唯一，签名 0xf0b583b0 04441e00 af 吻合）
+headless  候选 0x124bb4（唯一）
+```
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v15: 1578 / 1006 / createLayer=6 / LIBOBJ_SYM=24
+构建        一律走 build-deploy.sh（sha 比对通过才继续）
+```
