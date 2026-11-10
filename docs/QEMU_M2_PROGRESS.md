@@ -41333,3 +41333,32 @@ drawFramebuffer 的可观测链已推进到 libObj+0x11f618
 基线     有效轮次 createLayer 全部 = 6；R128 报废并回退
 产出     仅写 /root/fw/oss
 ```
+
+## ⑥ 补充（R129）：卡点函数内部出现互斥锁，指向自死锁
+
+`0x11f618`（实测 enter=1 / leave=0）体内第一个调用是 `0x11f32c`；
+`0x11f32c` 又调用 `0x125094` -> `0x1235ca`（`rsrc_port_init` 区），而这一路带着一对锁：
+
+```text
+0x11ff98  push {r3,r4,r7,lr} ; adds r0,#4 ; blx pthread_mutex_lock@plt
+0x11ffc4  push {r3,r4,r7,lr} ; adds r0,#4 ; blx pthread_mutex_unlock@plt
+```
+
+`0x1235ca`（rsrc_port_init 区）在 `0x1235da` 取锁、`0x1235f6` 释放，中间做资源端口更新。
+另有三个纯取值函数（不可能是阻塞点，已排除）：
+
+```text
+0x12508c  adds r0,#232 ; pop          (3 条)
+0x125094  add.w r0,#344 ; pop         (4 条)
+0x128720  ldr r0,[r0,#0x5c] ; pop     (3 条)
+```
+
+**因此「进入不返回」的最可能机制是：驱动内联调用时，线程已持有同一把互斥锁，
+`0x11ff98` 的 `pthread_mutex_lock` 自死锁。**
+
+这与 R104/R118 的现象完全吻合（两个不同线程都卡住，且都在进入后不再前进），
+也与 `processSystemMessage` 返回点触发会崩基线（R128）吻合——
+那里同样在固件自己的锁保护区内。
+
+**下一步（若继续）：** 在 `0x11ff98` 置探针，若它进入而无返回，即可直接确认自死锁；
+确认后再按 a7c2-re 的范式绕开固件自锁路径（由实验侧执行绘图请求）。
