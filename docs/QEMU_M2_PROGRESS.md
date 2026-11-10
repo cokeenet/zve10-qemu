@@ -42451,3 +42451,137 @@ QEMU 实例   0
 本轮遇到的磁盘 I/O 错误（pcieport AER Correctable）已通过删除并重建
 usr/initramfs_data.cpio 解决，后续 5 次构建全部 deploy ok
 ```
+
+## ⑪（R155–R157）★ 找到并修掉两个「自己打断固件」的 hook 缺陷
+
+这三轮最有价值的产出不是新探针，而是**发现了我们自己的探针把固件打断了**。
+
+### 11.1 缺陷一：`grm_jump` 的 stub 比 `pro_len` 长，跳回点落在自己的字面量里
+
+`grm_jump` 的写入长度由对齐决定：
+
+```text
+where 4 对齐     → ldr.w pc,[pc,#0] (4B) + 字面量 (4B) = 8 字节
+where 2 mod 4    → 4B + nop (2B) + 字面量 (4B)        = 10 字节
+```
+
+而 trampoline 的**跳回地址是 `addr + pro_len`**。若 `pro_len` 小于 stub 长度，
+**跳回去执行的字节已经被自己写入的字面量覆盖了。**
+
+实测到的两处：
+
+```text
+0x54ef74 (stage1)  pro_len=6，但 stub=8
+  0x54ef74 push {r4,r5,r6,r7,lr}  2B
+  0x54ef76 sub  sp,#0xc           2B
+  0x54ef78 mov  r4,r0             2B   ← 字面量写在这里（覆盖到 0x54ef7b）
+  0x54ef7a add.w r6,r4,#0x6a8     4B   ← 前 2 字节被抹掉
+  → 跳回 0x54ef7a 执行的是被破坏的指令
+
+0x54f664 (容器)  pro_len=12，且第 4 条是 PC 相对
+  0x54f664 push.w {…}          4B
+  0x54f668 sub.w sp,sp,#0x800   4B
+  0x54f66c sub  sp,#0x1c        2B
+  0x54f66e ldr  r5,[pc,#0x388]  2B   ← 复制进 trampoline 后 PC 变了，r5 取错
+```
+
+**修正：`0x54ef74` 的 pro_len 由 6 改为 16（正好停在 `0x54ef84` 的 PC 相对之前），
+`0x54f664` 由 12 改为 10（正好停在 `0x54f66e` 之前，让那条 PC 相对指令在原位执行）。**
+
+### 11.2 缺陷二：同一个地址被两套 hook 各装一次
+
+```text
+0x54f664  行 2426 re_hook_install (RENDERENTRY)  pro_len=10
+          行 3054 stage_hooks_install (STAGEMAP[0]) pro_len=10
+0x54f548  行 2501 frame-iterator hook
+          行 3059 stage_hooks_install (STAGEMAP[5]) pro_len=12
+```
+
+**第二套的 `memcmp` 读到的是第一套写进去的 `grm_jump` 字节，必然 mismatch。**
+
+实测证据（v22）：
+
+```text
+STAGEMAP stage=0 prologue mismatch at 0x2e3c0664
+STAGEMAP stage=5 prologue mismatch at 0x2e3c0548
+STAGEMAP installed=4 blocked=2 pages=4
+```
+
+**修正：两个槽位置为 0（表示「已被别的 hook 占用」），安装循环遇 0 跳过。**
+**原则：一个地址只允许一套 hook。**
+
+### 11.3 修正后的实测（v22 / v23，基线均 createLayer=6 / LIBOBJ_SYM=24）
+
+```text
+v22  行数 1775 / AS 1101   stage1 pro_len=16 生效，STAGE1SKIP 已退役
+v23  行数 1780 / AS 1105   重复 hook 已清除
+```
+
+**但关键探针仍然全零：**
+
+```text
+RE71 hit         0     容器没有回到 0x54f67c
+RET51 hit        0     容器第二个调用的返回点未到
+RENDERENTRY leave 0    容器没有返回
+STAGE1TEL report 723aac=0/0 54d668=0/0 60e228=0/0
+```
+
+**即：这次 stage1 是**真正执行**（不再被我们跳过），而它自己就卡住了——
+与我们的 hook 缺陷无关。**
+
+### 11.4 因此可以确定「真实阻塞」的位置在 stage1 内部
+
+stage1（`appFw+0x54ef74`）的完整调用序列（已逐条解码）：
+
+```text
+54ef80  ldr r0,[r0,#0x10]
+54ef84  ldr r5,[pc,#0x74]
+54ef86  ldr r3,[r0]              vtable
+54ef8a  ldr r3,[r3]             slot 0
+54ef8c  blx r3                  -> appFw+0x54d05d（空实现，实测 vtable 0..4 全是 push/pop）
+54ef8e  adds r0,r7,#4
+54ef90  blx 0x925fb0            veneer -> 0x13586ec
+54ef94  adds r0,r7,#4
+54ef96  blx 0x923900            veneer -> 0x1436ad8
+54ef9a  adds r0,r7,#4
+54ef9c  blx 0x9246b8            veneer -> 0x1359ff4
+54efa0  ldr r0,[r4,#0x10]
+54efa2  blx 0x9240d4            veneer -> 0x12f77a4
+54efa6  bl 0x723aac             builder（0/0）
+54efaa  blx 0x925b48 -> 0x1c1b725
+54efae  blx 0x924b48 -> 0x1c1b745
+54efb4  blx 0x924b04 -> 0x165d641
+54efb8  bl 0x558a00             0/0
+54efbc  blx 0x923b34 -> 0x2c2ea8d
+54efc0  blx 0x9243e4 -> 0x2ce6885
+54efc4  blx 0x925468 -> 0x2bdf575
+54efc8  blx 0x9249c4 -> 0x2bc3271
+54efcc  bl 0x558cbc             0/0
+54efd0  bl 0x7121d4             0/0
+54efd4  bl 0x54d668             0/0
+54efd8  bl 0x60e228             0/0
+54efde  strb r3,[r4,#0x890]
+54efe8  blx GRM_fbrmRegisterTriggerFrameworkCb@plt
+54efee  bl 0x54ed98
+54eff8  pop {r4,r5,r6,r7,pc}
+```
+
+**四个 veneer 目标已全部解析出来，且都可 hook（safe 长度 6/10/10/12）：**
+
+```text
+0x925fb0 -> 0x13586ec   safe=6
+0x923900 -> 0x1436ad8   safe=10
+0x9246b8 -> 0x1359ff4   safe=10
+0x9240d4 -> 0x12f77a4   safe=12
+```
+
+**下一步：在这四个目标上各装一个计数器，就能定位 stage1 卡在哪一条 veneer 调用。**
+
+### 11.5 约束
+
+```text
+QEMU 实例   0
+基线        v23: 1780 / 1105 / createLayer=6 / LIBOBJ_SYM=24
+构建        一律走 build-deploy.sh（sha 比对通过才继续）
+原则        一个地址只允许一套 hook；pro_len 必须 >= grm_jump 的 stub 长度且落在指令边界
+```
