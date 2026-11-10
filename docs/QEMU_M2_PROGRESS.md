@@ -43161,3 +43161,58 @@ QEMU 实例   0
 构建        一律走 build-deploy.sh（sha 比对通过才继续）
 需回滚      accel/tcg/cpu-exec.c 的插桩（保留在树里但确认无效，下轮清理）
 ```
+
+# ★★★★★★★★★ 2026-11-11 第四百六十九章（新 goal 第 14 轮）：**清理无效插桩；TB 粒度在本 QEMU 版本不可用**
+
+## ① 清理 accel 层插桩
+
+R173 已证明 `accel/tcg/cpu-exec.c` 里的 `zve10_tbexec_note()` 调用在本构建下
+一次都不触发。本轮把该插桩整段移除，重建后链接正常。
+
+## ② 尝试「timer + TB 粒度」组合，本版本不支持
+
+设想：在已验证可用的 QEMU timer 回调里，除读 PC 外再读「当前正在执行的
+TranslationBlock 的起始地址」，从而即使采样点落在基本块中间也能正确归属。
+
+**实测编译失败：**
+
+```text
+../hw/arm/zve10.c:203:31: error: 'CPUState' has no member named 'current_tb'
+../hw/arm/zve10.c:205:49: error: invalid use of incomplete typedef 'TranslationBlock'
+```
+
+**本 QEMU 版本的 `CPUState` 没有 `current_tb` 字段，`TranslationBlock` 在
+`hw/arm/zve10.c` 里也只是不完全类型。该组合方案不成立，已整段移除。**
+
+## ③ 桌面清理后的一次瞬时异常，重跑确认非回归
+
+```text
+out/v51  行数 299 / LIBOBJ_SYM 0        ← 异常
+out/v52  行数 1769 / createLayer=6 / LIBOBJ_SYM=24   ← 正常
+```
+
+**v51 的 qemu.err 首行是 `terminating on signal 15 from pid 1`，
+即运行被清理流程过早终止（等待条件未命中），不是代码回归。
+按铁律 4 v51 报废，v52 作为本轮的基线证据。**
+
+## ④ 三次插桩尝试的完整结论
+
+```text
+[否证] accel/tcg 层插桩             —— 调用点不触发（R173）
+[否证] TB 级全局页直方图            —— 哈希饱和 + atexit 不执行（R173）
+[否证] timer + CPUState.current_tb  —— 本版本无该字段（R174）
+[可用] arm_cpu_do_interrupt_aarch32 异常入口直方图（ZVE10FPAGE，R172 已验证）
+[可用] QEMU timer 采样 PC（PCSAMP，长期在用）
+```
+
+**目前能用的只有「已执行指令的异常」与「定时采样的 PC」两类证据。
+「哪些代码被执行过」这个问题，在这个 QEMU 版本里只能靠采样，
+而采样对短窗口与阻塞线程天然失明 —— 这是本轮确认的能力边界。**
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v52: 1769 / createLayer=6 / LIBOBJ_SYM=24
+构建        一律走 build-deploy.sh（sha 比对通过才继续）
+```
