@@ -41703,3 +41703,36 @@ QEMU 实例        0
 基线             sem2: 1754 / 1085 / createLayer=6 / LIBOBJ_SYM=24
 产出             仅写 /root/fw/oss
 ```
+
+## ⑧ 补充（R139）：找到菜单构建器 0x723aac 的完整结构，并确认它是状态机分发而非阻塞
+
+`0x723aac`（`appFw+0x1d652c`，我们台账此前称"菜单构建器"）已完整反汇编：
+
+```text
+723aac: push {r4,r5,r7,lr} ; add r7,sp,#0
+723ab0: bl 0x54e140          ← 读 state_in_B
+723ab4: mov r5,r0 ; cmp r0,#0 ; bne 0x723b32
+723aba: bl 0x54e108          ← 读 state_in_A
+723abe: cmp r0,#1  → beq 0x723aee
+        cmp r0,#2  → beq 0x723b10
+        cmp r0,#0  → bne 0x723baa
+        0          → switchBank(4) ; switchBank(3) ; … → b 0x723ba6
+```
+
+**两个状态输入的地址已算出：**
+
+```text
+state_in_A  字面量 0x279da10 → 全局 0x2cebb1c（.rodata，值 01 00 00 00 01 00 00 00 02 …）
+state_in_B  字面量 0x279da7c → 全局 0x2cebbc0（.rodata，值 01 00 00 00 00 …）
+```
+
+**且实测容器线程的 switchBank 序列为 `bank=0 ×5, bank=3 ×1`，
+而构建器里出现的 bank 常量是 4/3/5，未出现 4/5 —— 说明构建器在这轮里
+走的是 `state_in_A == 0` 那条（`switchBank(4)` 需 r0=r4=0，实测 r4 由 state 决定）。**
+
+**但 `RM switchBank ENTER 6 / LEAVE 6` 成对、`ret=1`，
+所以构建器没有卡在 ResourceManager 上。**
+
+**这条把"构建器被资源切换卡住"排除掉了（与台账 178/180 的旧判断一致但更精确：
+不是它卡住，是它按状态选了一条还没到绘制阶段的分支）。**
+
