@@ -41570,3 +41570,43 @@ QEMU 实例        0（参考包实跑后已清理）
 基线             out/ref1: 1711 / 1036 / createLayer=6 / LIBOBJ_SYM=24
 产出             仅写 /root/fw/oss；参考包解包在 /mnt/build/bundle-v2
 ```
+
+## ⑥ 补充（R1662 续）：参考实现的 hook 签名在 ZV1M2 中的对应位置（交叉验证成立）
+
+把参考包 `source/ui/ui-observe.c` 与 `ui-draw-probe.h` 里的 hook 表逐条拿到
+我们的 `PORTED4/usr/lib/libObj.so`（ZV1M2，`4cd654f1`）里做字节搜索：
+
+| 参考 hook（ZV-E10 偏移） | 8 字节签名 | ZV1M2 命中 | 是否可信 |
+|---|---|---|---|
+| `notify` 0x617c74 | `90b5 87b0 00af 0446` | **0x106524**（另有 5 处同签名） | **可信**：0x106524 正是我此前独立定位的 `WidgetSystem::notifyDraw`，符号名吻合 |
+| `lz` 0x63e170 | `2de9 f04f 8db0 00af` | **0x10bff8**（另有 6 处） | **可信**：0x10bff8 正是我此前独立定位的 `Lz77Decoder::decodeImpl`，且 `b08d`(sub sp,#52) 与签名一致 |
+| `draw` 0x6196b8 | `b0b5 0446 82b0 00af` | 0x13bb10（唯一） | 待确认（该地址在 `InfraMediaConfig_Resume+0x7ca0` 附近，需按调用关系核实是否 eGfxEng 的 draw） |
+| `headless` 0x6fb28c | `b0b5 0c46 86b0 491c` | 0x124bb4（唯一） | 待确认（在 `rsrc_port_init` 区） |
+| `app` 0x8a2408 | `b0b5 8ab0 02af 0546` | **0 处** | 参考该函数在 ZV1M2 中序言不同，需重算 |
+| `font` 0x63cc58 | `2de9 f041 82b0 02af` | 46 处 | 需按调用点收窄 |
+| `present` 0x774ef0 | `2de9 f041 84b0 0546` | 9 处 | 需按调用点收窄 |
+
+**两条关键交叉验证都成立**：参考实现的 `notify` 与 `lz` hook 签名，
+在我们 ZV1M2 里精确命中了我此前用完全不同的方法独立定位到的同名函数。
+这说明参考实现的签名表在 ZV1M2 上有一部分可直接复用，其余需按调用关系重算。
+
+## ⑦ 参考实现真正替换的绘制入口（不是 gemini 那四个）
+
+`ui-observe.c` 的 hook 表显示它替换的是另一组更底层的函数：
+
+```text
+0x7d5bb0 software_init     (03 48 80 b4 78 44 00 af)
+0x7d5bd0 software_exit
+0x7d5bf0 software_fill     (02 29 0b 46 f0 b5 85 b0)
+0x7d5c80 software_blit
+0x774ef0 software_present  (2d e9 f0 41 84 b0 05 46)
+0x775120 software_engine_wait
+0x6fb28c software_headless_update
+0x63e170 observe_lz_decode
+```
+
+**即：真正的软件光栅挂在 `software_fill / software_blit / software_present /
+software_engine_wait` 这一组上；gemini 那四个只是被观测（probe 后转发原函数）。**
+
+这修正了我第 ① 节的表述——之前我把 `ui-gemini-backend` 当成主替换点，
+实际主替换点是上面这组，gemini 只做 probe。
