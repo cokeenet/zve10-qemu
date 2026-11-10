@@ -41362,3 +41362,72 @@ drawFramebuffer 的可观测链已推进到 libObj+0x11f618
 
 **下一步（若继续）：** 在 `0x11ff98` 置探针，若它进入而无返回，即可直接确认自死锁；
 确认后再按 a7c2-re 的范式绕开固件自锁路径（由实验侧执行绘图请求）。
+
+# ★★★★★★★★★ 2026-11-10 第四百五十七章（目标轮 129–134）：**drawFramebuffer 确定不返回；并澄清两处误推**
+
+## ① 一条确定性的测量：进入后不返回
+
+此前 `DFBHOOK` 的包装函数只打印 `call=N`，**不打印返回**，因此
+「函数没返回」与「函数返回了但深层探针没活动」在日志上无法区分——
+这正是 R127–R133 反复误判的根源。
+
+R134 给该包装函数补上返回日志后（out/mx2，基线 1702 / 1036 / createLayer=6 / LIBOBJ_SYM=24）：
+
+```text
+FORCEDRAW trigger from watchdog t=5
+FORCE_DRAW base=0xaafe000 self_slot=0xae55490 self=0xaec6044
+DFBHOOK call=1  self=0xaec6044 tid=117 f23a=0x3f80
+DFBHOOK leave   → 0 次
+```
+
+**结论确定：`GraphicsEngine::drawFramebuffer`（libObj+0xe565a）进入后不返回。**
+
+## ② 一处误推的澄清：互斥对的活动不在驱动线程上
+
+R129 看到 `0x11f618` 体内经 `0x1235ca` 调用 `0x11ff98`（pthread_mutex_lock@plt）
+与 `0x11ffc4`（unlock），据此推断「驱动线程在此自死锁」。R134 的计数否定了它：
+
+```text
+驱动（drawFramebuffer）                    tid=117
+互斥 lock/unlock（0x11ff98 / 0x11ffc4）    tid=152   全部 5 次都在这里
+
+enter 6=3 / leave 6=2 / enter 7=2 / leave 7=2
+```
+
+**即这把锁正被另一个线程正常使用（配对基本正常），与本次驱动线程无关。
+「驱动线程自死锁」的推断没有证据支撑，作废。**
+
+## ③ 另一处：卡点位置不固定
+
+```text
+ds5（触发 1676/1686）：enter 0=1 leave 0=1 → enter 1=1 无 leave   → 停在 0x11f618
+mx1（触发 1516/1671）：无任何 DRAWSTAGE enter                     → 停在 0x10ee08 之前
+mx2（触发 1539/1702）：无任何 DRAWSTAGE enter（tid=117 上）        → 同上
+```
+
+**停滞位置随运行变化，因此不是某个函数的固定死锁，
+而是「在引擎状态未就绪时调用 drawFramebuffer，会在不同位置撞上未完成状态」。**
+
+## ④ 触发时机已穷举（五个位置，全部失败）
+
+```text
+R104  OSAL 接收路径内联        → 进入不返回
+R118  watchdog 线程             → 进入不返回
+R127  watchdog 第 1 次唤醒      → 触发在 1678/1680，无执行窗口
+R128  processSystemMessage 返回 → 基线崩塌 createLayer 2，整轮报废
+R130  sleep 改 1 s              → 触发提前到 1538，DFBHOOK 仍未记录
+R131  改为 n>=3                 → 实测 watchdog 全轮只唤醒 1 次，条件永不成立
+```
+
+**补充实测：watchdog 在本 guest 每轮只唤醒一次**
+（ds5/ds6/lk1/lk2 四次运行各只有 1 条 `APPSTART still-inside`，与 sleep 值无关）。
+所以任何依赖 `n>=2` 的触发设计都不可行。
+
+## ⑤ 约束
+
+```text
+QEMU 实例            0
+基线                 mx2: 1702 / 1036 / createLayer=6 / LIBOBJ_SYM=24
+                     R128 报废并回退（rb4 复核 1680 / 1004 / createLayer=6）
+产出                 仅写 /root/fw/oss
+```
