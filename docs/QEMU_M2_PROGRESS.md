@@ -41819,3 +41819,86 @@ appFw.so 共 754 个 UND 符号
 **stage1 从未返回，因此容器到不了 0x54f68a。真正的停住在 0x54ef74 内部，
 而我们此前只证明它前段（虚调用 + 构建器）执行过。**
 
+
+# ★★★★★★★★★ 2026-11-10 第四百六十章（R141–R143）：**发现部署链污染（跑了外来 initramfs）；建立校验后重新测量**
+
+## ① 决定性发现：R141/R142 的异常轮次跑的是外来 rootfs
+
+```text
+work/kbuild-ui2/usr/initramfs_data.cpio    sha256 = 2716858c01f701fb55ac919e30f528d6edcf06de
+/tmp/ui-e10-fake.cpio                      sha256 = 2716858c01f701fb55ac919e30f528d6edcf06de   ← 完全相同
+stage-current/ui.cpio（我们打的）            sha256 = 9639070cd126587858fb41b5036a92c55eff880e   ← 从未进入镜像
+```
+
+rb5 的日志印证：`UI_OBSERVE 152 次`（参考包 `libnativeentry.so` 的输出）、
+`ARGTRACE 0 / BASEPRINT 0 / CREATELAYER 0 / LIBOBJ_SYM 0`。
+
+**根因：** 我的流程是 `sed .config → make → cp /tmp/keep.cfg .config`。
+`usr/initramfs_data.cpio` 仅在源变化时重建，而恢复配置文件与重建的先后不受控，
+于是有时嵌进的是 `/tmp/ui-e10-fake.cpio`。
+
+**R141 因此把「装了 0x723aac hook 导致基线崩塌」记成结论——那是错误归因。**
+
+## ② 已建立带校验的构建入口 `build-deploy.sh`
+
+```text
+1. 备份 .config 到 /tmp/cfg-keep-<ts>.cfg
+2. sed CONFIG_INITRAMFS_SOURCE → stage-current/ui.cpio，并 grep 确认写入成功
+3. 删除 usr/initramfs_data.cpio / .o / built-in.o / .cmd 强制重建
+4. make Image
+5. 比对 usr/initramfs_data.cpio 与 stage-current/ui.cpio 的 sha256，不等则 exit 4
+```
+
+**四次运行全部 `deploy ok`：**
+
+```text
+v1  embedded == 9639070c…   行数 1783 / AS 1110 / createLayer 6 / LIBOBJ_SYM 24
+v2  embedded == fe86fd51…   行数 1735 / AS 1069 / createLayer 6 / LIBOBJ_SYM 24
+v3  embedded == ac89c0a8…   行数 1530 / AS  989 / createLayer 6 / LIBOBJ_SYM 24
+v4  embedded == a5773494…   行数 1776 / AS 1104 / createLayer 6 / LIBOBJ_SYM 24
+```
+
+## ③ 校验部署后的真实测量：卡点前移到 stage1 的**第一条指令之后**
+
+v4（三个 hook 全部 installed、基线完好）：
+
+```text
+STAGE1TEL 723aac installed / 54d668 installed / 60e228 installed
+RENDERENTRY enter=1 a0=0x3707c410 tid=195
+STAGE1TEL a0=0x3707c410 obj10=0x3707ccac vt=0x317c7518 slot0=0x2e7d805d target=/usr/lib/appFw.so+0x54d05d
+STAGEMAP stage=1 call=1 tid=195
+STAGE1TEL report 723aac=0/0 54d668=0/0 60e228=0/0
+```
+
+**三个 hook 全部 0/0 ⇒ stage1 连第一个 `bl`（0x723aac，在 +0x32）都没执行。**
+
+**stage1 的代码顺序是：**
+
+```text
+54ef74 push ; 54ef76 sub sp,#12 ; 54ef78 mov r4,r0
+54ef7a add.w r6,r4,#0x6a8 ; 54ef7e add r7,sp,#0
+54ef80 ldr r0,[r0,#16]        ← 读 a0+0x10 = 0x3707ccac（实测取到）
+54ef84 ldr r5,[pc,#116] ; 54ef86 ldr r3,[r0,#0] ; 54ef8a ldr r3,[r3,#0]
+54ef8c blx r3                 ← vtable slot0 = appFw+0x54d05d
+```
+
+**`appFw+0x54d05c` 是空实现（`push {r7,lr} / add r7,sp,#0 / pop {r7,pc}`），立即返回。**
+
+**所以停住点在 `0x54ef8c` 的那次虚调用上，或它之后紧接着的**
+**`0x54ef90/96/9c/a2` 四次 `blx`（PLT veneer）。**
+
+## ④ 已纠正的旧结论
+
+```text
+R141「0x723aac hook 破坏基线」      → 作废（那次跑的是外来 cpio）
+台账 178「构建器有 94 个 widget 构造点」 → 作废（构建器只做状态分发 + 手势比例 + 切 bank）
+R140「PORTED4 混装有害」            → 作废（部署树 190/220 是 ZV1M2 原厂，appFw 对 ZV-E10-only 模块引用数 0）
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        四次校验运行全部 createLayer=6 / LIBOBJ_SYM=24
+构建        一律走 /mnt/build/m2qemu/build-deploy.sh（内含 sha 比对）
+```
