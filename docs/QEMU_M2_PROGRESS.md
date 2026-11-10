@@ -42077,3 +42077,94 @@ stage1 之后的任何指令未被采样        ❌
 
 **这与自 R104 起观察到的「容器线程最终停在 appFw 主泵的 tmo=-1 等待」是同一件事，
 只是这次是从 CPU 侧采样直接看到的。**
+
+# ★★★★★★★★★ 2026-11-10 第四百六十一章（用户决策）：**改为「让 ZV-E10 用上 ZV1M2 的 appFw 新菜单」，并要中文显示**
+
+## ① 用户明确的目标修正
+
+```text
+原目标   让 ZV1M2 的 Gen5 库在 ZV-E10 的 QEMU 里画出原生新菜单
+新表述   让 ZV-E10 用上 ZV1M2 的 appFw（新菜单），ZV-E10 真机当前是原厂老菜单（viewUnified）
+附加要求 模拟器里中文显示
+```
+
+**即：目标对象从「让 Gen5 固件在异机上自然跑起来」改为「把 ZV1M2 的 UI 栈移植进 ZV-E10，
+并保证菜单可操作 + 参数可回写 + 中文文案」。**
+
+## ② 两代 UI 栈的结构差异（本轮新查清，这是移植的关键）
+
+```text
+应用入口层
+  ZV-E10 : libIMDB 里登记的是  appFw.so        + Application_System_Init
+  ZV1M2  : libIMDB 里登记的是  appFwBoot.so    + Application_System_Init
+  ⇒ ZV1M2 的 appFwBoot.so 只有 8,312 字节，export Application_System_Init(0x1270, size 0x11c)
+    它是引导层：dlopen 真正的 appFw.so 并转发；同时调用
+      ResourceManager::sys_setFontNameWithNamespace
+      AreaCheckExtensionManager::setCheckDataPath
+      ArenaParam::setMaximumSize / setMinimumSize
+      GraphicsEngine::setOverflowResizeFontAttribute
+
+视图/菜单宿主
+  ZV-E10 : viewUnified2..8.so（14.3 MB / 12 个型号）+ CautionConfig.so（17.7 MB）
+          + libBizFw.so / libBizFw2.so
+  ZV1M2  : **完全没有 view* 家族**，也**没有 CautionConfig / libBizFw**
+          appFw.so 单独 64.3 MB 承担全部 UI
+  ⇒ 两代的视图系统归属根本不同：ZV-E10 是「viewUnified 家族 + libObj」，
+    ZV1M2 是「appFw 单体 + libObj」
+
+资源系统
+  ZV-E10 : libmpr.so 13.0 MB
+  ZV1M2  : libmpr.so  3.0 MB
+  ⇒ 资源管理器体积差 4.3 倍
+```
+
+## ③ 资源格式已验证同族（移植资源的前提成立）
+
+```text
+ZV1M2  color_cmn.uxc   75786307 00000000 0800 4a00
+A7C2   color_cmn.uxc   75786307 00000000 0800 4a00     ← 字节完全相同
+ZV1M2  image_02_34_ASTRA.uxc  75786407 …（uxd 容器）
+ZV1M2  *.ltt          "LTT\n" 容器；Sony_DI_Icons.ttf 为裸 SFNT
+```
+
+**ZV1M2 资源齐全：232 个文件 / 82 MB**
+（image_00..02 × 34/43 ASTRA 六张 7–10 MB 大图、image.uxb 2.28 MB、
+204 个 string_*.uxc 覆盖 34 种语言、3 个 LTT 字体、2 个 LayoutMaster）
+
+**中文资源确认存在：**
+
+```text
+string_simplifiedchinese.uxc          + _f / _func_j / _g / _horizontal / _vertical
+string_traditionalchinese.uxc         同样 6 个
+MYingHeiC-KSX1001-SJ_wIcon.ltt        924,104 字节（中文字体）
+```
+
+## ④ 由此确定的移植策略（三条）
+
+```text
+策略 A（推荐）  替换 UI 栈，让 ZV-E10 走 ZV1M2 的 appFw 路径
+  · 用 ZV1M2 的 appFwBoot.so 替换 libIMDB 期望的入口（它 export Application_System_Init）
+  · 用 ZV1M2 的 appFw.so 作为真正的 UI
+  · ZV-E10 的 viewUnified/CautionConfig 不再被加载（ZV1M2 不需要它们）
+  · 保留 ZV-E10 的硬件/驱动层（不变的 libObj 之外的组件）
+  · 风险：libIMDB 里 appFw.so → appFwBoot.so 的字符串是编译期常量，
+    需要用同名文件替换（把 appFwBoot.so 改名成 appFw.so，或反过来打补丁）
+
+策略 B  自构造菜单（用户上一轮提出的方案）
+  · 不依赖 appFw 的 UI 执行，用 ZV1M2 资源 + 软件光栅自绘
+  · 能确定拿到帧，但「参数真正写进固件」需要另做
+
+策略 C  两者结合
+  · appFw 提供业务与状态，软件光栅接管绘制（参考实现的范式）
+```
+
+**用户要「1（菜单可操作）+ 2（参数可回写）+ 中文」。**
+**这三项在策略 A 下最有可能同时成立，因为业务就是 appFw 自己的业务。**
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+产出        仅写 /root/fw/oss
+工作区      /mnt/build/m2qemu
+```
