@@ -48005,3 +48005,75 @@ v186: 2490 行 / createLayer=6 / LIBOBJ_SYM=24 / updateFrame=1 / Application_Sta
 QEMU 实例   0
 基线        v186: 2490 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-12 第五百三十三章（R766–R785）：**按日志形态主动 dlopen Gen5 闭包 —— 两个具体失败点，以及「旧库占原名」这个起点本身有问题**
+
+## ① 本轮按日志的加载形态完整搭了一遍
+
+```text
+/log/g5/ 独立目录：
+    libOb5.so（SONAME 改为 libOb5） 3,979,329 B
+    libmp5.so（SONAME 改为 libmp5） 3,488,873 B
+    libObjShim.so（我生成的 196 符号路由） 77,316 B
+    AdjChkConfig.so
+    libappFwBoot_g5.so（SONAME 改为 libappFwBoot_g5）
+/usr/lib/libObj.so ← 旧库（cfdc59b9）
+新增 g5loader.so：按 [Step 1-5] 顺序 dlopen 上述五个
+```
+
+## ② 失败点一：构造函数里加载过早（v187）
+
+```text
+G5LOAD [FAIL] /log/g5/libOb5.so : /usr/lib/libUsbControl.so: undefined symbol: Fsys_Open
+G5LOAD [FAIL] /log/g5/libmp5.so : /log/g5/libmp5.so: undefined symbol: Fsys_PGExit
+```
+
+**⇒ 构造函数据发生时 `libInfraFsys.so` 还没进进程。**
+
+**但我核对过：部署树的 `libInfraFsys.so`（ed4c4071）**确实导出了这两个符号**。
+所以这不是"缺库"，而是**加载顺序**问题。**
+
+**修法：改成惰性触发（导出 `g5_ensure()`，由 argtrace 在 appFwBoot/appFw dlopen 前调用），
+并先在加载器里显式确保平台库（libInfraFsys / libInfraMediaCommon / libInfraUsbCmn /
+libUsbControl / libNetContUtil / libBackupManager / libutil_date / libcompassutil /
+libsencore / libNetCommon / libGOConnectionManager / libbackup）。**
+
+## ③ 失败点二：触发点根本到不了（v188）
+
+```text
+行数 1728，G5LOAD 一次都没打印
+dlopen 序列里只有 libObj.so，**appFwBoot 从未被 dlopen**
+```
+
+**⇒ 因为 `/usr/lib/libObj.so` 换成了旧库，im.elf 在更早的阶段就拿不到它需要的符号，
+连 appFwBoot 都没走到 —— 惰性触发的条件自然永远不成立。**
+
+## ④ 由此确认：问题出在起点，而不是加载技巧
+
+```text
+参考日志的 Step 0 预载旧 libObj 是**在它自己的沙箱里**，
+那个沙箱的 im.elf 与 appFwBoot 都是 Gen5 的、且它能成功；
+我们这边把旧库占住原名后，Gen5 的 im.elf 直接失去所需符号。
+```
+
+**⇒ 两边**不可能是同一种"旧库占原名"结构**，
+或者参考方的 `libObjShim.so` 提供了我们这版没有的**符号覆盖**，
+使得 im.elf 仍旧能解析成功。**
+
+## ⑤ 本轮结论 + 基线恢复
+
+```text
+✗ 静态布局（改名 / 改名+shim / 改名+shim+预载）三种全部失败
+✗ 惰性加载也没救回来（触发条件本身不可达）
+✓ 查明两个失败点的确切原因（构造期过早 / 触发点不可达）
+✓ 基线恢复：v189: 2483 行 / createLayer=6 / LIBOBJ_SYM=24
+             Application_Start ENTER=1 / updateFrame=1
+✓ 宿主机帧导出通道保持可用（FRAMEDUMP phys=0x22d52000 ...）
+```
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v189: 2483 行 / createLayer=6 / LIBOBJ_SYM=24
+```
