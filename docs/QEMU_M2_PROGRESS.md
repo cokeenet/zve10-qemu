@@ -46726,3 +46726,76 @@ QEMU 实例   0
 
 **把 c1（`0x1c1baa4`）的两个调用 `0x1bf3114` 与 `0x1d0c0f4` 各装探针，
 定位到底卡哪一个。这两条都短，可 pin。**
+
+# ★★★★★★★★ 2026-11-11 第五百一十七章（R487–R500）：**会合锁其实返回了；卡点在它之后的未知等待**
+
+## ① 本轮推翻了上一轮自己的推测（重要）
+
+上一轮看到 `ENTRY_LOCK n=5` 与 `n=6` 落在同一个 mutex 且无 unlock，判为「自死锁」。
+本轮加了返回日志，**实测：**
+
+```text
+MUTEXKIND at lock n=6 lock=1 count=0 owner=195 kind=0
+UNLOCKWATCH n=1 mutex=0x36b9aa5c tid=199 mine=195
+LOCKRET  n=6 ret=0 tid=195 caller=/usr/lib/libosal_utm.so+0x9be
+```
+
+**⇒ 子线程 tid=199 确实解锁了 → UI 线程的第二次 lock **成功返回（ret=0）**。
+`osal_create_waitable_thread` 的「持锁→建线程→等子线程解锁→再锁」是一个**会合模式，
+它正常完成了**。上一轮的「自死锁」判断是错的。**
+
+## ② 顺带确认了 mutex 类型
+
+```text
+lock=1 count=0 owner=195 kind=0   （kind=0 = PTHREAD_MUTEX_TIMED 普通锁）
+```
+
+**⇒ 不是递归锁，之前怀疑的「递归锁被破坏」也不成立。**
+
+## ③ 那卡点在哪？——把能等的原语全装上，一个都没触发
+
+```text
+WAITPRIM sem_wait / sem_timedwait / poll / epoll_wait  →  0 命中
+（select / nanosleep / read 与 glibc 原型冲突，暂未接）
+```
+
+**⇒ UI 线程不是停在这些常规阻塞原语上。**
+
+## ④ QEMU 侧 PC 采样本轮也解出了：只看到忙等线程
+
+```text
+256 个样本全部 mode=19（SVC），集中在两处：
+   602be3b0 = ambauart_console_read+0x5c   ← 读串口
+   6014dfe8 = cxd4115_read_cycles+0x10     ← 读时钟
+```
+
+**⇒ 采样器只捕捉到**忙等**的线程，看不到真正阻塞的 UI 线程（它在 SVC 里睡眠，
+PC 落在调度器/等待队列，样本被串口和时钟的忙等淹没）。**
+**这条测量通道对「找出阻塞线程」无效 —— 必须换手段。**
+
+## ⑤ 已确认的完整事实链（本轮新增）
+
+```text
+[通] stage1 进入并转发到真身
+[通] pre1 veneer 0x923900 → 0x1d5a3d8
+[通] bl1/bl2/bl3/bl4 依次执行
+[通] bl4 → c1 (0x1c1baa4) 进入
+[通] c1 内的 osal 会合（建等待线程、子线程解锁、再锁）完整成功，LOCKRET ret=0
+[?]  之后 UI 线程再无任何探针输出（400 秒窗口）
+```
+
+**⇒ 卡点是「c1 里会合成功后、c1 返回前」或「c1 返回后 bl4 的下一条」，
+但更像是一个**没有探针覆盖的等待**。**
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v150: 2368 行 / createLayer=6
+```
+
+## ⑦ 下一步
+
+**c1（`0x1c1baa4`）在会合之后还有一条 `blx 0x1d0c0f4`（veneer → 0x52ac30，
+是另一个 mutex/once 帮助函数）。下一轮给 0x52ac30 与 `0x1d0c0f4` 的其它落点装探针，
+并用「线程名/栈」而不是 PC 采样来定位阻塞线程。**
