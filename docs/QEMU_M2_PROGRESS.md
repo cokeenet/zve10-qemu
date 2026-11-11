@@ -45436,3 +45436,87 @@ open 返回 -1。**
 
 **下一轮应当：补上 `/setting/mode/dmode`（内容按原厂语义），
 观察 init 序列是否从 1 条变成多条。这是一个**改动极小、判据清晰**的实验。**
+
+# ★★★★★★★★ 2026-11-11 第五百章（R357–R362）：**重大发现：bundle-v2 的"证明帧"本身就是合成帧**
+
+## ① 上一轮假设被证伪：原厂没有 dmode 文件
+
+```text
+/mnt/build/fw/COMPARE/extracted/ZV1M2/rootfs/setting/    ← 空目录
+全盘搜 `dmode` 文件                                       ← 0 个
+```
+
+**⇒ `/setting/mode/dmode` 是运行期生成物，不是固件自带。
+「补这个文件」的假设不成立。**
+
+## ② 本轮最重要的发现：bundle-v2 的出帧路径是 `menu_render()`
+
+读 `output/menu-dcac1e7b7239/native_entry.inc` 的 present 回调：
+
+```c
+if (packed & 0x100u) {
+    if (caller != object_base + 0x777935) return -1;
+    struct menu_state state = {packed & 7u, 1};
+    if (menu_render(&state, pixels, 640u * 480u)) return -1;   ← ★
+}
+```
+
+**而 `menu_render` 来自 `source/menu/menu_shell.c` —— 那是**自己画菜单**的实现
+（`menu_shell.c` 里有自己的 layout_box / 调色 / 绘制代码）。**
+
+**⇒ 也就是说：bundle-v2 那张 `capture-001.rgba4444`（SHA256 `d68731fe…`）
+是**合成帧**，不是 Gen5 固件的绘制路径产物。**
+
+## ③ 这与用户的目标判据 1 直接冲突
+
+```text
+判据 1：出帧必须来自 Gen5 固件自身的绘制路径，
+        不得是 menu_shell.c 或任何自绘替代品
+        （与合成帧 0c7e1c66… 不同是主要判据之一）
+```
+
+**⇒ bundle-v2 的"成功"恰恰是被判据 1 排除的那一类。**
+
+**⇒ 我此前把 bundle-v2 当作"参考实现、可复刻"是**方向性错误**：
+它证明的是「用软件 mock 画一个菜单」，不是「让固件自己画」。**
+
+## ④ 真正的参考实现是 a7c2-re（不是 bundle-v2）
+
+```text
+a7c2-re 的做法：hook 真实 GPE 请求 → 软件光栅按请求绘制 → present 复制
+                （GPE.clear.slow 336 次、present 54 次，都是固件自己发的请求）
+bundle-v2 做法：直接调 menu_render() 画菜单（不经过固件请求）
+```
+
+**⇒ 这两条路完全不同：
+a7c2-re 是「固件发请求，我们按请求画」；
+bundle-v2 是「我们直接画」。
+前者可能满足判据 1，后者不可能。**
+
+## ⑤ 因此对当前困境的新理解
+
+**我们的 ZV1M2 固件现在：
+- `drawFramebuffer` 被执行（我们自己驱动的）
+- 但**从未发出任何真实的 GPE 绘制请求**（`DFBHOOK call` 有，`GPE` 请求无）
+
+**⇒ 与 a7c2-re 相比，我们缺的正是「固件自己发绘制请求」这一步。
+而这正需要菜单屏/控件树真正建立起来。**
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v114: 2654 行 / createLayer=6
+```
+
+## ⑦ 判断
+
+**本轮把一个方向性误解纠正过来了：**
+
+```text
+之前：bundle-v2 出过帧 ⇒ 它的做法可行 ⇒ 复刻它
+实际：bundle-v2 的帧是 menu_render() 画的 ⇒ 它是合成帧 ⇒ 判据 1 明确排除
+      真正可参考的是 a7c2-re（固件发 GPE 请求 → 软件光栅响应）
+```
+
+**这个纠正很重要：它意味着此前基于 bundle-v2 的若干「应该也能出帧」的推论都不成立。**
