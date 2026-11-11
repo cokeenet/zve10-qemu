@@ -44513,3 +44513,79 @@ C. 改用 ZV-E10 原厂 UI 出帧（可显示菜单，但不满足「Gen5 自身
 QEMU 实例   0
 基线        v106: 2647 行 / createLayer=6
 ```
+
+# ★★★★★★★★★ 2026-11-11 第四百八十七章（R289–R293）：**架构对照定论 + 输入链路确认可用 + MENU 键语义更正**
+
+## ① 输入链路：完全可用（本轮实测）
+
+```text
+INJECT_KEY n=1 qid=0x7a0020 key=0x1ab status=0x1 send=0
+INJECT_KEY n=2 qid=0x7a0020 key=0x1ab status=0x0 send=0
+
+RCVC_RET qid=0x7a0020 result=0 size=20
+  bytes=ab010000 00000000 01000000 00000000 00000000 tid=129
+RCVC_RET ... bytes=ab010000 00000000 00000000 ... tid=129
+```
+
+**⇒ 20 字节键消息格式、press/release、投递全部正确，输入线程 `tid=129` 确实收到。**
+
+## ② 更正：MENU 键不是「打开菜单」
+
+a7c2-re 的验证表（原文）：
+
+```text
+MENU 0x1ab  →  "返回上层；最外层退出进入未完成boot/shooting"
+```
+
+**⇒ 在参考实现里 MENU 是**退出/返回**，打开菜单靠的是它自己的 `MENU_APPLY` 主动调用。
+我上一轮假设「注入 MENU 键就能出菜单」被既有做法否证。**
+
+## ③ 架构对照定论（本轮最重要）
+
+```text
+项目                 ZV-E10        ZV1M2(Gen5)
+viewUnified*.so       7 个文件     0 个
+appFw.so              不存在       64 MB
+CautionConfig.so      17.7 MB      不存在
+libObj.so             cfdc59b9…    4cd654f1…
+```
+
+**⇒ 两代 UI 的代码组织完全不同：**
+
+```text
+ZV-E10 : 界面分散在 viewUnified1..8 + CautionConfig（参考实现走的就是这条）
+ZV1M2  : 界面全部内联在 appFw.so（64 MB 单文件）
+```
+
+**⇒ 参考实现（a7c2-re 与 bundle-v2）的所有具体地址、函数定位方法
+都不能迁移到 ZV1M2，因为它们操作的是 viewUnified 的对象，我们根本没有那个模块。**
+
+## ④ 由此得到的明确结论
+
+```text
+[已通]  Gen5 六模块加载、Application_System_Init、updateFrame、drawFramebuffer
+[已通]  软件后端全部就位（present/clear/engine_wait/软件 LZ77）
+[已通]  VDF 第一跳握手（0x1706085）双向成功
+[已通]  输入链路（0x7a0020 键消息）双向成功，可注入任意合法键
+[阻]    dataflow 层（0x80003b）需合法 DataflowInfraMsg 报文
+[阻]    菜单屏从未被请求（create_screen 0 次）
+[阻]    资源未解码 → panel 无内容 → 零像素
+```
+
+**而「菜单屏请求」这一环，在 ZV1M2 里必须由 appFw 自身触发；
+参考实现靠 viewUnified 的 apply 入口触发，那条路对我们不存在。**
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v107: 2663 行 / createLayer=6
+```
+
+## ⑥ 剩余可行路径（都已尝试或成本很高）
+
+```text
+1. 解 appFw 自身的屏生命周期（无符号、64 MB、无参考做法）——成本最高
+2. 补通 dataflow 协议后再看是否会自然请求菜单屏——层数未知
+3. 直接驱动 create_screen（虚调用需先定位 vtable，而 vtable 在 64 MB 无符号文件里）
+```
