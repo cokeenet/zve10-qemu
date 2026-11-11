@@ -43967,3 +43967,89 @@ QEMU 实例   0
 
 **改用 `osal_valloc_msg_wait(qid, size)` 取得驱动池内的消息缓冲，
 填入已解出的字段（`[-4]=0x61003c`、`[+4..5]=[+6..7]=通道号`），再发送。**
+
+# ★★★★★★★★★ 2026-11-11 第四百七十九章（R249–R253）：**参考实现出帧的真相——它用的是 ZV-E10 原厂 UI，不是 Gen5**
+
+## ① 直接查看了参考 bundle 的出帧现场
+
+`bundle-v2/zve10-qemu-linux-x86_64-v2/output/menu-dcac1e7b7239/`：
+
+```text
+capture-001.rgba4444   614400 B，非零 381064（62.0%）
+capture-001.png        640x480，可见完整菜单
+```
+
+**图像内容（已目视确认）：**
+
+```text
+顶部 6 个页签（相机1 / 相机2 / 地球 / 播放 / 手提包 / ★）
+标题   画質/画像サイズ1          1/11 ▶
+高亮行 🔒ファイル形式            JPEG
+       🔒JPEG画質                ファイン
+       🔒JPEG画像サイズ           S: 6.0M
+       🔒横縦比                   3:2
+       パノラマ: 画像サイズ        標準
+```
+
+**这是 ZV-E10 原厂日文菜单 —— 不是 Gen5 新菜单。**
+
+## ② 决定性证据：参考实现加载的库与我们的完全不同
+
+```text
+              参考实现                       我们（PORTED4）
+libObj.so     cfdc59b9…（ZV-E10 原厂）  4cd654f1…（ZV1M2 Gen5）
+UI 模块       viewUnified2.so + CautionConfig.so    appFw.so
+appFw.so      不加载                     f08c9eb7…（64 MB）
+```
+
+**`menu_build.py` 里钉死的三个 ELF 哈希全部是 ZV-E10 原厂：
+`libObj cfdc59b9` / `viewUnified2 bdf0690f` / `CautionConfig 5ad8746a`。**
+
+## ③ 参考实现的 result.json 也不是「成功」
+
+```text
+ok     = False
+error  = RuntimeError: Original menu frames kept changing
+mode   = original
+original_menu_row_verified        = False
+native_entry_verified             = False
+original_panel_input_verified     = False
+frames = 9（native_frame 22/23 交替）
+```
+
+**⇒ 它跑出了真实菜单帧，但**自检未通过**：帧在变化、行/输入都未验证。**
+
+**这与 `docs/menu-validation.json` 的记载一致（original 模式 `passed`，但 shoot→menu 与 capture 未验证）。**
+
+## ④ 这一条信息改变了问题的性质
+
+**参考实现能在同一 QEMU 里画出**真实菜单**，用的是 ZV-E10 原厂 UI 路径 —— 那条路径不依赖 DMP/VDF 握手。**
+
+**而 Gen5 的 `appFw`/`libObj` 设计上依赖 GPU 驱动的 DMP 服务端
+（`vdf_if_port_init` → 等 `proc_connect_comp`），我们的机器模型里没有这个服务端。**
+
+**⇒ 这不是「再补一个消息」能解决的单点缺失，而是**两代 UI 的架构依赖不同**：**
+
+```text
+ZV-E10 viewUnified  : 自绘，不需要 GPU 服务端
+ZV1M2 appFw/libObj  : 把绘制交给 DMP 服务端，自身只发命令
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v99: 2632 行 / createLayer=6
+```
+
+## ⑥ 结论与选项
+
+```text
+A. 继续补 DMP/VDF 服务端  —— 需要在 QEMU 侧实现 GPU 驱动的 DMP 协议，
+                              或让固件内部的 DmpServer 真正跑起来；工作量与风险都很大
+B. 改用 ZV-E10 原厂 UI 路径 —— 已验证可出真实帧，但那不是 Gen5 菜单（不满足目标 1）
+C. 承认当前架构下 Gen5 绘制链无法闭合，如实记录
+```
+
+**下一步先验证 A 的可行性：查 Gen5 的 DMP 服务端是否在本进程内存在（`dmpNative::Singleton<VdfIf>`
+等构造函数是否被调用过），若存在则应能自启动；若不存在，则 A 需要新建服务端。**
