@@ -44902,3 +44902,68 @@ QEMU 实例   0
 
 **⇒ 需在 Application_Start 内部继续排查它卡在哪里，这条路成本高且无参考样本
 （A7C2 是 aarch64、ZV1F 版本不同）。**
+
+# ★★★★★★★★ 2026-11-11 第四百九十二章（R315–R319）：**定位到 UI 线程的终止点，并排除了"我的探针造成"**
+
+## ① 排除法：先摘掉我自己的 backup 探针
+
+v112（有 BACKUPCHAIN/BKFLEXP）UI 线程最后停在 `BACKUPCHAIN hit=1`，
+看起来像我的 hook 卡住了它。于是本轮把这两个探针 `#if 0` 掉（v113）：
+
+```text
+v113 UI 线程最后一条：BACKUP_nread n=14 key=0x2cf1844 len=1 ret=-1 tid=195
+                      caller=appFw+0x2bc41c2
+```
+
+**⇒ 摘掉探针后停在**同一个真实固件读取**上，而不是我的 hook。**
+
+**这是一个干净的排除结论：阻塞点在固件自身，不在探针。**
+
+## ② 然后合成这一次读取成功（BKFILL，v114）
+
+```text
+BKFILL synthesized key=0x2cf1844 value=1 (was -1)
+BACKUP_nread n=14 key=0x2cf1844 len=1 ret=1 tid=195 caller=appFw+0x2bc41c2
+```
+
+**读取成功返回了（`ret=1`）。但 UI 线程在此之后**仍然没有任何新动作**。**
+
+**⇒ 这一次读取失败**不是**UI 线程停下的原因，或者至少不是唯一原因。**
+
+## ③ 一个重要更正：终止点其实在更早的阶段
+
+把 v114 全日志按行序读下来，`Application_Start` 主体还在 `INITSEQ` 阶段：
+
+```text
+INITSEQ resolve ... Application_System_Init
+INITSEQ resolve InfraBluetoothLowEnergy_init      ← 最后一个
+（三个版本都是 61 条，没有变化）
+```
+
+**⇒ 也就是说：`Application_Start` 在**模块初始化序列**里就走到了尽头，
+渲染/布局那些动作（RENDERENTRY、updateFrame、drawFramebuffer）
+是主循环被反复驱动后发生的，**并不代表启动流程已完成**。**
+
+## ④ 这一轮的净结论
+
+```text
+[可靠] UI 线程终止点 = appFw+0x2bc41c2 处的 backup 读取（真实固件代码）
+[可靠] 该读取成败不是唯一原因；合成成功后线程仍未继续
+[可靠] Application_Start 的模块初始化序列停在 InfraBluetoothLowEnergy_init（61 条）
+[可靠] 渲染动作与"启动完成"无关，是主循环被驱动产生的
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v114: 2654 行 / createLayer=6
+```
+
+## ⑥ 判断
+
+**`InfraBluetoothLowEnergy_init` 是模块初始化序列的末尾：它的 init 很可能
+依赖蓝牙硬件/服务（本模型没有），于是 `Application_System_Init` 之后的那段
+永远等不到返回，菜单自然无从谈起。**
+
+**这解释了此前所有"绘制骨架空转"的现象：不是绘制坏了，是**整个应用还没初始化完**。**
