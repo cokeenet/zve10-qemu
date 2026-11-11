@@ -47921,3 +47921,87 @@ QEMU 实例   0
 **下一步：从「Gen5 appFw 需要 62 个仅 Gen5 libObj 提供的符号、
 **而旧 libObj 提供 151 个共同符号」这个结构出发，做一个**真正按符号族分流的 shim**，
 **让 Gen5 侧符号走 libOb5、平台侧符号走旧 libObj。**
+
+# ★★★★★★★★ 2026-11-12 第五百三十二章（R746–R765）：**真的做出了 `libObjShim.so`，但它没能救回 appFw**
+
+## ① 本轮按参考日志补上了唯一缺失的组件
+
+**生成方式（不是手写 196 个 stub，而是脚本化）：**
+
+```text
+/mnt/build/m2qemu/shim_syms.json     196 个需要走 Gen5 的符号
+/mnt/build/m2qemu/gen_shim_asm.py    → shim_stubs.S（196 个 ARM 转发桩）
+/mnt/build/m2qemu/gen_shim_c.py      → shim.c（构造函数从 libOb5 填 196 个槽）
+构建产物 libObjShim.so  77,316 字节，导出 196 个符号
+```
+
+**路由规则（由实测得出，不是猜的）：**
+
+```text
+appFw 需要且 libObj(任一代)提供的符号 = 213
+   仅 Gen5 提供                     = 62
+   族规则属 ux/GRM/BMP/stella/libra/alcor = 134
+   ⇒ 196 个必须走 Gen5，其余 17 个留给旧 libObj
+```
+
+## ② 三种布局都试了，全部失败
+
+| 布局 | 结果 |
+|---|---|
+| 仅改名（旧占原名 + libOb5） | 1867 行，createLayer=0，LIBOBJ_SYM=19，appFw 未加载 |
+| + libObjShim（shim 在 preload 里） | 1829 行，LIBOBJ_SYM=19，appFw 未加载 |
+| + libOb5 也进 preload | 1893 行，LIBOBJ_SYM=19，updateFrame=2，appFw 仍未加载 |
+
+**共同现象：**
+
+```text
+im.elf 反复 dlopen /usr/lib/libObj.so 19 次，全部拿到旧库（0x40217f0）
+libOb5 从未被加载（日志里 0 次）
+appFw.so 从未被 dlopen（0 次）
+```
+
+## ③ 由此得到一个明确的结论
+
+**参考方能成功，不是靠"改名 + shim"这套静态布局就能复现的。**
+
+```text
+它的日志顺序是：
+   Step 0  预载 OSAL + 旧 libObj + 旧 libMWF
+   Step 1-5 显式 dlopen /log/g5/libOb5.so → libmp5.so → libObjShim.so
+                      → AdjChkConfig.so → libappFwBoot_g5.so
+   Step 6  dlopen appFw.so
+```
+
+**关键差别：它**主动 dlopen 了 Gen5 那一整套**，并且 Gen5 的库放在 `/log/g5/` 这个
+**独立路径**下（不是 `/usr/lib`）。**
+
+**我们的做法是把 libOb5 塞进 `LD_PRELOAD` —— 这会让它在**全局作用域里和旧库并列**，
+而 im.elf 之后的 `dlopen("libObj.so")` 仍然命中旧库，
+Gen5 的 `libOb5` 反而成了"没人用的影子"。**
+
+## ④ 换成参考的加载形态（下一轮的执行方案）
+
+```text
+1. 把 Gen5 闭包放到独立目录，例如 /log/g5/：
+       libOb5.so / libmp5.so / libappFwBoot_g5.so / AdjChkConfig.so / libObjShim.so
+2. LD_PRELOAD 只留：旧 libObj.so + 旧 libMWF.so + OSAL 三件 + g5shim + argtrace
+3. 在 bootin 启动后、appFw dlopen 之前，由 argtrace 主动 dlopen
+   /log/g5/libOb5.so → libmp5.so → libObjShim.so → AdjChkConfig.so → libappFwBoot_g5.so
+4. 最后 dlopen appFw.so
+```
+
+**这与日志的 [Step 0] / [Step 1-5] / [Step 6] 一一对应。**
+
+## ⑤ 基线已恢复
+
+```text
+移除 libOb5/libObjShim/libmprctrl/libBizFw/libBizFw2，恢复 Gen5 libObj.so(4cd654f1)
+v186: 2490 行 / createLayer=6 / LIBOBJ_SYM=24 / updateFrame=1 / Application_Start ENTER=1
+```
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v186: 2490 行 / createLayer=6 / LIBOBJ_SYM=24
+```
