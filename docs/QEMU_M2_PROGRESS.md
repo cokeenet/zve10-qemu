@@ -45037,3 +45037,60 @@ QEMU 实例   0
 **R319 我把 `INITSEQ resolve ...` 读成「初始化序列走到某个模块」，
 实际上那只是 `dlsym` 的**解析**记录，与是否调用无关。**
 **本轮用 UXLIFE + SSM 两个独立探针纠正了这一点：`Application_System_Init` 从未被调用。**
+
+# ★★★★★★★★ 2026-11-11 第四百九十四章（R326–R329）：**把断点再前移到 bootin.elf 内部**
+
+## ① dlopen appFwBoot 之后的确切序列
+
+```text
+1748  ARGTRACE dlopen path=appFwBoot.so flags=0x101 -> 0x98ad8
+1749  INITSEQ resolve Application_System_Init
+1750  ARGTRACE hooked Application_System_Init = 0x11135271
+1751  ARGTRACE init enter arg=0x4126601 str="AppConfig.so"
+1752  DEVOPEN path=/dev/gpio ret=-1 tid=180
+```
+
+**⇒ `bootin.elf` 确实 dlsym 到了 `Application_System_Init` 并安装了 hook，
+但随后控制流进入的是 **`AppConfig.so` 的 init**，而不是调用它。**
+
+## ② 两个可能，本轮无法区分
+
+```text
+A. bootin 解析 Application_System_Init 只是"预先绑定"，真正调用在 AppConfig 之后
+   —— 那么阻塞点在 AppConfig.so 的 init 里
+B. bootin 根本没有调用它，启动链在别处结束
+```
+
+**日志在这之后只剩 `/proc/self/task/*/wchan|stat` 之类的心跳读取，
+没有任何 AppConfig init 的返回记录 ⇒ 无论 A 还是 B，**它都没有返回**。**
+
+## ③ bootin.elf 本身是 stripped（65 个 dynsym）
+
+```text
+ELF 32-bit LSB executable, ARM, EABI5, stripped
+dynsym 仅 65 项
+```
+
+**⇒ 无法靠符号定位它的主流程；只能靠外部探针。**
+
+## ④ 约束
+
+```text
+QEMU 实例   0
+基线        v114: 2654 行 / createLayer=6
+```
+
+## ⑤ 判断
+
+**断点已连续四轮前移，每次都更靠近进程起点：**
+
+```text
+第一轮：drawFramebuffer 空转
+第二轮：updateFrame 遍历 5 panel 但无内容
+第三轮：VDF 握手阻塞（已打通）
+第四轮：Application_System_Init 从未被调用
+本轮  ：断点在 bootin.elf 内部 / AppConfig.so init 未返回
+```
+
+**这意味着：此前所有"绘制链已通"的结论，都是**在启动流程根本未完成的前提下**观察到的现象。
+绘制函数被执行，是因为主循环被我们的探针反复驱动，而不是固件自己走到那一步。**
