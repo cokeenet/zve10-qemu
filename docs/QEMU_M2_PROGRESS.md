@@ -48077,3 +48077,71 @@ dlopen 序列里只有 libObj.so，**appFwBoot 从未被 dlopen**
 QEMU 实例   0
 基线        v189: 2483 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-12 第五百三十四章（R786–R790）：**路线判断（本轮不跑实验，只整理已测事实以定方向）**
+
+## ① 两条路线都已试过，都失败，且失败原因不同
+
+```text
+路线 A（当前部署）：只用 Gen5 libObj（4cd654f1）占 /usr/lib/libObj.so
+  结果：启动链全通 —— bootin/im/appFwBoot/appFw 全部加载、2730 构造器执行、
+        Main 走完、Application_Start 进入、createLayer=6、updateFrame 正常
+        ⇒ 唯一缺的是：固件不产生绘制请求（GRMFILL/BMAPPROBE/fbrm 全 0，
+          且已证明那两个 GRM 入口本就无调用方）
+  结论：这条路线**已经走到"只差绘制"的位置**
+
+路线 B（本次尝试）：旧 libObj 占原名 + Gen5 闭包改名 + 自建 libObjShim
+  结果：三种静态布局 + 惰性触发全部失败
+        - 构造期加载过早（Fsys_Open 未就绪）
+        - 旧库占名后 appFwBoot 根本不 dlopen（1,728 行即停）
+  结论：这条路线**连启动链都进不去**
+```
+
+## ② 因此路线 B 应当放弃，回到路线 A
+
+```text
+B 的唯一价值是"照抄参考日志"，但它在**我们这套 im.elf/appFwBoot** 上
+不成立 —— 参考方的 im.elf 与 shim 配合方式我们无法复现（shim 是闭源的）。
+继续投入 B 只会重复已经三次失败的结构。
+```
+
+## ③ 路线 A 当前的确切缺口（已测准，不是推测）
+
+```text
+appFw 导入的 GRM 系列只有 5 个：
+    GRM_fbrmSetScreenPreference      ← FBRMPROBE 命中 0
+    GRM_fbrmCheckUpdateFinished      ← FBRMPROBE 命中 0
+    GRM_fbrmRegisterTriggerFrameworkCb
+    GRM_bitmapCreateFromPhys
+    GRM_bitmapRelease
+```
+
+**这五个**全都没有被调用**，而它们正是「分配画布 → 注册触发 → 检查帧就绪」的链条。**
+**⇒ appFw 的 UI 路径在**创建任何 bitmap 之前**就停下了。**
+
+## ④ 这与已定位的卡点完全吻合
+
+```text
+menuBuilder(0x723aac) → switchBank 第 7 次 (self=nil, bank=5)
+    → 真实现 libObj+0x1a7280 被进入
+    → 内部第一个调用 0x1a4d64 之前就停住（循环 poll 0x1a3960 命中 0）
+```
+
+**⇒ 缺口位置与"没有 bitmap"完全自洽：UI 引擎还没走到分配绘图资源那一步。**
+
+## ⑤ 下一轮的方向（在路线 A 上继续）
+
+**不再折腾库布局。改为把 `0x1a7280` 内部那两个调用**同时**探明：**
+
+```text
+1. 用**单一探针**（只装 0x1a4d64 一个）重复 ≥5 次，先确认第 7 次可达率
+2. 该探针的 pro_len 已修正为 10（8 会切断 pop.w）
+3. 若达得到，就看 0x1a4d64 是否被进入 —— 这是链条上最后一个可 pin 的点
+```
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v189: 2483 行 / createLayer=6 / LIBOBJ_SYM=24
+```
