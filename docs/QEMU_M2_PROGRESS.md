@@ -46922,3 +46922,64 @@ QEMU 实例   0
 **1. 回退 `sugi_read` 全 1 与 `GPE_COMPLETE`（改回他们的做法），各跑一次对照。**
 **2. 用他们的 present 参数表与 Morgan 公式，把 `present` 后端改成能产出可校验帧。**
 **3. 按 06-input.md §2 重新核对输入注入格式。**
+
+# ★★★★★★★★ 2026-11-11 第五百一十九章（R521–R535）：**厘清「他们到底做到了什么、我们还差多少」**
+
+## ① 两份"新菜单"根本不是同一件事（必须先分清）
+
+| | SONY-FW/zve10-qemu（公开可读） | 那份闭源 Gen5 日志 |
+|---|---|---|
+| 运行哪个 appFw | **ZV-E10 自己的** | **ZV1M2 的**（64,273,528 字节 / 2730 构造器，与我们部署的完全一致）|
+| A7C2 appFw.so | 只当**数据表**读 44×52 布局，从不加载 | 不涉及 |
+| 新菜单怎么出来 | `menu_render()` **自绘**整帧 | 未公开 |
+| 用户说的"开机选语言" | **该仓库没有**（已 grep 确认仅字体引用）| 是闭源方做的 |
+
+**⇒ 用户提到的「基于这个仓库完成开机引导」的那份工作，
+用的 appFw 与我们**同一份**，这条线与我们才是同一目标。**
+
+## ② 我们与"闭源方"的差距，已可量化到**最后一层**
+
+```text
+已完成（实测）：
+  ✓ bootin.elf(3eff4684) → appFwBoot.so(187b335c) → im.elf(9d6da003) 全 Gen5
+  ✓ dlopen appFw.so(f08c9eb7) 成功，2730 构造器与我们一致
+  ✓ Main 走完全流程（initializeArena / cwd / setDatabase(global.xdb)=1 / setFont）
+  ✓ Main 末步 blx r4 → Application_Start
+  ✓ Application_Start 进入，createLayer=6，updateFrame 5 个面板，drawFramebuffer 执行并返回
+  ✓ stage1(0x54ef74) 真身执行，pre1/pre2… 定位到 appFw+0x1d5a3d8
+  ✓ osal 会合（建等待线程→子线程解锁→主线程再锁）实测 **LOCKRET ret=0**
+  ✗ 但会合之后 UI 线程 400 秒内无任何探针输出
+```
+
+**⇒ 差距不是"启动链"，而是**会合完成后那一步到 `menuBuilder(0x723aac)` 之间的某处**。
+
+## ③ 本轮新增两个具体的待补探针（都已确认缺失）
+
+```text
+1. pthread_join —— 我们**根本没有拦**（他们拦了）
+   libosal_utm+0x9d2 就是 blx pthread_join@plt，会合后可能在这里等
+2. osal_wai_sem_tmo 的**无超时**分支已拦，但会合后的路径没有再打点
+```
+
+## ④ 关于「激进一点，直接调用 appFw 的东西」
+
+**技术上完全可行，而且我们已经在做** —— 本轮的 pre1 定位就是直接改 veneer 字面量
+让固件自己的调用被重定向到我们的桩。
+
+**但必须明确边界：**直接调用 `menuBuilder(0x723aac)` 属于**代码注入**，
+产出的帧仍是 Gen5 appFw 自己画的（满足判据 1），只是**触发方式是我们调用而非固件自发**。
+这与 `menu_shell.c` 的自绘有本质区别 —— 后者根本不执行 Gen5 代码。
+
+**下一轮就做这件事：**
+```text
+在容器 wrapper 里（已有 appFw base 与其自身栈），
+直接 bl menuBuilder(0x723aac) 一次，看是否产生 GPE 请求（GRMFILL/BMAPPROBE 是否变非 0）。
+这是最省时的"能不能画"判定。
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v150: 2368 行 / createLayer=6
+```
