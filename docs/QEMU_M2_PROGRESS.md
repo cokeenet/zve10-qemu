@@ -47147,3 +47147,88 @@ QEMU 实例   0
 
 **给 `switchBankEth` 的真实现入口 `0x1a72aa` / `0x1a39b2` 装探针
 （它们是 libObj 内部函数，可用入口 pin 方式），定位第 7 次调用卡在内部哪一步。**
+
+# ★★★★★★★★ 2026-11-11 第五百二十二章（R581–R600）：**直接调 builder 的链已通，但真 bank 切换从未执行；输入注入确认入队无消费者**
+
+## ① 本轮最重要的两个实测结论
+
+### 1.1 `DIRECTMENU` 的完整轨迹（v161/v163，520 秒窗口）
+
+```text
+DIRECTMENU start base=… tid=117
+DIRECTMENU pre-reports
+DIRECTMENU post-reports
+DIRECTMENU calling 0x723aac
+[AS]RM switchBank ENTER n=6 self=0x43 bank=3
+RM switchBank CALL   n=6 self=0x43 bank=3
+RM switchBank LEAVE  n=6 ret=1
+[AS]RM switchBank ENTER n=7 self=(nil) bank=5
+（520 秒内再无任何 LEAVE，也无异常记录）
+```
+
+**⇒ 不是"慢"，是**真的停住了**（长窗口已排除"还在算"）。**
+
+### 1.2 但真 bank 切换函数**一次都没被进入**（关键负结果）
+
+```text
+我给 libObj+0x1a7280 与 +0x1a72a2 装了入口探针：
+    BANKREAL bank_1a7280 installed at 0xaae6280 wrote=8
+    BANKREAL bank_1a72a2 installed at 0xaae62a2 wrote=10
+    （命中数：0 / 0）
+
+⇒ switchBankEth(0x10334c) 的 b.w 目标是 0x1a72aa，
+  而 0x1a72aa / 0x1a7280 这两个入口**从未被走到**。
+```
+
+**⇒ 第 7 次「ENTER 后无 LEAVE」发生在我们**自己的 wrapper 内部或者
+在 `0x10334c` 到 `0x1a72aa` 之间，而不是在真实现里。**
+**（这也说明我之前"卡在真实现"的表述需要收回。）**
+
+## ② 输入注入：确认入队，但无消费者（判据 4 的直接证据）
+
+```text
+INJECT_CP alloc=0 msg=0x47b5f4c
+INJECT_CP statq_pre  ret=0 used=0
+INJECT_CP send press=0        ← 成功
+INJECT_CP send release=0      ← 成功
+INJECT_CP statq_post ret=0 used=2   ← 队列里确实有两笔
+```
+
+**而 `0x5503e0` 在本轮日志里**只有 STATQ（统计），没有任何 RCVC（接收）：**
+
+```text
+STATQ n=19 qid=0x5503e0 used=0 tid=195
+STATQ n=20 qid=0x5503e0 used=2 tid=195
+（无 RCVC_RET）
+```
+
+**⇒ MENU 键确实进了 App32 队列，但**没有消费者把它变成 UI 动作**。
+对照 `06-input.md §2`，这正是 App32 与 Infra20 两条前端之一的预期行为差异点。**
+
+## ③ 另一条已确认的红绘策略钩子（供下一轮使用）
+
+```text
+0x54f548 用 osal_stat_msgq 的返回值与 200 / 30 / 4 三个阈值比较，
+只有落到 5 以下的分支才允许"完整更新"（即真正重绘）。
+而 0x5503e0 现在的 used=2 —— 恰好落在 <5 区间。
+```
+
+## ④ 约束
+
+```text
+QEMU 实例   0
+基线        v163: 2372 行 / createLayer=6
+```
+
+## ⑤ 下一步（三个并列方向，按代价排序）
+
+**A. 检查 `0x10334c` 到 `0x1a72aa` 之间到底走了哪条：**
+**   `0x10334c` 是 `mov r3,r0; push; mov r2,r1; ...; b.w 0x1a72aa`，
+**   但 `0x1a72aa` 的第一条是 `cbz r2`（r2=bank）——若 bank=5 非零则继续，
+**   否则跳到 0x1a72c4 返回。第 7 次 bank=5 非零，所以应该继续。**
+**   需要确认 `b.w` 是否真的跳到了 `0x1a72aa`（而不是被我的探针改写）。**
+
+**B. 给 `0x5503e0` 注册真正的消费者（把 MENU 键转成 UI 动作），满足判据 4。**
+
+**C. 回退机器模型里两处比参考实现更激进的改动（sugi_read 全 1 / GPECOMPLETE 全放行），
+**   看 `GRMFILL` 是否从 0 变非 0。**
