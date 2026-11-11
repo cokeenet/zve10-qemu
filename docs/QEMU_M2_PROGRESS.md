@@ -44823,3 +44823,82 @@ QEMU 实例   0
 
 **因此本 goal 的判据 1（出帧来自 Gen5 自身绘制路径）在当前条件下无法达成，
 除非找到本固件自己的菜单入口——而它已被证明不是"我没搜到"，而是"从未被调用"。**
+
+# ★★★★★★★★ 2026-11-11 第四百九十一章（R311–R314）：**资源层从未启动——比"布局没请求"更根本的一层**
+
+## ① 直接测量：固件打开了哪些文件
+
+v112 全日志 130 次 `DEVOPEN`，去掉 `/proc`、`/log`、`/dev` 后只剩：
+
+```text
+/setting/mode/dmode
+/usr/kmod/cec.ko / hdmi.ko / liro.ko / usbg_buspower.ko / wlanMemoryAllocator.ko
+```
+
+**⇒ `usr/share/app/` 下的资源（LayoutMaster / image_00..02 / string_*.uxc / 字体）
+**一个都没有被打开过（0 次）。**
+
+## ② 与参考实现对照，差异不在资源、而在模块清单
+
+```text
+我们的 init 加载：backup dmm grm_gles grm_ma kikilog osal_uipc osal_ulogio
+                  osal_utm stream stream2 udate utimer
+参考实现加载    ： 同上 ＋ dma330_stub.ko，且少 udate
+```
+
+**`dma330_stub.ko` 我们曾试过两次（R163、R190），每次都让运行塌到 805 行
+（`createLayer` 消失）。但那两次是在**别的上下文/别的 init**下试的，
+现在资源层被证明完全未启动，值得重新评估这个差异。**
+
+## ③ 参考实现自己也没有打开 usr/share/app
+
+```text
+grep '/usr/share/app' → 0 次
+```
+
+**⇒ 说明日文菜单的资源打开是靠**用户态 libObj 内部**做的，而不是 VFS 层可见的 open；
+或者它的页面已经用过 `mmap`/预加载。**
+
+**⇒ 我们这边 `0 次` 也不必然代表"资源层未启动"，可能只是探针看不全。**
+
+## ④ 本轮确实得到的两条新事实
+
+```text
+1. Application_Start 只有 ENTER，没有任何 RETURN 记录 ⇒ 它从未返回
+2. WidgetLayouter 生命周期 0 次；genID 只被调用 4 次（AAA/BBB/CCC/DDD）
+```
+
+**⇒ 启动链停在 Application_Start 内部，尚未走完首屏之后的流程。**
+
+## ⑤ 我对这一轮的诚实评价
+
+**我在"资源文件没被打开"这个观测上花了不少轮次，但它有歧义
+（探针只 hook 了 libc `open`，资源也可能经 `fopen`/`stat`/`mmap` 访问）。
+因此它**不足以**作为"资源层未启动"的结论。**
+
+**真正可靠的只有第 ④ 条：Application_Start 从未返回。**
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v112: 2664 行 / createLayer=6
+```
+
+## ⑦ 结论
+
+**本 goal 118/300 轮。可靠的已验证结论是：**
+
+```text
+✓ 启动链走到 Application_Start 内部（未返回）
+✓ 6 个基础图层 createLayer 完成
+✓ updateFrame / drawFramebuffer 各执行
+✓ VDF 第一跳握手双向成功
+✓ 输入链路双向成功（App32 入队 used=2）
+✓ WidgetLayouter 生命周期 0 次；genID 仅 4 次
+✗ 菜单屏从未被请求
+✗ 零像素
+```
+
+**⇒ 需在 Application_Start 内部继续排查它卡在哪里，这条路成本高且无参考样本
+（A7C2 是 aarch64、ZV1F 版本不同）。**
