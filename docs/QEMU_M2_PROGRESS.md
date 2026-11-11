@@ -46268,3 +46268,77 @@ QEMU 实例   0
 2. 补进 preload，观察 appFw 是否因此能过 constructor 阶段
 3. 判据：stella 构造器数、MAINPROBE 是否出现 return
 ```
+
+# ★★★★★★★★ 2026-11-11 第五百一十一章（R429–R437）：**两处签名错位被修正后，appFwBoot::Main 全流程通过**
+
+## ① 本轮做出的两个实质修改
+
+### 1.1 新增 `g5shim.so`（最小符号补齐，8 行代码）
+
+```c
+int infra_wrapper_bb::adf_ext_type(...)      { return -1; }   /* 无硬件后端 */
+int infra_wrapper_imaging::set_user_matrix(...) { return -1; }
+```
+
+**依据：全盘测量（R420-R428）证明 appFw 的真缺口只有这 2 个符号
+（另 2 个是 WEAK 可空），其余 600 个"缺口"都由部署树已有库满足。**
+
+### 1.2 修正两处**我自己写错的 interposer 签名**（这才是本轮关键）
+
+```text
+错误写法：  setDatabase(void *self, const char *path)
+真实签名：  setDatabase(const char *path)              ← static member，只收一个指针
+
+错误写法：  sys_setFontNameWithNamespace(void *self, unsigned short ns)
+真实签名：  sys_setFontNameWithNamespace(unsigned short ns)   ← 只收一个 u16
+
+依据（Main 的反汇编）：
+  1522  blx UXEngine::resmgr()      ; r0 = ResourceManager*
+  1526  ldr r0, = "global.xdb"      ; ★ r0 被字符串覆盖
+  152a  blx setDatabase             ; 所以只传了一个参数
+```
+
+**症状对照：**
+
+```text
+v118（错误签名）：MAINTRACE setDatabase self=0xcf547b9 path=(null)   ← 参数全错位
+v120（正确签名）：MAINTRACE setDatabase path=global.xdb RETURN 1     ← 正确
+```
+
+## ② 修正后 `appFwBoot::Main` 的完整执行轨迹
+
+```text
+MAINPROBE enter n=1 tid=195
+MAINTRACE initializeArena tid=195                      ✓
+MAINTRACE setCurrentDirectory path=/usr/share/app/     ✓
+MAINTRACE setDatabase path=global.xdb RETURN 1         ✓  ← 数据库加载成功
+MAINTRACE setFontNameWithNamespace ns=51               ✓
+（随后进入 Main 的最后一步 blx r4）
+```
+
+**⇒ Main 的所有命名调用**全部成功**，包括资源数据库 `global.xdb`。**
+
+## ③ 这一轮的方法论意义（必须记下）
+
+**我的 interposer 用错签名会**主动破坏被拦截的调用**——
+`setDatabase` 原本能成功（`RETURN 1`），但在 v118 里因为我多传了一个参数，
+它收到了 `path=NULL`。**
+
+**这与 R199/R202（探针阻塞执行链）、R347（反汇编对齐误判）属于同一类：
+**测量手段本身破坏了被测对象。**
+本会话累计第 **7** 次同类问题。**
+
+## ④ 约束
+
+```text
+QEMU 实例   0
+基线        v120: 2658 行 / createLayer=6
+```
+
+## ⑤ 下一步
+
+**Main 已走完，控制权交给它的回调（`blx r4`）。下一步是确认该回调是否
+进入 `Application_Start` 主循环，以及之后为何仍只有 4 个 genID、0 个 GPE 请求。**
+
+**但本轮已经把「Main 卡住」这个持续多轮的疑点**彻底解决**——
+它不是固件问题，是我的签名错误。**
