@@ -45774,3 +45774,85 @@ QEMU 实例   0
 
 **因此判据 1（出帧来自 Gen5 自身绘制路径）在当前条件下不可达：
 固件没有产生任何绘制请求，也就不存在「自身的绘制路径产物」。**
+
+# ★★★★★★★★ 2026-11-11 第五百零五章（R383–R389）：**appFwBoot 的 Main 被调用但不返回——这是本轮最精确的断点**
+
+## ① 新增探针：包装 `_Z4MainPv`（appFwBoot 的 Main，导出符号）
+
+```text
+MAINPROBE enter n=1 tid=195
+MAINPROBE return            ← 0 条
+```
+
+**⇒ Main **被调用了**（tid=195，即 UI 线程），但**从未返回**。**
+
+**这是 134 轮里第一个「进入但不返回」的确切函数，而且是**导出的、有名字的**入口，
+不再是靠偏移搜索定位的猜测。**
+
+## ② Main 的内部结构（已完整解码）
+
+```text
+14d8  push {r4,r5,r7,lr}
+14dc  mov  r4, r0              ; r4 = 参数（保存下来，末尾会 blx r4）
+14de  blx  uxengine_init2
+14e2  blx  initializeArena
+14e6  ldr  r0, = "global.xdb"  ; 资源数据库路径
+14ea  blx  Kernel::sys_setCurrentDirectory
+14ee  blx  UXEngine::gfxeng
+14f2  blx  getAreaCheckExtensionManager
+14fe  blx  setCheckDataPath
+1508  blx  setLogPath
+150c  blx  GraphicsEngine::sys_getInstance
+1514  blx  setOverflowResizeFontAttribute
+1518  blx  GraphicsEngine::sys_getInstance
+151e  blx  setOverflowResizeLayoutAttribute
+1522  blx  UXEngine::resmgr
+1526  ldr  r0, = "global.xdb"
+152a  blx  ResourceManager::setDatabase
+152e  blx  UXEngine::resmgr
+1532  movs r0, #0x33
+1534  blx  sys_setFontNameWithNamespace(0x33)
+1538  cbz  r4, 153c
+153a  blx  r4                   ; ★ 最后调用 r4（即 Main 的第一个参数）
+153c  pop  {r4,r5,r7,pc}
+```
+
+## ③ 关键确认：资源文件确实存在且与原厂一致
+
+```text
+work/initramfs-ui/usr/share/app/global.xdb   16,112 字节
+原厂 ZV1M2/usr/share/app/global.xdb          16,112 字节   ← 完全相同
+```
+
+**⇒ `setDatabase("global.xdb")` 的输入是齐的。**
+
+## ④ 因此断点定位到「Main 内部、setDatabase 之后」
+
+```text
+[通] Main 被调用
+[通] global.xdb 存在且正确
+[断] Main 未返回
+[未知] 停在 14de..153a 之间哪一步
+```
+
+**而 Main 的最后一步是 `blx r4` —— 若 `r4`（即 Main 的参数）是一个
+"永不返回的主循环"，那么 Main 不返回就是**正常行为**。**
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v116: 2651 行 / createLayer=6
+```
+
+## ⑥ 下一步（明确、可执行）
+
+**需要区分两种情况：**
+
+```text
+A. Main 停在某个 blx 上（异常）
+B. Main 正常执行到 blx r4，进入主循环（正常，此时不返回是预期）
+```
+
+**判据：在 Main 内部逐点埋计数器（14de/14e2/14ea/152a/1534/153a），
+看它执行到第几个调用。这能一次性确定它是卡住还是在跑主循环。**
