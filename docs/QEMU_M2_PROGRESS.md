@@ -46105,3 +46105,91 @@ libObjShim.so 需要做到：
 
 **下一轮：在 QEMU 里复刻这个双库布局（老 libObj 从 E10 取，新 libObj 改名放 /log/g5），
 并写一个最小 shim。**
+
+# ★★★★★★★★ 2026-11-11 第五百零九章（R413–R419）：**shim 的真实职责已确定：只解决「两代 libObj SONAME 重叠 + 平台服务优先权」**
+
+## ① 本轮把「新 libObj 自己缺什么」测到了底
+
+```text
+新 libObj（ZV1M2 4cd654f1）UND = 688
+部署树 + M2 树 提供不了的 = 仅 3 个：
+  _Jv_RegisterClasses   （WEAK，可空）
+  __gmon_start__        （WEAK，可空）
+  arch_phys_to_cache    （内核模块提供，两代 libObj 都是 UND）
+```
+
+**⇒ 新 libObj **自身**几乎零缺口。**
+
+## ② 两代 libObj 的真实关系
+
+```text
+老(E10) 导出 1955    新(M2) 导出 571    交集 497
+老有 / 新无     1458
+新有 / 老无       74
+```
+
+**交集里的平台服务（InfraInput / BMP / Fsys 等）：**
+
+```text
+BMP_Create
+InfraInput::GetInstance / SetCallback / RmCallback / SetEventKeyList /
+             GetEventKeyStatus / GetPhyKeyStatus / SendEventInitData / SetKeyInh …
+```
+
+**⇒ 这些符号**两代都导出**，但**实现的行为不同**（老版对应 Gen4 输入栈，新版对应 Gen5）。**
+
+## ③ 因此 `libObjShim.so` 的职责被精确定义为两件事
+
+```text
+1. SONAME 重叠消解
+   两代 SONAME 都叫 [libObj.so]，无法同时按 SONAME 加载。
+   shim 需要让「新 libObj 以独立名字进入进程」，而 appFw 的符号解析仍能命中它。
+
+2. 平台服务优先权
+   交集里的 13 个平台服务符号（InfraInput 等），应继续命中【老 libObj】，
+   因为 E10 的输入/文件系统服务是真实存在的；而 Gen5 那套在本模型里没有后端。
+```
+
+## ④ 这与他们的日志完全吻合
+
+```text
+日志： Preloading OSAL, libObj.so and Shadow-inherit MWF
+      "Shadow-inherit" 就是把老 libObj 的符号作为「影子层」提供给后续加载的 Gen5 库
+```
+
+## ⑤ 我们能做的等价实现（不依赖那个未公开的 shim）
+
+```text
+方案：改名 + 分层加载
+  /log/g5/libObj.so   → 复制为 libObjGen5.so（修改 SONAME）
+  preload 老 /usr/lib/libObj.so（保持原名 libObj.so，进全局）
+  Gen5 五库的 DT_NEEDED 里若引用 libObj.so，改为 libObjGen5.so
+  appFw 的 UND 由全局作用域解析 → 命中「老 libObj」（平台服务）+ 需要时显式 dlopen libObjGen5 取 ux/GRM
+```
+
+**但要注意：appFw 需要的 134 个 ux/GRM 符号，**只有新 libObj 有**（老 libObj 没有 GRM_bitmapCreateFromPhys 等）。
+所以正确优先级是：**
+
+```text
+ux / GRM / WidgetSystem  → 必须命中【新 libObj】
+InfraInput / BMP / Fsys  → 应命中【老 libObj】（若老版实现更真实）
+```
+
+**⇒ 这正是 shim 要做的「按符号族分流」，而不是简单地把谁放前面。**
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v116: 2651 行 / createLayer=6
+```
+
+## ⑦ 下一步（可执行）
+
+**写一个最小 `libObjShim.so`：**
+```c
+// 导出：仅转发「平台服务族」符号到老 libObj（dlsym(RTLD_NEXT)）
+// 不导出：ux/GRM 族（让它们解析到新 libObj）
+// 这样全局作用域里：老 libObj 先加载 → shim 拦截平台族 → 新 libObj 提供 ux/GRM
+```
+**判据：`MAINPROBE` 之后是否出现 `uxengine_init2 ENTER`（当前 0 次）。**
