@@ -48527,3 +48527,62 @@ QEMU 实例   0
 
 **按 arm32 重写 `identity()` 的偏移链并用它读当前 frame 描述符。
 这是本轮最有价值的产出：把"找帧"变成"按已验证的偏移链精确读"。**
+
+# ★★★★★★★★ 2026-11-12 第五百四十一章（R876–R890）：**参考项目的偏移在 arm32 上不适用 —— 本轮把这个陷阱明确排除**
+
+## ① 先验证：参考项目的偏移链在我们这里直接失效
+
+```text
+参考（aarch64 A7C2）：  libObj + 0x2ebde0 = framebuffer 管理器全局槽
+我们（arm32 ZV1M2）：    libObj + 0x2ebde0 落在 **.rodata**
+                        (段 addr=0x266e50, size=0x8bf72, SHT_PROGBITS 只读数据)
+```
+
+**⇒ 那个偏移是 64 位工程里的地址，**在 arm32 上指向只读常量池**，完全无意义。
+**这条捷径不成立。**
+
+## ② 改用正规方法：从 `GRM_fbrmSetScreenPreference` 的全局取址反推
+
+```text
+1155b0  ldr r3,[pc,#68]     ; Thumb literal base=(A+4)&~3=0x1155b4, lit@0x1155f8=0x23f7a6
+1155b6  add r3,pc           ; Thumb PC=0x1155ba  ->  r3 = 0x354d60
+1155d0  ldr r1,[pc,#40]     ; lit@0x1155fc = 0x1c70   （直接当偏移，无 add r1,pc）
+1155d2  ldr r3,[r3,r1]      ; 槽地址 = 0x354d60 + 0x1c70 = 0x3569d0
+```
+
+**核对：`0x3569d0` 属于 `.got`（段 addr=0x354d60, size=0x29d8）—— 是 GOT 项，不是管理器对象。**
+
+**⇒ 这个函数读的是 **GOT 里的一个函数指针**（用来调用 `0x116830`），
+**不是 framebuffer 管理器。所以"从它反推管理器"也不成立。**
+
+## ③ libObj 的可写段边界（下一步扫描的依据）
+
+```text
+PT_LOAD #1: vaddr=0x0         memsz=0x33a3b0  flags=R-X   （代码/只读）
+PT_LOAD #2: vaddr=0x3423b0    memsz=0x95140   flags=RW-   （.data/.got/.bss）
+```
+
+**⇒ 若 framebuffer 管理器存在，其指针必然落在 `0x3423b0..0x3b74f0` 这段内。**
+
+## ④ 本轮结论（三点，都可直接用于下一轮）
+
+```text
+1. 参考项目的 0x2ebde0 偏移在本机无效（落 .rodata）—— 已排除，不再尝试
+2. 从 fbrm 函数反推得到的 0x3569d0 是 GOT 项，不是管理器 —— 已排除
+3. 唯一可行的路径：在 0x3423b0..0x3b74f0 这段可写数据里
+   按"指向 640×480 / format 的合法结构"特征扫描，或者
+   直接观察 GRM_bitmapCreateFromPhys 被调用时返回的 bitmap 指针
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        最近测量 s1..s6: 2483–2494 行 / createLayer=6
+```
+
+## ⑥ 下一轮
+
+**在 guest 里扫 `libObj+0x3423b0 .. +0x3b74f0` 这段（约 600 KB）的可写数据，
+寻找形如 framebuffer 描述符的结构（含 640/480 或 format=1 字段）。
+若找到，就按其字段读出物理地址；若找不到，则坐实"管理器从未初始化"。**
