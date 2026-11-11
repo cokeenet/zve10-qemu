@@ -47325,3 +47325,78 @@ QEMU 实例   0
 **   - `DRAWSTAGE enter 6/7`（caller=libObj+0x11d51a / +0x123dd4）已经在跑**
 **   - `DRAWSTAGE` 8 个阶段的计数分布能指出绘制链走到了第几步**
 **并以「最后到达的那个阶段」作为下一个探针目标。**
+
+# ★★★★★★★★ 2026-11-12 第五百二十四章（R616–R630）：**修正一个长期误读：GRMFILL/BMAPPROBE=0 不能证明"没画"**
+
+## ① 先纠正铁律 6 的违规（这轮最重要）
+
+**我连续多轮把 `GRMFILL=0` / `BMAPPROBE=0` 读成"固件没有绘制请求"。这违反了本会话的铁律：
+「零结论必须先证明该测量有能力看到非零」。**
+
+**本轮补做了这个自检：**
+
+```text
+在 libObj 的 .text 里扫描全部 Thumb BL：
+    GRM_gpermFillrect 0x117b4c   callers = 0
+    GRM_gpermRectblit 0x117c86   callers = 0
+在这两个地址的字面量搜索：
+    各只有 1 处，且都在 .dynsym（符号表自身）
+appFw.so / libmpr.so 的 UND 里没有这两个符号
+```
+
+**⇒ 这两个函数**在整个加载集合里根本没有调用方**。
+**它们的 0 命中是**必然**的，与固件画不画**无关**。**
+
+## ② 于是改用 appFw 真正导入的接口来测量
+
+```text
+appFw.so 的全部 GRM_* 导入符号只有 5 个：
+    GRM_fbrmSetScreenPreference      ← 原本未覆盖
+    GRM_fbrmCheckUpdateFinished      ← 原本未覆盖
+    GRM_fbrmRegisterTriggerFrameworkCb   （已覆盖）
+    GRM_bitmapCreateFromPhys            （已覆盖）
+    GRM_bitmapRelease                    （已覆盖）
+```
+
+**本轮为前两个加了 `FBRMPROBE`，并记录 `CheckUpdateFinished` 的**返回值**
+（它是"帧是否就绪"的轮询，任何绘制路径都必须到达）。**
+
+**符号已确认由 `argtrace.so` 正确导出：**
+
+```text
+00007b38 g DF .text  GRM_fbrmSetScreenPreference
+00007c08 g DF .text  GRM_fbrmCheckUpdateFinished
+```
+
+## ③ 实测结果（v165，基线完好 2381 行 / createLayer=6）
+
+```text
+FBRMPROBE 命中 = 0
+```
+
+**⇒ 即使在这两个"appFw 确实导入"的接口上，也是**一次都没被调用**。**
+**这次 0 就有了意义：固件在自己的 UI 路径上从未走到 fbrm 的帧就绪轮询。**
+
+## ④ 因此当前最准确的结论
+
+```text
+✓ 不是机器模型的问题（回退 sugi_read / GPE_COMPLETE 后无变化）
+✓ 不是 GRM 填充入口的问题（那两个入口无调用方，本来就不会响）
+✓ 不是 fbrm 接口的问题（appFw 导入了，但从未调用）
+⇒ 卡点在【appFw 内部，产生绘制请求之前】
+```
+
+**与我此前定位的 `menuBuilder → switchBank 第 7 次` 卡点**完全一致**。**
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v165: 2381 行 / createLayer=6
+```
+
+## ⑥ 下一步
+
+**回到 `menuBuilder(0x723aac)` 的第 7 次 switchBank 处，用**入口 pin**
+给 `switchBankEth` 之后的第一个可 hook 的内部函数装探针，
+并同时读取该处的 `bak` 与 `r` 寄存器状态（用校正后的签名）。
