@@ -46342,3 +46342,74 @@ QEMU 实例   0
 
 **但本轮已经把「Main 卡住」这个持续多轮的疑点**彻底解决**——
 它不是固件问题，是我的签名错误。**
+
+# ★★★★★★★★ 2026-11-11 第五百一十二章（R438–R443）：**Main 的谜团彻底解开——它调用的是 Application_Start 主循环，不返回是正常的**
+
+## ① 决定性测量：Main 的参数是 `my_start`
+
+```text
+MAINPROBE enter n=1 a0=0x4086de0 b=0x81 c=0x1 tid=195
+
+0x4086de0 落在 argtrace.so base=0x4081000 的 +0x5de0
+argtrace.so 符号表： 00005de0 my_start
+```
+
+**⇒ Main 的唯一参数就是 `Application_Start` 的包装器。**
+
+**而 Main 的最后一条指令（反汇编 0x1538-0x153a）：**
+
+```text
+1538  cbz  r4, 153c
+153a  blx  r4           ← 就是调用 my_start → Application_Start
+153c  pop  {r4,r5,r7,pc}
+```
+
+**⇒ `Main` 不返回**完全是正常行为**——它的最后一个动作就是进入主循环。**
+
+## ② 因此「Main entered but never returns」这个持续多轮的疑点**已经解决**
+
+```text
+[通] Main 被调用
+[通] initializeArena 返回
+[通] setCurrentDirectory("/usr/share/app/") 成功
+[通] setDatabase("global.xdb") 返回 1  ← 资源数据库加载成功
+[通] setFontNameWithNamespace(51) 成功
+[通] blx r4 → Application_Start（主循环，不返回是预期）
+```
+
+**⇒ appFwBoot 侧的启动流程**完全通过**。**
+
+## ③ 这一轮同时修掉了两处**我自己的签名错误**（这是真进展）
+
+```text
+setDatabase:                    我写 (void*, const char*)  → 实际 (const char*)
+sys_setFontNameWithNamespace:   我写 (void*, u16)         → 实际 (u16)
+
+后果：v118 时 setDatabase 收到 path=NULL，只返回了假成功；
+      v120 修正后 path=global.xdb，RETURN 1（真实加载）
+```
+
+## ④ 与他们的日志对照，我们现在的差距**很具体**
+
+```text
+他们：[Step 7] _Z4MainPv 解析成功 → Application_Start=0x9fa9581 → 出帧
+我们：Main 走完全流程 → Application_Start 被调用 → 但之后只有 4 个 genID、0 个 GPE 请求
+```
+
+**⇒ 我们已经走到了和他们**同一位置**（Main 完成、Application_Start 进入）。
+剩下的差距在**Application_Start 内部**，而不是启动链。**
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v121: 2468 行 / createLayer=6
+```
+
+## ⑥ 下一步（首次与参考实现对齐到同一阶段）
+
+**现在的目标非常明确：`Application_Start` 进入后应有
+`create_screen` / 控件树建立 / GPE 请求。我们观察到的是 4 个 genID、0 个 GPE 请求。**
+
+**下一轮：对比 `Application_Start` 前 100 条指令与我们实测的执行轨迹，
+找出它在哪里偏离了「建立控件树」的正常路径。**
