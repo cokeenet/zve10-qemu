@@ -43901,3 +43901,69 @@ QEMU 实例   0
 它在业务上下文里，且此时 UI 初始化刚开始。
 若仍失败，则说明 `osal_snd_msg` 需要更完整的构造（消息头/优先级），
 届时按 libosal_uipc.so 的 `osal_snd_msg` 实现逐条核对参数。**
+
+# ★★★★★★★★★ 2026-11-11 第四百七十八章（R245–R248）：**按既有做法修正签名后，队列注册成功**
+
+## ① 铁律起了作用：先 grep a7c2-re，拿到真实签名
+
+a7c2-re 对 `osal_reg_msg_queue_cb` 的既有接驳代码（`menu-observe.c`）：
+
+```c
+int osal_reg_msg_queue_cb(unsigned int id, void **handle,
+                          void *callback, unsigned long argument);
+```
+
+**⇒ 四参数。而我此前写成三参数，位置全错：
+回调传进了 `handle`、`1` 传进了 `callback`、`argument` 未定义。**
+
+## ② 修正后实测（v99，基线 2632 行 / createLayer=6）
+
+```text
+VDFREPLY syms reg=0x4165f90 snd=0x908c
+VDFREPLY snd to known-good qid=0x8f013a ret=-1024
+VDFREPLY reg_queue ret=0 handle=0x8ded58e0      ★ 注册成功
+VDFREPLY sending magic=0x61003c chan=0x6085 to qid=0x1706085
+VDFREPLY osal_snd_msg ret=-1024
+```
+
+**⇒ 注册那一环已打通（`ret=0`，并拿到 handle）。**
+
+## ③ 但发送仍返回 -1024
+
+`u_osal_snd_msg` 的执行链（已完整解码）：
+
+```text
+25d6  ldr  r0,[r4,#0]       ; fd 来自驱动全局上下文
+25d2  movt r1,#0x8000       ; ioctl 号 0x80000004
+25d8  blx  ioctl@plt
+25e6  cmp  r0,#0xffffffff   ; -1 → 取 errno 再取负
+```
+
+**⇒ `-1024` = 驱动 `ioctl` 返回 errno 1024 后被取负。
+即内核 uipc 驱动拒绝了这次发送。**
+
+**而注意：对系统自己成功发送过 400 次的 `0x8f013a`，我的调用同样 -1024。**
+
+## ④ 最可能的原因：消息必须来自驱动自己的分配器
+
+a7c2-re 的接驳代码里同时取了：
+
+```c
+real_allocate_msg = real_dlsym((void *)-1, "osal_valloc_msg_wait");
+```
+
+**⇒ 驱动期望的消息指针来自 `osal_valloc_msg_wait` 的共享内存池，
+而我用 `calloc` 造的普通堆指针不在该区域，驱动据此拒绝。
+这与「注册成功但发送被拒」的现象一致。**
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v99: 2632 行 / createLayer=6
+```
+
+## ⑥ 下一步
+
+**改用 `osal_valloc_msg_wait(qid, size)` 取得驱动池内的消息缓冲，
+填入已解出的字段（`[-4]=0x61003c`、`[+4..5]=[+6..7]=通道号`），再发送。**
