@@ -48447,3 +48447,83 @@ B. 高风险但直接：在 watchdog 线程上用固定参数试探性调用一�
 
 **"直接调用 Gen5 的 GRM 实现"这条路是可行的，但不是"随手一调"——
 **它的 ABI 是多参数结构、且依赖内部管理器状态。下一轮先做状态探查，再决定是否调用。**
+
+# ★★★★★★★★ 2026-11-12 第五百四十章（R861–R875）：**按铁律读参考项目的出帧实现 —— 它给了我们 framebuffer 管理器的完整读取路径**
+
+## ① 先按铁律 grep 了 `a7c2-re` 的出帧代码
+
+```text
+/root/fw/a7c2re/report/2026-10-17-qemu-native-camera/runtime/analysis/
+    headless-osd.c / headless-osd.h / headless-osd-export.c
+```
+
+**它的做法是：**不自己画，而是从 libObj 里读出 framebuffer 描述符，再映射物理内存取像素。**
+
+## ② 关键函数 `identity()`（headless-osd.c:103-116）给出了偏移链
+
+```c
+// 全部从 libObj base 开始的偏移
+peek(fd, base + 0x2ebde0, &mgr, 8)          ← framebuffer 管理器全局槽
+peek(fd, mgr + 8,        &fb,  8)           ← framebuffer 对象
+peek(fd, fb + 0x68,      &on,  8)
+peek(fd, fb + 0x70,      &off, 8)
+!! 校验： (on == fb+0x20 && off == fb+0x40) || (on == fb+0x40 && off == fb+0x20)
+peek(fd, on,             &bitmap, 8)        ← 当前 active 的 bitmap
+peek(fd, on + 0x10,      &f->id,  4)
+peek(fd, on + 0x18,      &f->physical, 8)   ← ★ 像素的物理地址
+peek(fd, fb + 8,         geometry, 4)       ← width/height (u16 × 2)
+peek(fd, fb + 12,        &f->format, 4)
+校验：width==640 && height==480 && format==1
+```
+
+**⇒ 这是一条**完整、已在其工程里验证过的读取链**。
+**拿到 `f->physical` 后，用 `/dev/mem` mmap 该地址，直接 memcpy 614400 字节即可。**
+
+## ③ 它同时给出了 A7C2（aarch64）的地址范围
+
+```c
+f->physical >= 0x410000000UL && f->physical <= 0x500000000UL - HOSD_PIXELS
+```
+
+**⇒ 那是 64 位 A7C2 的地址空间。**我们这里是 arm32 的 ZV-E10 QEMU，
+**地址应在 0x20000000..0x28000000 区间 —— 这正是我一直扫描的那个窗口。**
+
+## ④ 对我们的直接价值
+
+**我一直是从"present 请求记录里读目标物理地址（0x22d52000）"，
+然后扫 128 MiB 窗口找像素。但参考项目的做法是**先读管理器拿当前 active bitmap 的物理地址**，
+再精确取该处像素。两者可能指向**不同的缓冲**。**
+
+**⇒ 下一轮应当：**
+
+```text
+1. 在 guest 里按同一条偏移链读 libObj+0x2ebde0 → mgr → fb → on → bitmap → physical
+2. 注意 arm32 下这些槽是 32 位宽，不是参考里的 64 位（要按 arm32 重写）
+3. 若 physical 有效，直接读那 614400 字节并送 FRAMEPERIOD 落盘
+4. 若该槽为 0，说明 framebuffer 管理器尚未初始化 —— 这才是"没画"的真正原因
+```
+
+## ⑤ 本轮同时确认了一件事：`GRM_fbrmSetScreenPreference` 有完整的参数语义
+
+```text
+1155ac: subs r1, r0, #1          ← 参数范围 1..4
+1155b0: ldr  r3, [pc] ; add r3,pc ← 取全局
+1155b8: cmp  r1, #3 ; bhi
+1155bc: tbb  [pc, r1]            ← 跳转表分发
+1155c4: movw r0, #0xe802 / #0xe803 / #0xe800 / #0xe801  ← 4 个偏好枚举值
+```
+
+**⇒ 它的参数就是 1..4 的枚举，返回 0。**这个接口可以直接调用，
+**但前提是那 4 个枚举值对应的内部状态已存在。**
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        最近测量 s1..s6: 2483–2494 行 / createLayer=6
+```
+
+## ⑦ 下一步
+
+**按 arm32 重写 `identity()` 的偏移链并用它读当前 frame 描述符。
+这是本轮最有价值的产出：把"找帧"变成"按已验证的偏移链精确读"。**
