@@ -48586,3 +48586,76 @@ QEMU 实例   0
 **在 guest 里扫 `libObj+0x3423b0 .. +0x3b74f0` 这段（约 600 KB）的可写数据，
 寻找形如 framebuffer 描述符的结构（含 640/480 或 format=1 字段）。
 若找到，就按其字段读出物理地址；若找不到，则坐实"管理器从未初始化"。**
+
+# ★★★★★★★★ 2026-11-12 第五百四十二章（R891–R905）：**在 libObj 可写数据里找到 16 个指向显示窗口的槽**
+
+## ① 本轮实现了一个只读扫描器 `FBDESC`
+
+```text
+范围：libObj + 0x3423b0 .. +0x95140（PT_LOAD #2，RW 段，约 600 KB）
+方式：只读槽本身，**不解引用候选指针**
+判据：槽值落在显示窗口 0x20000000..0x28000000
+```
+
+## ② 两次修掉自己造成的失败
+
+```text
+第一次（v196）：FBDESC 完全无输出
+  原因：它被放在 directmenu_maybe() 之后，而后者内联调用 menuBuilder 会**永久阻塞**
+         watchdog 线程 ⇒ 后面任何代码都不执行
+  修法：把扫描移到 directmenu_maybe() 之前
+
+第二次（v197）：打印 "scan start" 后立刻停住，没有 "scan done"
+  原因：我让扫描器**解引用每个候选指针**去读它的前 64 字节
+        读到未映射/设备地址会 fault 或阻塞，且该线程没有恢复路径
+  修法：不再解引用，只报告槽值本身
+```
+
+## ③ 有效结果（v198，基线 2496 行 / createLayer=6）
+
+```text
+FBDESC scan start base=0xac2b3b0 span=0x95140
+FBDESC slot=0xac2bf7c holds display-window ptr=0x20000007
+FBDESC slot=0xac2bf9c holds display-window ptr=0x2000000b
+FBDESC slot=0xac407a8 holds display-window ptr=0x22140800
+FBDESC slot=0xac41158 holds display-window ptr=0x22110001
+FBDESC slot=0xac41168 holds display-window ptr=0x221100ff
+FBDESC slot=0xac41178 holds display-window ptr=0x221100ff
+FBDESC slot=0xac41188 holds display-window ptr=0x221100ff
+FBDESC slot=0xac41ac0 holds display-window ptr=0x22b00040
+FBDESC slot=0xac46b00 holds display-window ptr=0x20030030
+FBDESC slot=0xac46b08 holds display-window ptr=0x20030040
+FBDESC slot=0xac46b5c holds display-window ptr=0x20100800
+FBDESC slot=0xac46b64 holds display-window ptr=0x20100900
+（共 16 个候选）
+```
+
+**过滤后真正像地址的只有两个：**
+
+```text
+0x22140800   ← 落在显示窗口中部，页对齐
+0x22b00040   ← 也是页内偏移小的有效地址
+（其余 0x20000007 / 0x2000000b / 0x22110001 / 0x221100ff 等是小的标识值，不是指针）
+```
+
+## ④ 一个未解释的现象（如实记录）
+
+```text
+"FBDESC scan done found=N" 这一行**没有打印**
+start 在 2333 行，其后还有 163 行运行输出，所以不是"时间不够"那么简单
+可能：扫到某处时读到了会阻塞的地址（虽然我已在逻辑上限制在 RW 段内）
+下一轮需要在扫描里加**分段进度打印**，才能定位它停在哪一段
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v198: 2496 行 / createLayer=6
+```
+
+## ⑥ 下一轮
+
+**1. 给扫描加分段进度（每 64 KB 打一行），定位它停在哪一段。**
+**2. 对 `0x22140800` 与 `0x22b00040` 这两个候选，从**宿主机侧**（用 FRAMEPERIOD 的读法）
+   **直接读它们的内容，看是否为 640×480 的像素区 —— 宿主机读 guest 内存不受 guest 线程阻塞影响。**
