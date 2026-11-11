@@ -46799,3 +46799,126 @@ QEMU 实例   0
 **c1（`0x1c1baa4`）在会合之后还有一条 `blx 0x1d0c0f4`（veneer → 0x52ac30，
 是另一个 mutex/once 帮助函数）。下一轮给 0x52ac30 与 `0x1d0c0f4` 的其它落点装探针，
 并用「线程名/栈」而不是 PC 采样来定位阻塞线程。**
+
+# ★★★★★★★★ 2026-11-11 第五百一十八章（R501–R520）：**读同组织的私有仓库 SONY-FW/zve10-qemu（含 a7c2-re），对照出关键差异**
+
+## ① 仓库情况
+
+用户给的 `https://github.com/SONY-FW/zve10-qemu` 确实存在（私有，758 KB），
+用提供的凭据克隆到 `/mnt/build/sonyfw-zve10-qemu`（2.0 MB，只读参考）。
+
+同组织可访问的仓库共 8 个：
+
+```text
+SONY-FW/a7c2-re             private  95322 KB   ← 就是 /root/fw/a7c2re 的上游
+SONY-FW/fx30-qemu           private  12234 KB
+SONY-FW/a7m3-qemu           private    710 KB
+SONY-FW/a7c2-knowledge-base private   2917 KB
+SONY-FW/a7c-qemu            private    893 KB
+SONY-FW/a7c2-qemu-backup    public   36982 KB
+SONY-FW/zve10-qemu          private    758 KB   ← 本次分析对象
+SONY-FW/a7m5-qemu           private   4222 KB
+```
+
+**该仓库是 ZV-E10 产品维护仓库（不是我方 ZV1M2 移植线），但它的**做法层**与
+我们高度重叠：同样的机器模型 `zve10.c`、同样的软件 GPE/栅格后端、
+同样的 `ui-observe.c` LD_PRELOAD 观察器。**
+
+## ② 五条可直接拿来用的技术要点（都已与其源码核对）
+
+### 2.1 `sugi_read` 的对照
+
+他们的 `zve10.c`：`return off == 0x80 ? 0x15 : 0;`
+我们的 `zve10.c`：`off==0x80 → 0x15，其余 → 0xFFFFFFFF`
+
+**⇒ 我们冒进了：他们全返回 0 也能跑出原厂菜单。
+我们把其余位设成全 1 是**未经验证的改动**，可能改变驱动状态机行为。
+**这是必须回头验证的一处。**
+
+### 2.2 GPE 完成：他们只完成捕获到的 init fence，我们完成所有包
+
+```text
+他们:  if (zve10_gpe_init_packet(words)) { 完成并 raise IRQ }
+我们:  无条件完成每一个包 + raise IRQ
+```
+
+**⇒ 我们同样冒进。他们注释明确写着
+"only this captured startup fence completes; other GPU packets need a verified decoder"。
+我们用 `ZVE10_GPE_COMPLETE` 让所有包都回完成 —— 这可能让固件以为绘制已成功，
+从而**永远不发出真正的绘制请求**（与我方 GRMFILL=0 的观测一致）。
+
+### 2.3 他们的 `ui-present.h` 给了**已经验证的 present 参数布局**
+
+```c
+p[0], p[1]   = 两块 0x20000000..0x28000000 的物理地址（present 的双缓冲）
+expected[12] = {0,4,0,0x4401,640,480,640,480,0,0,640,480}   // 从 p+2 开始比对
+```
+
+**⇒ 这是 640×480 RGBA4444 present 参数的完整**已验证**字段表，我们没有。**
+**并且他们给出了 Morgan 存储顺序的**逐像素还原公式**（`ui_present_copy`）：
+```c
+sy = 479 - y;  tile = (sy>>3)*80 + (x>>3);
+z = (x&1) | ((sy&1)<<1) | ((x&2)<<1) | ((sy&2)<<2) | ((x&4)<<2) | ((sy&4)<<3);
+from = (tile*64 + z)*2
+```
+**这正是我们生成帧时缺的那一步。**
+
+### 2.4 `ui-range-clear` 的参数也给了
+
+```c
+p[1] != 3 || p[17] || p[18] != 0x0f100001 || (p[15]&7) || (p[16]&7)
+p[15], p[16] = 物理地址两端，p[16] - p[15] == 614400
+```
+
+### 2.5 他们的软件栅格器（`ui-raster.h`）是完整实现
+
+fill / blit 的字段偏移、格式码（0=RGBA4444, 1/7=RGBA8888, 3=alpha8）、
+混合公式（mode 0/1）、裁剪与缩放规则**全部写在头文件里**，可直接对照。
+
+## ③ 他们怎么解决「原 AP 启动卡住」（与我们同一类问题）
+
+```text
+线程识别:  ui_tid = syscall(224)  在 drawFramebuffer 入口记录
+           rm_tid = syscall(224)  在别处记录
+拦截点:    drawFramebuffer / notifyDraw / Application_System_Init / dlopen /
+           pthread_cond_wait / pthread_join / osal_wai_sem_tmo / osal_snd_msg
+```
+
+**注意：他们把 `pthread_cond_wait` 用 **naked 汇编**取 `r7` 传第三参数：**
+```c
+__asm__("mov r2, r7 ; b ui_cond_wait_impl")
+```
+**⇒ 这样能拿到**原生父帧指针**，比我们只记录 caller 更有用。**
+
+**他们还拦了 `osal_wai_sem_tmo`（我们也拦了）和 `osal_snd_msg`（我们也拦了）。**
+
+## ④ 对我们最有价值的两条**可直接落地**的结论
+
+```text
+1. present 的 640×480 RGBA4444 参数表 + Morgan 还原公式 —— 直接补上我们的出帧缺口
+2. sugi_read 全 0 也能跑；gpe 只完成 init fence —— 我们两处都冒进了，应回退验证
+```
+
+## ⑤ 本轮同时查出的我方一个**确定性缺陷**
+
+```text
+注入的 MENU 键（key=0x1ab）从未被消费：
+  所有 RCVC_RET 里 bytes 首位从不是 ab01
+  0x7a0020 实际收到的 20 字节包首字是 0x07000001..0x07000004（opcode 0x07 + 序号）
+⇒ 我们注入的扁平 20 字节 {key,sub,status,ex,from} 与接收者期望的结构不符
+```
+
+**⇒ 判据 4（键注入产生可见变化）目前**根本未成立**，需要按 06-input.md 重新核对格式。**
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v150: 2368 行 / createLayer=6
+```
+
+## ⑦ 下一步
+
+**1. 回退 `sugi_read` 全 1 与 `GPE_COMPLETE`（改回他们的做法），各跑一次对照。**
+**2. 用他们的 present 参数表与 Morgan 公式，把 `present` 后端改成能产出可校验帧。**
+**3. 按 06-input.md §2 重新核对输入注入格式。**
