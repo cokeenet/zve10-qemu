@@ -47232,3 +47232,96 @@ QEMU 实例   0
 
 **C. 回退机器模型里两处比参考实现更激进的改动（sugi_read 全 1 / GPECOMPLETE 全放行），
 **   看 `GRMFILL` 是否从 0 变非 0。**
+
+# ★★★★★★★★ 2026-11-11 第五百二十三章（R601–R615）：**回退机器模型两处激进改动 —— 结论是它们都不是绘制缺失的原因**
+
+## ① 本轮做的第一件事：回退到参考实现的做法
+
+### 1.1 `sugi_read` 回退
+
+```text
+参考实现（SONY-FW/zve10-qemu）：  return off == 0x80 ? 0x15 : 0;
+我们（改前）：                     off==0x80→0x15，其余→0xFFFFFFFF
+改后：                             恢复参考行为（其余→0），旧代码用 #if 0 保留
+```
+
+### 1.2 GPE 包完成回退
+
+```text
+参考实现：  只完成 zve10_gpe_init_packet() 认定的 init fence
+我们（改前）：无条件完成【每一个】包并 raise IRQ
+改后：      恢复参考行为；其它包只记 ZVE10_GPE_OTHER（不完成）
+```
+
+**QEMU 已重编译（`ninja qemu-system-arm`，只重编 hw_arm_zve10.c.o + 链接）。**
+
+## ② 回退后的实测（v164）
+
+```text
+行数 2351 / createLayer=6        ← 基线完好
+ZVE10_GPE_INIT_FENCE = 19
+ZVE10_GPE_OTHER      = 0         ← 关键
+GRMFILL   = 0
+BMAPPROBE = 0
+```
+
+**⇒ 回退前后 `GRMFILL` / `BMAPPROBE` 都没有变化（都是 0）。**
+
+**并且 `ZVE10_GPE_OTHER = 0` 说明：固件**总共只提交过 19 个包，且全是 init fence**，
+回退之后也**没有出现任何新的包**。**
+
+**⇒ 所以"我们过度完成导致固件不再提交"这个假设**被否定**。
+**固件的绘制请求根本没有产生到能到达 GPU 的程度 —— 缺口在固件内部，不在机器模型。**
+
+## ③ 顺手纠正一个我长期误读的返回值
+
+```text
+GRMHOOK fillrect install=0 orig=0x50e4001
+GRMHOOK rectblit install=0 orig=0x625a001
+```
+
+**我一直把 `install=0` 当成"没装上"。实际上 `grm_hook` 的返回语义是
+`0 = 成功`、`-1 = pin 不匹配`、`-2.. -4 = mmap/mprotect 失败`。**
+
+**已核对 pin 与实际字节完全一致：**
+
+```text
+0x117b4c 实际 = 2de9f04f99b0144604af3022   pin_fill 完全相同
+0x117c86 实际 = 2de9f04fbbb0144604af9c22   pin_blit 完全相同
+```
+
+**⇒ hook 一直是**装好的**，`orig` 也非零。结论不变：
+`GRM_gpermFillrect` / `GRM_gpermRectblit` 从未被调用。**
+
+## ④ 追加证据：这两个入口没有直接调用者
+
+```text
+在 libObj 的 .text 里扫描全部 Thumb BL：
+    GRM_gpermFillrect 0x117b4c  callers = 0
+    GRM_gpermRectblit 0x117c86  callers = 0
+在 libObj 的全部 ALLOC 段里搜这两个地址的字面量：
+    各只有 1 处，且都在 .dynsym（符号表本身）
+```
+
+**⇒ 它们**不是被本模块内部代码调用的**，只能经动态符号从**别的模块**进来。
+而 appFw.so / libmpr.so 的 UND 里也**没有**这两个符号。**
+
+**⇒ 也就是说：这两个"绘制入口"目前在整个加载集合里**根本没有调用方**。
+它们可能是给**另一个执行者**（如 GPU 驱动线程 / 另一个 Generation 的 GRM 上层）
+准备的导出，而不是这条 UI 路径的必经点。**
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v164: 2351 行 / createLayer=6
+```
+
+## ⑥ 下一步
+
+**"GRM 入口无人调用"这个事实把方向彻底改变了：**
+**Gen5 的 UI 绘制很可能不经过 `GRM_gpermFillrect`，而是走别的提交路径。**
+**下一轮应改为从**已确认有活动的 SIG**入手：**
+**   - `DRAWSTAGE enter 6/7`（caller=libObj+0x11d51a / +0x123dd4）已经在跑**
+**   - `DRAWSTAGE` 8 个阶段的计数分布能指出绘制链走到了第几步**
+**并以「最后到达的那个阶段」作为下一个探针目标。**
