@@ -47070,3 +47070,80 @@ QEMU 实例   0
 **1. 把 `logline("DIRECTMENU calling ...")` 移到 `g_as_phase` 写入之前，确认次序。**
 **2. 若 `menuBuilder` 确实会卡在 `0x54e140`，就给它也装上 veneer 重定向探针。**
 **3. 判据：`GRMFILL` / `BMAPPROBE` 是否从 0 变为非 0 —— 这是「Gen5 能不能画」的直接答案。**
+
+# ★★★★★★★★ 2026-11-11 第五百二十一章（R553–R580）：**直接调 builder 的实验链已跑通，卡点收敛到 switchBank 的真实现**
+
+## ① 本轮跑出了清晰可读的执行轨迹（v160/v161）
+
+```text
+DIRECTMENU start base=… tid=117
+DIRECTMENU pre-reports        ← 报告块走完了
+DIRECTMENU post-reports
+DIRECTMENU calling 0x723aac
+[AS]RM switchBank ENTER n=6 self=0x43 bank=3
+RM switchBank CALL   n=6 self=0x43 bank=3
+RM switchBank LEAVE  n=6 ret=1
+[AS]RM switchBank ENTER n=7 self=(nil) bank=5
+（此处停止）
+```
+
+**⇒ `menuBuilder(0x723aac)` 确实被执行，并且**成功进入了它内部的 switchBank 调用链**，
+到第 7 次（`self=nil, bank=5`）才停住。**
+
+## ② 一个必须纠正的自我修正（本会话第 5 次同类）
+
+```text
+上一轮我把 switchBankEth 改成「只收一个 bank」，理由是"接收者从全局取"。
+本轮逐条读字节后推翻了这个判断：
+
+10334c 03 46  mov  r3, r0      ← arg0 先进 r3
+103352 0a 46  mov  r2, r1      ← arg1 是 bank
+103358 00 68  ldr  r0, [r0]    ← 真实现自己换 receive
+10335a 19 46  mov  r1, r3      ← arg0 原样传下去
+
+⇒ 真实签名就是 (self, bank)，**我最初写对了，上一轮改错了**。
+```
+
+**已恢复为 `(void *self, unsigned bank)`，v161 跑出 `self=0x43 bank=3 → LEAVE ret=1`。**
+
+## ③ 由此得到一条重要事实：`self = nil` 是设计内的
+
+```text
+真实现根本不把 arg0 当指针解引用，而是：
+    自己取全局单例当真正接收者
+    把 arg0 原样作为参数继续传递
+⇒ menuBuilder 在某个分支里传 0，不是我们伪造的错值。
+```
+
+## ④ 本轮已确认的完整可达链
+
+```text
+[通] Gen5 bootin/im/appFwBoot/appFw 全部执行（sha 全部核对）
+[通] Application_Start → createLayer=6 → updateFrame → drawFramebuffer
+[通] stage1(0x54ef74) → pre1 → 0x1d5a3d8 → bl1..bl4 → c1(0x1c1baa4)
+[通] c1 内 osal 会合完整成功（LOCKRET ret=0）
+[通] 我们主动调 menuBuilder(0x723aac)，它真的执行
+[通] menuBuilder 内部 switchBank 连续成功 6 次（ret=1）
+[?]  第 7 次 switchBank(self=nil, bank=5) 之后停住
+```
+
+## ⑤ 判据状态
+
+```text
+判据 1（Gen5 自己画）：尚未成立（GRMFILL/BMAPPROBE 仍为 0）
+判据 2（帧）：历史 out/*/frame.raw 存在 9 份 614400 字节、非零字节 26 万~57 万，
+             但**它们不是本轮产物**，且生成机制未在本轮复核，不能引用
+判据 3/4/5：未开始
+```
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v161: 2352 行 / createLayer=6
+```
+
+## ⑦ 下一步
+
+**给 `switchBankEth` 的真实现入口 `0x1a72aa` / `0x1a39b2` 装探针
+（它们是 libObj 内部函数，可用入口 pin 方式），定位第 7 次调用卡在内部哪一步。**
