@@ -45239,3 +45239,67 @@ QEMU 实例   0
 `process_power_on` 从未走到它该调用的地方。**
 
 **下一轮应从调用者 `0x258eb28` 所在的函数向上追，看它是否被调用、以及它之后应触发什么。**
+
+# ★★★★★★★★ 2026-11-11 第四百九十七章（R342–R346）：**两个 getter 各读一个 key，status getter 从未执行**
+
+## ① 精确定位两个平行 getter（本轮核心）
+
+```text
+0x2bc41a8  读 key = 0x02cf1844   ← force（字面量在 0x2bc41dc）
+0x2bc41e0  读 key = 0x02cf1845   ← status（字面量在 0x2bc4214）
+```
+
+**两个函数逐条一致，唯一区别是读哪一个 key。**
+**这与上游文档「getter 读日期状态(4B) 与 force 状态(1B)」完全对应，
+且 0x2cf1844/0x2cf1845 正是此前记录的成对 key。**
+
+## ② 调用者链也对应
+
+```text
+0x258eac8 (thunk) → 0x2bc41a8   读 force
+0x258eb18         → 0x2bc41e0   读 status
+```
+
+**⇒ 这是一对「读 force / 读 status」的包装器，供 `process_power_on` 使用。**
+
+## ③ 实测：status getter 从未执行
+
+```text
+BACKUP_nread key=0x2cf1844   有记录（force，返回 -1）
+BACKUP_nread key=0x2cf1845   0 条   ← status getter 从未被调用
+```
+
+**⇒ `process_power_on` 只读了 force 就停下，没有读 status。**
+
+## ④ 因此 `(!force && status!=2)` 这个判据**永远无法被完整求值**
+
+```text
+force = 0（已测得）
+status = 未读取（无法求值）
+⇒ 判据无法得出 true
+⇒ 首设屏 0x347 永远不被请求
+⇒ 菜单自然也永远不被请求
+```
+
+**这是本轮最重要的因果链闭合。**
+
+## ⑤ 修正记录
+
+**R334 的 `BKFILL`（把 force 读改成返回 1）是错误的做法：
+它会让 `!force` 为假，反而排除首设分支。
+而真正的问题是** status getter 从未执行**，与 force 的取值无关。**
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v114: 2654 行 / createLayer=6
+```
+
+## ⑦ 下一轮
+
+**查 0x258eb18（status getter 包装器）的调用者，以及为什么它没被调用。
+若 `process_power_on` 确实只调了 force getter 就返回，那么断点就在它内部的
+「读 force 之后到读 status 之前」那段。**
+
+**这条链现在每一步都有具体地址，可继续逐段追。**
