@@ -45706,3 +45706,71 @@ QEMU 实例   0
 ```
 
 **这是本轮修正后新得到的、可直接测量的判据。**
+
+# ★★★★★★★★ 2026-11-11 第五百零四章（R378–R382）：**位图层零调用——绘制子系统从未启动**
+
+## ① 本轮新增测量：bitmap 层的四个入口全部 0 次
+
+新增 `BITMAPPROBE`（纯计数，参数原样转发，不可能扰动行为）：
+
+```text
+GRM_bitmapCreate        (libObj+0x114c98)
+GRM_bitmapCreateFromPhys(libObj+0x114d98)
+GRM_bitmapGetPhysicalAddress (libObj+0x114f08 附近)
+GRM_bitmapWriteLockBits (libObj+0x114f94 附近)
+```
+
+**v115（2655 行 / createLayer=6）实测：**
+
+```text
+BMAPPROBE  create     0
+BMAPPROBE  physical   0
+BMAPPROBE  writeLock  0
+```
+
+## ② 与绘制入口一起看，结论明确
+
+```text
+GRMFILL   (GRM_gpermFillrect)   0
+GRMBLIT   (GRM_gpermRectblit)   0
+BMAPPROBE (bitmap 创建/锁定)     0
+```
+
+**⇒ 固件从未创建任何位图，也从未发出任何绘制请求。**
+
+**而 R377 已证明：这些实现都是**完整的真代码**，不是空桩。**
+
+## ③ 因此整条链的缺口被精确定义
+
+```text
+[可用] GPE 填充/位块传输实现（完整）
+[可用] bitmap 创建/物理地址/锁定实现（完整）
+[可用] 软件 present / clear / engine_wait 后端（我们自己实现的）
+[零]   固件调用上述任何一项
+```
+
+**⇒ 缺的不是能力，是**调用者**：没有任何控件/菜单向绘制层发出请求。**
+
+## ④ 与 a7c2-re 的对照（这是唯一合格的参考）
+
+```text
+a7c2-re：base.clear.slow 336 次、present 54 次 —— 全部是固件自己发的请求
+我们    ：0 次
+```
+
+**⇒ 差距就在「固件自己发请求」这一步，而它需要控件树真正建立。**
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v115: 2655 行 / createLayer=6
+```
+
+## ⑥ 结论（第 133 轮）
+
+**绘制子系统在本固件里**从未启动**，连位图都没创建过一个。
+这不是探针问题、不是能力问题、也不是我们 hook 造成的——是固件自身没有走到那一步。**
+
+**因此判据 1（出帧来自 Gen5 自身绘制路径）在当前条件下不可达：
+固件没有产生任何绘制请求，也就不存在「自身的绘制路径产物」。**
