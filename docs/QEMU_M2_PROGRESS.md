@@ -44178,3 +44178,70 @@ QEMU 实例   0
 **定位我们 appFw 的九参数 apply 入口：从 `0x537118` 所在函数向上找入口，
 并结合 a7c2-re 记录的判定条件（manager 指针、`manager+0x348` 当前屏 id、
 `manager+0x330` controller）在本代固件里的等价字段。**
+
+# ★★★★★★★★★ 2026-11-11 第四百八十二章（R261–R264）：**a7c2-re 的硬件 shim 做法与我们不同，且更宽松**
+
+## ① 已确认：a7c2-re 的 QEMU 侧没有 GPU 设备模型
+
+它只新增了这些 QEMU 文件：
+
+```text
+hw/input/sony-ui-input.c        （输入通道）
+hw/misc/sony_cxd_bus_stub.c     ★ 关键
+hw/misc/sony_spacc_stub.c
+hw/timer/sony_hwtimer.c
+ui/gtk.c                        （ramfb 窗口）
+```
+
+**⇒ **没有** `grm_gles`/`GPE`/`dmpgles2` 的设备模型。绘制全部由 guest 内的软件后端承担。**
+
+## ② 而它的 `sony_cxd_bus_stub` 策略是「整个窗口读返回全 1」
+
+```c
+/* Catch-all for the CXD900xx peripheral window (0xF0000000..0xFFFFFFFF).
+ * answers reads with all-ones (status "done/ready" bits set) and absorbs writes. */
+static uint64_t cxd_bus_read(void *opaque, hwaddr offset, unsigned size)
+{
+    return 0xFFFFFFFF;
+}
+```
+
+**注释明说：全 1 让驱动的「done/ready」状态位全部看起来已完成。**
+
+## ③ 我们的实现只对一个地址返回非零
+
+```c
+static uint64_t sugi_read(void *opaque, hwaddr off, unsigned size)
+{
+    /* grm_gles polls 0xf3400080 for the Sugilite power-up acknowledge. */
+    return off == 0x80 ? 0x15 : 0;
+}
+```
+
+**⇒ 其余地址一律返回 0。若 `grm_gles` 用别的状态位判断「硬件就绪」，
+读 0 会被当成「未就绪」，驱动初始化就会停在等待。**
+
+## ④ 这是一个有既有做法依据、且改动很小的实验
+
+**把 `0xf3400000` 窗口的读从「只有 0x80 返回 0x15、其余 0」改成
+「除 0x80 保持 0x15 外，其余返回全 1（状态全完成）」，观察：**
+
+```text
+grm_gles 初始化是否更进一步
+DMP/VDF 握手是否出现
+qid 0x1706085 是否终于被发送
+```
+
+**a7c2-re 用这个思路解决过「驱动轮询缺失寄存器」的问题，属于同一类障碍。**
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v99: 2632 行 / createLayer=6
+```
+
+## ⑥ 下一步
+
+**按上述改动重编 QEMU，跑一轮，重点观察 `SND_TARGET`、DMP 相关日志、
+以及 createLayer 是否仍是 6（哨兵）。**
