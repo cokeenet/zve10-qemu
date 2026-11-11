@@ -44589,3 +44589,99 @@ QEMU 实例   0
 2. 补通 dataflow 协议后再看是否会自然请求菜单屏——层数未知
 3. 直接驱动 create_screen（虚调用需先定位 vtable，而 vtable 在 64 MB 无符号文件里）
 ```
+
+# ★★★★★★★★★ 2026-11-11 第四百八十八章（R294–R300）：**A7C2 官方固件已解包，但架构不同，指纹不可移植**
+
+## ① 按用户要求重新走 fwtool（不使用卡死的 ufu_tool）
+
+```text
+落盘目录    /mnt/build/downloads/bodydata-new/（不在 /tmp）
+下载        BODYDATA_A7C2_V201.DAT   1,139,929,560 字节
+SHA256      eb4943e6099754d64deaef5047942e9bfe258f232d0b7bc39fa23b3cd10e1e31
+            ↑ 与上游文档记载的官方输入完全一致
+```
+
+**解包用 vendored fwtool SDK（`sony-fw/a7c2-qemu-backup/runtime/analysis/vendor/fwtool-sdk`）：**
+
+```text
+crypter   = CXD90057_k8     （自动探测得出，不是 CXD90045）
+model     = 0x20030014      version = 2.01   region = 0 (ALLLANG)
+firmware.fdat = 1,135,475,712 字节
+解出 102 个 tar 成员 → 0700_part_image/dev/nflasha15 (770 MB ext2)
+```
+
+**两个关键库的 SHA256 与上游 `runtime-manifest.json` 的 pin **完全一致**：**
+
+```text
+appFw.so   2ea02f7ecbc5bb917316fe8ef4ce5ffd87eb66efaae78ba2ce11420552df539b  99,960,744 B
+libObj.so  c0897d72a40bf0a161fa7f89e9a34eef4d19e0506c7817a5c11a6f53897cdbbc   2,997,608 B
+```
+
+⇒ 这就是 a7c2-re 真正出过菜单帧的那份固件，已完整复现。
+
+## ② 但架构不同：字节指纹不能移植
+
+```text
+                A7C2 (ILCE-7CM2)        ZV1M2（我们）
+appFw 架构      aarch64 (64-bit)        arm32 EABI5 (32-bit)
+appFw 大小      99,960,744              64,273,528
+libObj 架构     aarch64                 arm32
+libObj 大小      2,997,608               3,931,624
+```
+
+**A7C2 的九参数 apply 入口（`appFw+0x1e78870`）在 AArch64 下的形态：**
+
+```text
+1e78870  sub  sp, sp, #0x1c0
+1e78874  uxtb w5, w5
+1e78878  stp  x29, x30, [sp, #0x20]
+1e7887c  add  x29, sp, #0x20
+1e78884  mov  x19, x0
+1e7888c  adrp x24, #0x5b4c000
+1e78890  ldrsw x0, [x2]
+1e78894  stp  x21, x22, [sp, #0x40]
+1e7889c  mov  x2, #0x60          ← 每条 0x60 字节（96）的结构数组
+1e788ac  madd x0, x0, x2, x1     ← 用 from/to 索引 × 0x60 取表项
+```
+
+**⇒ 这是 64 位寄存器约定，无法在 arm32 上按字节搜索。**
+
+**而「做法层」仍然适用：九参数 apply（`manager`、`&from`、`&to`、`&restore`、四个 int、栈参数），
+`from=0x308`、`to=0x346`。**
+
+## ③ 顺带确认的两个现成事实
+
+```text
+ZV1F appFw.so 也为 arm32（53,189,440 B）—— 同架构，可作为结构对照的另一份样本
+ZVE10M2 appFw.so 为 aarch64（93,620,512 B）—— 与 A7C2 同架构
+```
+
+**⇒ 手上有两组同架构对照：**
+
+```text
+arm32  : ZV1M2（目标） + ZV1F（同架构参考）
+aarch64: A7C2（已知可行） + ZVE10M2（同架构参考）
+```
+
+## ④ UI 线程的行为（本轮补充测量）
+
+```text
+tid=195 不收任何 OSAL 队列（RCVC 里无 tid=195）
+它只跑：UPDATEWATCH / DRAWSTAGE / STATQ / RENDERENTRY / DFBHOOK
+```
+
+**⇒ UI 线程是纯渲染循环，键事件必须经由别的线程转发才能影响它。**
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v110: 2646 行 / createLayer=6
+```
+
+## ⑥ 下一步
+
+**既然 A7C2（aarch64）不可直接移植到 ZV1M2（arm32），但有 ZV1F（arm32、同为 appFw 架构）：
+在 ZV1F 里定位同构的九参数 apply 入口，再把**arm32 形态**的字节指纹搬到 ZV1M2。**
+
+**这是当前唯一同时具备「同架构 + 同 UI 架构」的对照路径。**
