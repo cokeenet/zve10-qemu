@@ -45856,3 +45856,83 @@ B. Main 正常执行到 blx r4，进入主循环（正常，此时不返回是�
 
 **判据：在 Main 内部逐点埋计数器（14de/14e2/14ea/152a/1534/153a），
 看它执行到第几个调用。这能一次性确定它是卡住还是在跑主循环。**
+
+# ★★★★★★★★ 2026-11-11 第五百零六章（R390–R396）：**回答「新菜单如何在老菜单内启动」——以及与我们的三点关键差异**
+
+## ① 真机方案（bindm2）的机制（`tools/bindm2/bindm2.c` + `MASTER_HANDOVER_NEWMENU.md`）
+
+```text
+preload = /usr/tool/libefence.so : /log/libIMDB_m2.so : /log/bindm2.so
+              ↑白名单占位         ↑SONAME 顶替        ↑loop+bind
+
+bindm2.so 在 im.elf 的 preload 构造函数里（main 之前、dlopen 之前）：
+  LOOP_SET_FD → mount /log/m2usr.img (ext2, ro)
+  → bind 它的 lib/ 到 /usr/lib、share/ 到 /usr/share
+```
+
+**关键点：`/usr` 分区一个字节没改，但 `im.elf` 之后 dlopen
+`/usr/lib/libObj.so` 时，拿到的已经是 **M2 的库**。**
+
+**⇒ 「老菜单内启动新菜单」并不是运行时切换 UI，而是**在装载阶段替换库与模块表**：
+`libIMDB.so` 被 SONAME 顶替为 M2 版，于是 `im.elf` 读到的**模块表**就是 M2 的，
+后续 `appFwBoot.so` → `Application_System_Init` → `appFw.so` 全都是 M2 的。**
+
+## ② 真机打包方式：整块 `/usr` 分区镜像
+
+```text
+nflasha15_v9.ext2  249,102,336 字节（完整 ext2 分区，非 cpio/overlay）
+  /lib/appFw.so        64,273,528   ← ZV1M2
+  /lib/appFwBoot.so         8,312   ← ZV1M2
+  /lib/libIMDB.so          40,596
+  /lib/libObj.so        3,931,624   ← ZV1M2 4cd654f1
+  /share/app/  LayoutMaster_Menu.uxc / LayoutMaster_Other.uxc / 3 个 .ltt / Sony_DI_Icons.ttf
+```
+
+**⇒ 打包就是「把 M2 的 /usr 目录树做成 ext2 镜像」，然后要么 fastboot 刷进
+nflasha15 分区，要么 loop+bind 临时顶替。**
+
+## ③ 与**我们 QEMU 方案**的三点关键差异（本轮核心）
+
+```text
+                          真机 bind 方案              我们（QEMU）
+/usr 的库组成              业务库全部 M2 版          159 个 ZV1F + 31 个 ZV1M2 + 6 个 ZVE10
+启动锚点（im.elf）          E10 原厂                   ZV1M2 原厂（9d6da003）
+启动锚点（bootin.elf）      E10 原厂                   ZV1M2 原厂（3eff4684）
+模块表提供者                libIMDB_m2.so（SONAME 顶替）  M2 的 libIMDB（随库集合）
+```
+
+**⇒ 最重要的差异：我们的 `usr/lib` 里 **159 个库来自 ZV1F**，而不是 ZV1M2。**
+
+**这在代码层面完全能解释「为什么 UI 起不来」：**
+- `appFw.so` 是 ZV1M2 的（64 MB）
+- 但它依赖的 `libObj.so` 等一批库中，多数是 **ZV1F** 的
+- 而 ZV1F 与 ZV1M2 的 UI 版本不同（ZV1F appFw 是 53 MB、ZV1M2 是 64 MB）
+
+**⇒ 库集合与 appFw 版本不匹配，正是「Application_Start 能跑、但 UI 子系统起不来」的合理原因。**
+
+## ④ 真机方案为什么能成功
+
+```text
+MASTER_HANDOVER ⑤：v9 里业务库全部 M2 版；只有 kmod/sabin/启动锚点/libosal_uipc 保留 E10
+MASTER_HANDOVER ⑥：im.elf 依赖除 libIMDB(M2) 与 libosal_uipc(E10) 外全部两机型字节相同
+```
+
+**⇒ 真机方案的库集合是**干净的 M2 业务库 + E10 的硬件层**，
+而我们的是**ZV1F 为主的大杂烩**。**
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v116: 2651 行 / createLayer=6
+```
+
+## ⑥ 下一轮（方向明确）
+
+**按真机方案的配方重建 QEMU 的库集合：**
+```text
+1. 业务库全部改用 ZV1M2 原厂（当前 159 个 ZV1F 是主要偏差）
+2. 只保留必要的 E10 硬件层库（libosal_uipc 等）
+3. 启动锚点按真机方案的经验，考虑是否保留原厂
+```
+**判据：`appFw.so` 能加载后，`createLayer` 是否从 6 增加、`GENIDPROBE` 是否出现第 5 个布局名。**
