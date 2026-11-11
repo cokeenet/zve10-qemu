@@ -44310,3 +44310,74 @@ QEMU 实例   0
 **去掉自己注册的回调，改为「不注册、直接把消息投进队列」让 `osal_rcv_msg_tmo` 取到；
 或在 dummy 回调里把消息转发给该队列的同步等待者。
 判断依据：消息内容的 `[+4..5]/[+6..7]` 已确认是其校验字段，投递成功即应能通过校验。**
+
+# ★★★★★★★★★ 2026-11-11 第四百八十四章（R269–R276）：**找到屏 id 常量与菜单 widget 工厂，但 apply 入口仍未定位**
+
+## ① 已确认：屏 id 常量在两代固件中是同一套值
+
+appFw 里以立即数形式出现的屏 id：
+
+```text
+mov.w r3,#776 (0x308)    @ 0x536022 / 0x5437ea      ← 启动屏
+movw  r3,#838 (0x346)    @ 0x537118 / 0x544b82 / 0x56e6c2 / 0x639be0
+strb.w r2,[r4,#838]      @ 0x73e74c 等（这是 +0x346 结构体偏移，不是屏 id）
+```
+
+**⇒ 0x308 / 0x346 与 a7c2-re 记录的完全相同。**
+
+## ② 找到了菜单 widget 工厂（Sony 保留了断言签名）
+
+```text
+void* s_allocate_param_list_menu_item_with_value(...)
+void* s_allocate_param_list_menu_group(...)
+void* s_allocate_param_list_menu_item(...)
+void* s_allocate_param_menu_header(...)
+void* s_allocate_param_menu_select_value(...)
+void* s_allocate_param_menu_item_with_editbox(...)
+void* s_allocate_param_tp_screen_01 / 02 / 03 / general
+i_view_widget* s_allocate_tp_screen_02 / 03 / general
+virtual void view::create_screen(int, const ds_create_screen_param*, size_t, display_orientation_t)
+```
+
+**⇒ 菜单屏的构造器体系完整存在，`view::create_screen` 是入口。**
+
+## ③ 但 SCREENSTATE 未找到当前屏字段
+
+对两个稳定对象扫描 +0x2f0..+0x380：
+
+```text
+wgtsys      = layer_self = 0x4d6710（同一对象）
++0x300..+0x318 = 0
++0x31c..+0x35c = 若干代码指针 / 低值，无 0x2c8/0x2ca/0x308/0x346
+```
+
+**⇒ 当前屏 id 不在这个 widget-system 对象上；a7c2-re 读的 manager+0x348 是**另一个对象**
+（它自己的 manager，不是 wgtsys）。**
+
+## ④ 与参考实现的关键差异
+
+```text
+a7c2-re : 有 MENU_APPLY_SKIPPED/ENTER/RETURN 三个探针，
+          在首帧后调用 appfw+0x1e78870（九参数），把 0x308 → 0x346
+我们    : appFw 日志里菜单相关字样 0 条；0x346 从未被请求；
+          0x1e78870 这个偏移在我们的固件里是无关代码
+```
+
+**⇒ 偏移不能移植（不同 appFw 布局），必须在本固件里重新定位 apply 入口。**
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v103: 2653 行 / createLayer=6
+```
+
+## ⑥ 下一步（本固件内定位 apply 入口的可行路径）
+
+```text
+1. hook view::create_screen（签名已从断言字符串得到），观察谁调用、参数是什么
+2. 若无调用，找到持有 manager 指针的对象（a7c2 通过 manager+0x330/+0x348 判定）
+3. 有了 create_screen 的调用点，就能从调用者定位到 apply 入口
+```
+
+**这条路每一步都可验证，且与参考实现的做法同构。**
