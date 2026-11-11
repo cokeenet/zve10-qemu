@@ -45640,3 +45640,69 @@ QEMU 实例   0
 
 **而这些都不是"再补一个探针"能解决的——它需要固件层面有一个能启动 UI 的前置条件，
 该条件在当前模型里缺失。**
+
+# ★★★★★★★★ 2026-11-11 第五百零三章（R372–R377）：**修正"框架全空壳"——只有 YUV 系列是空桩，GPE 绘制入口是真实的**
+
+## ① 我上一轮的结论过宽，本轮逐条分类后修正
+
+对 libObj 的 21 个 `GRM_` 导出逐个反汇编分类：
+
+```text
+空桩（movs r0,#0 / pop，共 8 个，全部属于 YUV 路径）：
+  GRM_fbrmPrepareUpdateYUV / TerminateYUV / UpdateYUV / FillrectYUV
+  GRM_fbrmRectblitYUV / InitializeYUV / RegisterTriggerFrameworkCb
+  GRM_screenGetOnBitmap
+
+有真实实现（13 个，bitmap / gperm 路径）：
+  GRM_bitmapCreate / CreateFromPhys / CreateComposite / Release
+  GRM_bitmapGetSubRectangle / GetRowPixelCount / GetPhysicalAddress
+  GRM_bitmapWriteLockBits / WriteUnlockBits
+  GRM_gpermFillrect      ← ★ 真实 GPE 填充请求
+  GRM_gpermRectblit      ← ★ 真实 GPE 位块传输
+  GRM_fbrmSetScreenPreference（有分支/跳表，非空桩）
+  GRM_fbrmCheckUpdateFinished（有实现）
+```
+
+**⇒ 上一轮「框架全是空壳」的结论**只对 YUV 成立**；真正的 GPE 绘制入口
+（`GRM_gpermFillrect` @0x117b4c、`GRM_gpermRectblit` @0x117c86）是**完整实现**。**
+
+## ② `GRM_gpermFillrect` 的实现结构（0x117b4c..0x117bbe）
+
+```text
+117b90  blx  GRM_bitmapGetSubRectangle     ← 取目标子矩形
+117ba8  bl   0x117ae0 (grm_res+0xd60)      ← 核心填充
+117bb6  bl   0x114e40 (bitmapCreateComposite+0x2c)
+```
+
+**⇒ 这是「查位图 → 求子矩形 → 填充 → 合成」的真实绘制流程，
+证明本固件的 GPE 绘制路径**可用**，只差被调用。**
+
+## ③ 因此问题重新表述（这次更准确）
+
+```text
+不是「框架是空壳、无法绘制」
+而是「有完整的 GPE 实现，但固件从未呼叫它」
+```
+
+**⇒ 与 a7c2-re 的对照变得更有利：
+它 hook 的正是 GPE 请求（clear/present），而我们的固件同样有这些实现，
+只是没有菜单/控件去产生请求。**
+
+## ④ 约束
+
+```text
+QEMU 实例   0
+基线        v114: 2654 行 / createLayer=6
+```
+
+## ⑤ 下一步
+
+**hook `GRM_gpermFillrect` 与 `GRM_gpermRectblit`（它们是导出符号，可直接拦截），
+观察运行中是否被调用：**
+
+```text
+- 若被调用 → 说明固件确实在画，问题在别处（比如缓冲/格式）
+- 若从不被调用 → 确认「无控件发出请求」这一环
+```
+
+**这是本轮修正后新得到的、可直接测量的判据。**
