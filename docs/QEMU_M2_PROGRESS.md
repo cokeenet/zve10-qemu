@@ -46413,3 +46413,80 @@ QEMU 实例   0
 
 **下一轮：对比 `Application_Start` 前 100 条指令与我们实测的执行轨迹，
 找出它在哪里偏离了「建立控件树」的正常路径。**
+
+# ★★★★★★★★ 2026-11-11 第五百一十三章（R444–R452）：**发现并修掉「自己的驱动在阻塞真容器」**
+
+## ① 本轮最大的一个真发现
+
+```text
+re_wrapper（容器入口 0x54f664 的包装器）的结构是：
+    1. 先执行 RENDEREXEC2 诊断驱动：rf(a0) = 0x54ed12
+    2. 末尾才执行 g_re_orig(a0) —— 固件真正的容器
+```
+
+**而实测：**
+
+```text
+v121:  RENDEREXEC2 calling 出现，RENDEREXEC2 returned 从未出现
+⇒ rf(a0) = 0x54ed12 永不返回
+⇒ 末尾的 g_re_orig(a0) 永远执行不到
+⇒ 固件自己的容器（含 stage1 → 菜单构建器 0x723aac）从未被执行
+```
+
+**⇒ 这就是「RE71 / SITE3PROBE / GRMFILL 全是 0、而容器入口看起来健康」的**真正原因**：
+我的诊断驱动把容器挡在了门外。**
+
+## ② 修掉后：真容器被调用了
+
+```text
+RENDERENTRY forward to real container tramp=0x9846001 a0=0x36db43e0 tid=195
+STAGEMAP stage=1 call=1 tid=195
+```
+
+**⇒ 容器真的进入了 stage1（`0x54ef74`），并且 stage1 的探针首次稳定命中。**
+
+## ③ stage1 探针此前一直用错长度
+
+```text
+0x54ef74 真实字节：f0 b5 (push) | 83 b0 (sub sp,#12) | 04 46 (mov r4,r0)
+                   | 04 f5 d5 66 (add.w r6,r4,#0x6a8) | 00 af (add r7,sp,#0)
+```
+
+**`add.w` 占 4 字节 ⇒ 8 或 10 字节的拷贝会切断指令；12 是第一个 ≥ stub(8) 的边界，
+且六条指令无 PC 相对。**
+
+**改为 pro_len=12 后：`STAGEMAP stage=1 call=1` 稳定出现。**
+
+## ④ 本轮同时确认 stage1 之后的第一个调用是无害的空桩
+
+```text
+stage1 入口：blx r3，其中 r3 = *(*(a0+0x10))
+实测 slot0 = appFw+0x54d05d → push {r7,lr} / add r7,sp,#0 / pop {r7,pc}   （空函数）
+```
+
+**⇒ stage1 不是卡在这个虚调用上，而是卡在后续的 appFw 内部调用上
+（那些走 PLT veneer、目标在 appFw 自身，无法按符号拦截）。**
+
+## ⑤ 一次自伤 + 回滚
+
+**本轮试图拦截 `ux_wgtlay::LayoutConverter::registerWidget` 与
+`AnimationNodeConverter::registerWidget`（libObj 导出、可直接 hook），
+结果运行塌到 299 行（createLayer 消失）。**
+
+**⇒ 已整体移除该探针，基线恢复：v126 = 2479 行 / createLayer=6。**
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v126: 2479 行 / createLayer=6
+```
+
+## ⑦ 下一步
+
+**容器与 stage1 现在都是「真实执行」了。下一步应测量 stage1 内部
+那串 appFw 内部调用（0x925fb0 / 0x923900 / 0x9246b8 / 0x9240d4 / 0x723aac …）
+里，第一个不返回的是哪一个。**
+
+**这些走 PLT veneer，不能按符号 hook，但可以用 QEMU 侧 PC 采样定位
+（PCSAMP 已在机器模型里，且 v124 的样本显示 PC 集中在 appFw 区间）。**
