@@ -43755,3 +43755,83 @@ B. 完全模仿参考实现：不等握手，直接用软件后端接管绘制
 ```
 
 **判断：先走 A。它比 B 更接近"固件自身绘制路径"这一验收要求。**
+
+# ★★★★★★★★★ 2026-11-11 第四百七十六章（R238–R239）：**又一次「未观测 ≠ 不存在」；设备通道已证实完全正常**
+
+## ① R238：补上 open/ioctl 探针后，推翻我上一轮的判断
+
+上一轮我从「日志里没有 open/ioctl 记录」断言「`/dev/dmpgles2` 从未被使用」。
+**但当时根本没有 open/ioctl 探针——那只是未观测。**
+
+补上探针后实测：
+
+```text
+DEVOPEN n=22 path=/dev/dmpgles2 flags=0x2 ret=15 tid=136
+DEVOPEN n=23 path=/dev/mem       flags=0x2 ret=16 tid=136
+BASEPRINT /dev/dmpgles2 base=0x933e000
+```
+
+**⇒ `/dev/dmpgles2` 确实被 `tid=136` 打开（fd=15），`/dev/mem` 也是（fd=16）。**
+
+## ② R239：通道全部正常，问题在「本进程内的发送方」
+
+```text
+DEVIOCTL 总数            126，全部 fd=3（/dev/uipc）
+fd=15 / fd=16 上的 ioctl 0 次
+QCREATE                  6 次，其中 6 次 ret=-1024
+U_VALLOC                 35 次
+SNDMSG_PROBE             16 次
+```
+
+**`QCREATE ret=-1024` 是 `-EEXIST`（同一 qid 重复创建），属正常行为，不是失败。**
+
+**⇒ `/dev/uipc` 通道完全健康（OSAL 消息层正常工作）。**
+
+**而 `vdf_if_port_init` 在 `0x127b54` 用的是 `osal_rcv_msg_tmo`
+—— 它走 OSAL 队列，不走 `dmpgles2` 的 ioctl。**
+
+## ③ 因此阻塞点收窄为：本进程内无人向 `0x1706085` 发送
+
+```text
+[通]  /dev/dmpgles2 已 open（fd=15）
+[通]  /dev/uipc 通道健康（126 次 ioctl、队列创建正常、35 次 valloc）
+[通]  /dev/mem 已 open（fd=16）
+[断]  ★ qid=0x1706085 全系统零发送（实测 400 次发送中零次到达）
+[断]  tid=136 在该队列上 osal_rcv_msg_tmo(tmo=-1) 永久等待
+```
+
+**⇒ 等待方已经就绪、通信通道也正常，缺的是「谁该发这条消息」。**
+
+**而发送方应当是 `dmpNative::CmdProcessorVdf::proc_connect_comp`，
+它属于 GPU 驱动的 DMP 服务端逻辑；该服务端在我们的环境里没有被启动。**
+
+## ④ 累计方法论教训（本会话第 4 次同类错误）
+
+```text
+1. R199  report_got_slots 阻塞执行链      → 「之后不执行」先怀疑探针
+2. R202  dump_thread_state 阻塞执行链     → 同上
+3. R233  发送探针只记前 10 次             → 「没有发送」需先证明可观测
+4. R238  没有 open 探针却断言「未使用」   → 同上
+```
+
+**统一结论：任何「零」的结论，必须先证明该现象是可观测的零。**
+**已写入台账铁律 #6。**
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v90: 2306 行 / createLayer=6
+```
+
+## ⑥ 下一步
+
+**既然通道与等待方都正常，唯一缺的是发送方。两条可行路线：**
+
+```text
+A. 在 guest 内直接向 0x1706085 发一条「连接完成」消息（模拟 proc_connect_comp）
+   —— 需要知道消息体的结构（可由 0x128a28 构造的参数块推断）
+B. 找到 DMP 服务端在本进程内的启动点，让它真正运行
+```
+
+**A 更直接：等待方已经在等，只要给它一条格式正确的消息就能继续。**
