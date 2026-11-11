@@ -44117,3 +44117,64 @@ QEMU 实例   0
 **按 a7c2-re 的做法：在 UI 线程自然首帧返回后，用固件自身的生命周期入口请求菜单屏。**
 **对 Gen5/ZV1M2 需要先把 `0x1e78870` 那个九参数生命周期入口在 appFw 里定位出来
 （a7c2-re 的地址属于 A7C2 的 appFw，不是我们的）。**
+
+# ★★★★★★★★★ 2026-11-11 第四百八十一章（R257–R260）：**菜单屏 id 在我们的 appFw 里存在，但从未被请求**
+
+## ① 上一轮对照结论的进一步验证
+
+a7c2-re 的成功做法（`try_apply_menu_after_frame`，原文摘录）：
+
+```c
+unsigned int from = 0x4b7, to = 0x346, restore = 0x4b7;
+typedef void (*apply_t)(void *, const unsigned int *, const unsigned int *, const unsigned int *,
+                        unsigned int, unsigned int, unsigned int, unsigned int, unsigned int);
+((apply_t)(appfw_base + 0x1e78870))((void *)manager, &from, &to, &restore, 0,1,0,0,0);
+```
+
+**九参数 apply，在原 UI 线程 `notifyDraw→drawFramebuffer` 首帧返回后调用。**
+**验证记录：`MENU_APPLY_ENTER/RETURN`、菜单 ctor、`MODE_SLOT4 mode=menu`，随后请求泵创建 `0x2ca/count44`。**
+
+## ② 我们的 appFw 里确实有同一个屏 id 常量
+
+```text
+movw r3,#838 (0x346) 出现在：0x537118 / 0x544b82 / 0x56e6c2 / 0x639be0 / 0x7a290a
+```
+
+**⇒ 屏 id `0x346` 在两代固件里是同一个值，菜单屏的概念一致。**
+
+## ③ 但我们的运行从未请求它
+
+```text
+0x346        0 次（日志中无该屏请求）
+0x2ca        0 次
+RM processCommands ENTER = 2（只启动了初始屏集）
+switchBank ENTER = 6（bank 0 五次、bank 3 一次）
+CREATELAYER = 6（初始 6 图层，id 0x31ec6e00..0c）
+```
+
+**⇒ 与 a7c2-re 的差异被完全确认：它显式发起了菜单 apply，我们没有。**
+
+## ④ 因此当前任务变得明确
+
+```text
+要做的事 = 在 UI 线程首帧返回后，调用固件自身的九参数 apply，
+          把屏从当前(0x308 类)切到 0x346(菜单)
+需要先找到 = 我们 appFw 里那个九参数 apply 入口的地址
+             （a7c2-re 的是 appfw+0x1e78870，那是 A7C2 的布局）
+```
+
+**候选观察点：`0x537118` 处把 `0x346` 写入参数块并调用 `0x52c4b4`——
+这看起来就是「请求某屏」的现场，需要确认它所在函数的入口与参数约定。**
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v99: 2632 行 / createLayer=6
+```
+
+## ⑥ 下一步
+
+**定位我们 appFw 的九参数 apply 入口：从 `0x537118` 所在函数向上找入口，
+并结合 a7c2-re 记录的判定条件（manager 指针、`manager+0x348` 当前屏 id、
+`manager+0x330` controller）在本代固件里的等价字段。**
