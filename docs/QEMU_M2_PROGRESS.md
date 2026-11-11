@@ -44967,3 +44967,73 @@ QEMU 实例   0
 永远等不到返回，菜单自然无从谈起。**
 
 **这解释了此前所有"绘制骨架空转"的现象：不是绘制坏了，是**整个应用还没初始化完**。**
+
+# ★★★★★★★★ 2026-11-11 第四百九十三章（R320–R325）：**Application_System_Init 从未被调用——启动链断在 appFwBoot 内部**
+
+## ① 澄清 appFwBoot 与 appFw 的分工
+
+```text
+appFwBoot.so (8,312 B) 导出 Application_System_Init @0x1270 与 Main @0x14d8
+appFw.so   (64 MB)     导出 Application_Start @0x54d580
+```
+
+**`appFwBoot` 的 `Application_System_Init` 内部做的事（逐条解码）：**
+
+```text
+1274  sub  sp, #72
+1282  blx  memset@plt
+1294  blx  snprintf@plt          ← 拼一条消息体
+12a8  blx  osal_valloc_msg_wait  ← 取消息缓冲
+12cc  blx  snprintf@plt
+12d8  blx  osal_snd_sync_msg     ← ★ 同步发送（这是它的全部工作）
+```
+
+**⇒ 它的本体就是「拼一条消息 + 同步发出去」，返回值即发送结果。**
+
+## ② 实测：它从未执行
+
+```text
+ARGTRACE hooked Application_System_Init = 0x11135271   （hook 已安装）
+UXLIFE app_fw_init 记录                               0 条
+SSM 中 mod=appFwBoot.so 的记录                        0 条
+```
+
+**⇒ 两个独立探针都表明：`Application_System_Init` **从未被调用**。**
+
+## ③ 并且能证明 appFwBoot 的 Main 也没走完
+
+```text
+Main 的调用链（已反汇编）：
+  uxengine_init2 → initializeArena → Kernel::sys_setCurrentDirectory
+  → gfxeng / getAreaCheckExtensionManager / setCheckDataPath / setLogPath
+  → setOverflowResizeFontAttribute / setOverflowResizeLayoutAttribute
+  → resmgr / ResourceManager::setDatabase(PKc)
+  → resmgr / sys_setFontNameWithNamespace(t)
+  → 若干 raise@plt
+
+日志中这些调用一条都没出现（stella_print_log/raise/setDatabase 均 0 次）
+```
+
+**⇒ `Main` 也没有执行到资源库设置阶段。**
+
+## ④ 结论：启动链断在 appFwBoot 之前或之内
+
+```text
+bootin.elf 已 dlopen appFwBoot.so（ARGTRACE 记录 flags=0x101 → 0x98ad8）
+但 appFwBoot 的 Main / Application_System_Init 都没有产生任何可观测动作
+```
+
+**⇒ 下一步必须查 `bootin.elf` 是否真的调用了 `appFwBoot.Main`。**
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v114: 2654 行 / createLayer=6
+```
+
+## ⑥ 修正记录（本轮自己犯的错）
+
+**R319 我把 `INITSEQ resolve ...` 读成「初始化序列走到某个模块」，
+实际上那只是 `dlsym` 的**解析**记录，与是否调用无关。**
+**本轮用 UXLIFE + SSM 两个独立探针纠正了这一点：`Application_System_Init` 从未被调用。**
