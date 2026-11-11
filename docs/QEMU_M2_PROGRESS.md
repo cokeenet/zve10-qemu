@@ -47828,3 +47828,96 @@ QEMU 实例   0
 **  2. 在**这个最小探针集**下重复 ≥5 次，先确定"第 7 次 + 真实现进入"的稳定概率；**
 **  3. 只有在该概率可重复之后，才逐个加回其它探针，并记录每次的概率变化 ——**
 **     把「探针密度 vs 可达性」本身作为受控变量来测，而不是盲目叠加。**
+
+# ★★★★★★★★ 2026-11-12 第五百三十一章（R721–R745）：**复现"双 libObj"布局（按日志的做法），结果与参考相反**
+
+## ① 本轮最重要的一件事：按参考日志的布局真的搭建了一遍
+
+参考日志的 Step 0 / Step 1-5 显示它用的是**改名后的 Gen5 闭包 + 旧库预载**：
+
+```text
+[Step 0] Preloading OSAL, libObj.so and Shadow-inherit MWF
+         libosal_utm / libosal_uipc / libbackup / libObj / libMWF
+[Step 1-5] /log/g5/libOb5.so      h=0x2e400 (71.1 ms)
+           /log/g5/libmp5.so      h=0x2eee0 (97.2 ms)
+           /log/g5/libObjShim.so  h=0x41298 (1.5 ms)
+           /log/g5/AdjChkConfig.so h=0x41558 (5.5 ms)
+           /log/g5/libappFwBoot_g5.so h=0x41910 (1.3 ms)
+```
+
+**注意：它第三行写的是 `libOb5.so` / `libmp5.so` / `libappFwBoot_g5.so`——
+**Gen5 的库是**改了名**的**（`libObj`→`libOb5`、`libmpr`→`libmp5`），
+而原名 `libObj.so` 位置留给**旧库**。这与"两代 SONAME 都叫 libObj.so"的冲突完全吻合。**
+
+## ② 我按这个布局搭了一遍
+
+```text
+cp Gen5 libObj.so → libOb5.so + patchelf --set-soname libOb5.so   （成功）
+cp E10 原厂 libObj.so → 占住 libObj.so 原名
+LD_PRELOAD=/usr/lib/libObj.so:/usr/lib/libOb5.so:...            （旧在前、新在后）
+```
+
+**第一次尝试：349 行崩溃**
+
+```text
+bootin.elf: error while loading shared libraries: libmprctrl.so: cannot open
+```
+
+**⇒ 旧 libObj 有 3 个依赖不在部署树里：`libmprctrl.so` / `libBizFw.so` / `libBizFw2.so`。
+已从 ZVE10 原厂补入（`a54c3195` / `ae3fddb9` / `ad401c21`）。**
+
+**第二次尝试：1867 行，但**
+
+```text
+createLayer = 0
+LIBOBJ_SYM  = 19   （基线是 24）
+appFw.so dlopen = 0
+```
+
+**⇒ 双库布局下 appFw **没有加载**，UI 根本没有起来。**
+
+## ③ 这否定了我此前的"符号层面几乎自足"结论的一个隐含前提
+
+**我之前测出「Gen5 六库闭包 + E10 平台只剩 4 个真缺口」，
+但那是在**只用 Gen5 libObj** 的前提下。**
+**一旦把**旧 libObj 同时塞进全局作用域**，`LIBOBJ_SYM` 从 24 掉到 19、
+`appFw` 直接不加载 —— 说明两代同名符号的**链接顺序/覆盖**确实会改变结果。**
+
+**⇒ 参考方能成功，说明它的 `libObjShim.so`（我们**没有这个文件**）
+**很可能承担了按符号族分流的关键工作，而不是简单的改名。**
+
+## ④ 已完整恢复基线（并记录恢复过程）
+
+```text
+移除 libOb5.so、libmprctrl.so、libBizFw.so、libBizFw2.so
+恢复 Gen5 libObj.so（4cd654f1）与原始 LD_PRELOAD
+v183: 2474 行 / createLayer=6 / LIBOBJ_SYM=24 / updateFrame=1 / Application_Start ENTER=1
+```
+
+**⇒ 基线完全恢复。**
+
+## ⑤ 本轮同时打通了一个此前没有的能力：宿主机侧帧导出
+
+```text
+在机器模型里加 ZVE10_FRAME_OUT / _PHYS / _SIZE 的 atexit 导出：
+    FRAMEDUMP phys=0x22d52000 bytes=614400 nonzero16=0 unique16=1 fnv=ff56637e396d8383
+```
+
+**⇒ 现在可以从**宿主机**直接读出 guest 物理内存里的 640×480×2 帧并落盘、算摘要。
+**这是判据 2「记录 SHA256 与物理地址」所需的通道，现已具备。**
+**当前读到的是全零帧，因为固件尚未绘制。**
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v183: 2474 行 / createLayer=6 / LIBOBJ_SYM=24
+```
+
+## ⑦ 下一步
+
+**参考日志里我们唯一没有的组件是 `libObjShim.so`。**
+**它不可能是"改名"这么简单（改名我已经做了、失败了）。**
+**下一步：从「Gen5 appFw 需要 62 个仅 Gen5 libObj 提供的符号、
+**而旧 libObj 提供 151 个共同符号」这个结构出发，做一个**真正按符号族分流的 shim**，
+**让 Gen5 侧符号走 libOb5、平台侧符号走旧 libObj。**
