@@ -44755,3 +44755,71 @@ QEMU 实例   0
 
 **若继续，需要接受「可能还需要几十轮且仍不保证成功」；
 若收尾，我可以把上述成果整理成最终归档。请指示。**
+
+# ★★★★★★★★ 2026-11-11 第四百九十章（R306–R310）：**换用库边界探针，拿到「UI 到底请求了哪些布局」的直接答案**
+
+## ① 放弃在 64 MB appFw 里搜特征，改用 libObj 导出符号做钩子
+
+前四轮静态特征搜索全部失败。本轮改在**库边界**下钩：
+
+```text
+WidgetLayouter::openFirst   (libObj+0xd3cb0)
+WidgetLayouter::switchAfter (libObj+0xd40c6)
+WidgetLayouter::closeAll    (libObj+0xd4230)
+ux::core::ID::genID(char const*)   ← 所有图层/屏 id 的唯一构造入口
+```
+
+**四个符号在 `libObj.so` 的 dynsym 里导出，可直接 LD_PRELOAD 拦截，无需任何偏移搜索。**
+
+## ② 实测结果（v112，基线 2664 行 / createLayer=6）
+
+```text
+LAYOUTPROBE openFirst / switchAfter / closeAll    0 次
+GENIDPROBE  name=AAA -> 0x8001653f
+            name=BBB -> 0x80016abe
+            name=CCC -> 0x8001703d
+            name=DDD -> 0x800175bc     （共 4 次，之后再也没有）
+```
+
+**⇒ 这个固件从启动到现在，只请求过 4 个布局 id（AAA/BBB/CCC/DDD），
+`WidgetLayouter` 的布局生命周期一次都没有发生。**
+
+## ③ 这一结论的价值：把「差入口定位」改写成「前置状态未到」
+
+```text
+之前的假设：菜单屏请求逻辑存在，只是我没找到它的入口
+现在的证据：UI 根本没有请求任何第 5 个布局
+            —— 不是"入口没找到"，是"调用根本没发生"
+```
+
+**⇒ 因此 a7c2-re 那种「首帧后主动 apply」的做法，在本固件上的前置条件是**缺的**：
+它的 market 是 ZV-E10 的 viewUnified（自带首屏流程），
+而 ZV1M2 的 appFw 停在 4 个基础图层后就没有下一步。**
+
+## ④ 同时修正了一个我自己的实现错误
+
+`genID` 首次包装时被我写成无参数、无返回值转发（`void *real(void)`），
+那样会把 r0 覆盖掉、破坏所有图层 id。已改为正确形态：
+
+```c
+unsigned genID(const char *name);     /* ID 是单个 u32 */
+```
+
+**这是本轮在跑通测量之前必须先修掉的自身缺陷。**
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v112: 2664 行 / createLayer=6
+```
+
+## ⑥ 结论
+
+**当前架构下，ZV1M2 的 appFw 不会自己进入菜单界面：
+它只创建 4 个基础布局，WidgetLayouter 的生命周期从未启动。
+而「怎样让它在正确时机请求菜单布局」这件事，参考实现用的是**另一代 UI 的自带流程**，
+本固件没有等价的可触发点。**
+
+**因此本 goal 的判据 1（出帧来自 Gen5 自身绘制路径）在当前条件下无法达成，
+除非找到本固件自己的菜单入口——而它已被证明不是"我没搜到"，而是"从未被调用"。**
