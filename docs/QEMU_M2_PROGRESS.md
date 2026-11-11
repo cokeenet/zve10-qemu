@@ -46656,3 +46656,73 @@ QEMU 实例   0
 
 **对 bl4（`0x1d58f98`）内部这 12 条调用做同一套入口探针，
 定位它到底停在第几条（预期落在 `0x258eb0c` 或紧随其后的 `0x2b20ce0`）。**
+
+# ★★★★★★★★ 2026-11-11 第五百一十六章（R480–R486）：**卡点再下一个函数：bl4 的第一个调用 `0x1c1baa4`**
+
+## ① 本轮的主线推进（三层探针逐级收窄）
+
+```text
+第1层  stage1 (0x54ef74)
+         └─ pre1 veneer 0x923900 命中有返回
+第2层  pre1 的真目标 appFw+0x1d5a3d8
+         ├─ bl1 0x2c2de18   ✓
+         ├─ bl2 0x25c9888   ✓(循环)
+         ├─ bl3 0x2ce6ae4   ✓
+         ├─ bl4 0x1d58f98   ✓ 进入
+         └─ bl5 0x2ce6bd0   ✗ 从未进入   ⇒ 停在 bl4 内部
+第3层  bl4 内部 12 条调用中 4 条可 pin
+         └─ c1 0x1c1baa4    ✓ 进入
+            c7 0x28f1590    ✗
+            c11 0x1c97e40   ✗
+            c12 0x1cc51d4   ✗      ⇒ 停在 c1 内部
+第4层  c1 = appFw+0x1c1baa4（仅 0x22 字节）：
+         push/sub/add
+         1c1baac  bl  0x1bf3114
+         1c1bab0  ldr r3,[pc,#0x14] ; strb r2,[r3]      ← 写一个全局标志
+         1c1baba  blx 0x1d0c0f4
+         1c1bac4  pop {r7,pc}
+```
+
+**⇒ c1 结构完整、无循环，所以它「进入而不返回」意味着
+它卡在 `0x1bf3114` 或 `0x1d0c0f4` 里面（或 `blx` 进去的那层更深）。**
+
+## ② 本轮另外两条负结果（必须记下，避免重复劳动）
+
+### 2.1 FORCEWRAP（force getter 链）全部装上了，但**一次都没命中**
+
+```text
+FORCEWRAP forceGet_2bc41a8 installed ... wrote=8
+FORCEWRAP fmt_a_279a30c  installed ... wrote=8
+FORCEWRAP fmt_b_23bde34  installed ... wrote=8
+FORCEWRAP fmt_c_23de1ec  installed ... wrote=8
+FORCEWRAP fmt_d_23bde64  installed ... wrote=8
+（命中数：全部 0）
+```
+
+**⇒ 那条「读 0x2cf1844 → 格式化 → 显示」的路径**根本不在当前执行线上**。
+`0x258eac8` 这个 wrapper 不是被 bl4 调用的（`0x258eb0c` 虽然 bl4 里有引用，
+但执行从未走到那一条）。**
+
+**这否定了前一轮「BLFILL 相关键就是卡点」的推测 —— 那个观测到的
+`BACKUP_nread key=0x2cf1844` 属于另一条线程/另一条路径。**
+
+### 2.2 ENTRY4 只命中 c1
+
+```text
+ENTRY4 c1_1c1baa4  ✓
+ENTRY4 c7_28f1590  ✗   c11 ✗   c12 ✗
+```
+
+**⇒ bl4 在 c1 里停下，后面的调用（含备份键相关的那几条）从未执行。**
+
+## ③ 约束
+
+```text
+QEMU 实例   0
+基线        v143: 2378 行 / createLayer=6
+```
+
+## ④ 下一步
+
+**把 c1（`0x1c1baa4`）的两个调用 `0x1bf3114` 与 `0x1d0c0f4` 各装探针，
+定位到底卡哪一个。这两条都短，可 pin。**
