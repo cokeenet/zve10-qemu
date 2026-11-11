@@ -46012,3 +46012,96 @@ QEMU 实例   0
 
 **若能模拟它的作用（哪怕只在 QEMU 里），就把他们验证成功的路径复刻过来。
 这是 135 轮里第一次有「别人已经验证成功、只差一个 shim」的明确路径。**
+
+# ★★★★★★★★ 2026-11-11 第五百零八章（R405–R412）：**按用户要求正面测量「shim 到底要补什么」——结论是：符号层面几乎没有缺口**
+
+## ① 用户给的那份日志的关键信息（重新精读）
+
+```text
+[Step 0] Preloading OSAL, libObj.so and Shadow-inherit MWF...
+  libosal_utm / libosal_uipc / libbackup / libObj / libMWF   ← 老库先进全局作用域
+[Step 1-5] /log/g5/libObj.so, libmpr.so, libObjShim.so, AdjChkConfig.so, libappFwBoot.so
+[Step 6] appFw.so 64.3MB / 2730 构造器 → SUCCESS 2153.6 ms
+[Step 7] _Z4MainPv=0x402b4d9, Application_Start=0x9fa9581
+```
+
+## ② 本轮做的正面测量（把「shim 补什么」量化）
+
+### 2.1 Gen5 六库的符号闭包
+
+```text
+合并 UND = 1316
+闭包内自满足 = 315
+需外部     = 1001
+```
+
+### 2.2 交给「E10 平台（含 libc + 部署树）」后仍缺的
+
+```text
+仅 9 个：
+  _Jv_RegisterClasses        （WEAK，可空）
+  __gmon_start__             （WEAK，可空）
+  arch_phys_to_cache         （两代 libObj 都是 UND，由内核模块提供）
+  _ZN16infra_wrapper_bb…adf_ext_type…   （appFw 自己定义）
+  _ZN21infra_wrapper_imaging…set_user_matrix…（appFw 自己定义）
+  _ZN6GpsMgr26SetAllInvalidDefStrGpsInfo…（libmpr 自己定义）
+  _ZNK13app_adjchk_ui…dumpEv  （AdjChkConfig 自己定义）
+  _ZNSt11basic_regex…_M_compileEv  / _ZSt12regex_search…  （libstdc++ 模板实例）
+```
+
+**⇒ 也就是说：**在符号层面，Gen5 闭环 + E10 平台**几乎自足**，
+真正需要「补」的只有 2 个 libstdc++ 模板实例和 1 个内核服务符号。**
+
+### 2.3 appFw 对 libObj 类符号的覆盖率
+
+```text
+appFw 需要的 ux / GRM / InfraInput 类符号 = 134
+M2 libObj 提供                              = 134   (100%)
+```
+
+**⇒ ZV1M2 自己的 libObj 对 appFw 是**完全兼容**的。**
+
+## ③ 因此 shim 的真实作用不是「补符号」
+
+**若只缺符号，`libObjShim.so` 不必存在。它存在的理由只能是：**
+
+```text
+A. 两套 libObj 的 SONAME 相同（都叫 libObj.so）——不能同时进全局作用域
+   ⇒ shim 负责「让新的 libObj 以另一个名字/另一个作用域被 appFw 看见」
+B. 老 libObj 提供的平台服务（InfraInput/Fsys/mcmn 等）与新 libObj 的同名符号
+   需要「影子继承」：老实现优先，新 libObj 只接管 ux/GRM 部分
+```
+
+**日志里 `Shadow-inherit MWF` 正是 B 的直接证据 —— 它是「老服务 + 新框架」的混合作用域。**
+
+## ④ 我们当前状态与他们的差异（精确版）
+
+```text
+他们：老 libObj（全局）+ 新 libObj（/log/g5，另名或另作用域）+ shim 桥接
+我们：/usr/lib/libObj.so 就是新 libObj（4cd654f1），全局只有它一份
+```
+
+**⇒ 我们没有「老 libObj」这一层，因此所有原本由老 libObj 提供的平台服务
+（InfraInput 的完整实现、Fsys、mcmn 等）都直接由新 libObj 接管 —— 而新 libObj
+只导出 571 个符号，老 libObj 1955 个。**
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v116: 2651 行 / createLayer=6
+```
+
+## ⑥ 结论 / 下一步
+
+**shim 的设计目标已经明确（不是补符号，而是「双 libObj 作用域桥接」）：
+
+```text
+libObjShim.so 需要做到：
+  1. 让 appFw 解析 ux/GRM 符号时命中【新 libObj】
+  2. 让 appFw 解析 InfraInput/Fsys/mcmn 等服务符号时命中【老 libObj】
+  3. 两者 SONAME 相同，必须靠「先加载老、再以 RTLD_LOCAL 加载新」或等价手段区分
+```
+
+**下一轮：在 QEMU 里复刻这个双库布局（老 libObj 从 E10 取，新 libObj 改名放 /log/g5），
+并写一个最小 shim。**
