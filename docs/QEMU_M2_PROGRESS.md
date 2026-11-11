@@ -46193,3 +46193,78 @@ QEMU 实例   0
 // 这样全局作用域里：老 libObj 先加载 → shim 拦截平台族 → 新 libObj 提供 ux/GRM
 ```
 **判据：`MAINPROBE` 之后是否出现 `uxengine_init2 ENTER`（当前 0 次）。**
+
+# ★★★★★★★★ 2026-11-11 第五百一十章（R420–R428）：**按用户要求正面回答「ZVE10 原厂 libObj 缺什么」**
+
+## ① 用户问的问题，逐项量化（本轮核心交付）
+
+```text
+appFw.so 的 UND = 753
+ZV-E10 原厂 libObj 导出 = 1955
+★ appFw 需要、ZV-E10 libObj 没有 = 602
+   其中 ZV1M2 新 libObj 能提供 = 62   （换代差异，不是缺失）
+   两代 libObj 都没有          = 540
+```
+
+### 那 540 个由谁提供（我们的部署树）
+
+```text
+部署树其它库能提供 = 455
+    libstdc++.so 119 / libmpr.so 77 / dataflowInfraFramework 69
+    libMWF.so 49 / libGOConnectionManager 17 / libInfraFsys 16
+    libbackup 11 / libInfraCryptCore 11 / libjsoncpp 11 …
+计入 libc 后再算：真没人提供的 = 4
+```
+
+### 最终结论：**真缺口只有 4 个符号**
+
+```text
+_Jv_RegisterClasses     （WEAK，可空实现）
+__gmon_start__          （WEAK，可空实现）
+_ZN16infra_wrapper_bb6detail12adf_ext_typeERKNS_17adf_ext_type_in_tERNS_18adf_ext_type_out_tE
+_ZN21infra_wrapper_imaging6detail15set_user_matrixERKNS_20set_user_matrix_in_tERNS_21set_user_matrix_out_tE
+```
+
+**⇒ 前两个是弱符号，天然可空。真正需要 stub 的只有 **2 个 infra_wrapper 符号**，
+且它们是 appFw 自己声明、四个机型都没有定义的悬空引用。**
+
+## ② 因此「做 shim 让 appFw 用」这件事的规模被彻底厘清
+
+```text
+符号层面：只需 2 个空函数 stub（返回 0 即可）
+其余 600 个"缺口"全部由部署树里已有的库满足
+```
+
+**⇒ 这条路**比预想的简单得多**，不需要自己实现整套 Gen5 符号体系。**
+
+## ③ 本轮同时验证了 appFw 的构造器规模与他们的日志一致
+
+```text
+appFw.so .init_array 大小 = 0x2aa8 = 10920 字节
+10920 / 4 = 2730 个函数指针        ← 与日志的 "2730 static constructors" 完全一致
+```
+
+## ④ 并且测到 Main 的第一个调用**确实返回**
+
+```text
+INIT2PROBE enter n=1 real=0x4172a20 tid=195
+INIT2PROBE return n=1 r=0x4a8da0 tid=195
+```
+
+**⇒ `uxengine_init2` 正常返回（返回 0x4a8da0，非零）。
+所以 `Main` 不是卡在第一个调用，而是卡在后续步骤（`initializeArena` 或更后）。**
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v118: 2662 行 / createLayer=6
+```
+
+## ⑥ 下一步（明确且工作量小）
+
+```text
+1. 写一个 8 行的 shim：导出那两个 infra_wrapper 符号为空实现（返回 0）
+2. 补进 preload，观察 appFw 是否因此能过 constructor 阶段
+3. 判据：stella 构造器数、MAINPROBE 是否出现 return
+```
