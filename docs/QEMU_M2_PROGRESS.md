@@ -46983,3 +46983,90 @@ QEMU 实例   0
 QEMU 实例   0
 基线        v150: 2368 行 / createLayer=6
 ```
+
+# ★★★★★★★★ 2026-11-11 第五百二十章（R536–R552）：**直接调用 Gen5 menuBuilder 的首次实测 + 又抓到一处签名错位**
+
+## ① 做法（本轮新增 `DIRECTMENU`）
+
+**在 watchdog 线程上（该线程已实测会执行）直接 `bl menuBuilder(appFw+0x723aac)` 一次，
+并在前后各打印一次 GPE/DRAWSTAGE 计数。**
+
+```c
+fn = (base + 0x723aac) | 1;      // Thumb
+__atomic_store_n(&g_as_phase, 1); // 让 RM/WGTSYS 探针可见
+r = fn();
+```
+**这不是自绘：执行的是 appFw.so 里 Gen5 自己的函数。**
+
+## ② 三个已踩过的坑（都是我自己造的）
+
+### 2.1 独立线程跑不起来
+
+```text
+第一个版本开新 pthread，函数体开头 sleep(12)，
+但运行在 UI 线程阻塞后就结束了 → 一行 DIRECTMENU 都没打出来。
+改用 watchdog 线程驱动后立刻可见。
+```
+
+### 2.2 watchdog 只醒一次，阈值 6 永远达不到
+
+```text
+v151/v152 输出 "DIRECTMENU" = 0
+原因: 阈值 tick>=6，但实测 APPSTART still-inside 全程只出现 1 次
+改为 tick>=1 后 v153 立刻出现 "DIRECTMENU calling 0x723aac"
+```
+
+### 2.3 **`switchBankEth` 我又写错签名（本会话第 4 次同类）**
+
+```text
+真实实现（libObj+0x10334c）：
+    ldr r0,[pc] ; add r0,pc ; ldr r0,[r0]   ← 接收者从全局取
+    mov r1,r3                                ← 真正的参数是 bank
+    b.w 0x1a72aa
+⇒ 它是**静态成员，只收一个 bank**
+
+我的写法：(void *self, unsigned bank)
+⇒ 把 bank 当成 self、把垃圾当成 bank 传下去
+```
+
+**症状：**
+
+```text
+v154: [AS]RM switchBank ENTER n=9 bank=3   （无 LEAVE）← 被我破坏后卡住
+v155: ENTER/LEAVE 全部成对（n=2..6 全 LEAVE ret=1）
+```
+
+## ③ 修正后的实测量化结果（v155）
+
+```text
+DIRECTMENU start base=0x2e0ef000 tid=117
+（calling 行未打印 → 说明在打 calling 之前就被吃了；见下）
+switchBank n=2..6 ENTER/LEAVE 全部成对 ret=1
+DRAWSTAGE enter 6/7 =1/2  caller=libObj+0x11d51a / 0x123dd4   ← 绘制层有活动！
+```
+
+**⇒ 首次观测到 `DRAWSTAGE enter` 在带 `caller=libObj+0x...` 的情况下发生 ——
+说明 Gen5 的绘制阶段确实可以被推动。**
+
+## ④ 但 v155 的 `calling` 行缺失，需下一轮定位
+
+```text
+v154: start ✓ / calling ✓（但被我错误签名卡住）
+v155: start ✓ / calling ✗
+⇒ 差别只在 switchBank 的签名。可能 menuBuilder 在 0x723aac 里
+   第一个调用 0x54e140 时就依赖 switchBank 的正确行为，或
+   g_as_phase 的写入被我挪到了 fn() 之前导致次序问题。
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v155: 2360 行 / createLayer=6（基线保持）
+```
+
+## ⑥ 下一步
+
+**1. 把 `logline("DIRECTMENU calling ...")` 移到 `g_as_phase` 写入之前，确认次序。**
+**2. 若 `menuBuilder` 确实会卡在 `0x54e140`，就给它也装上 veneer 重定向探针。**
+**3. 判据：`GRMFILL` / `BMAPPROBE` 是否从 0 变为非 0 —— 这是「Gen5 能不能画」的直接答案。**
