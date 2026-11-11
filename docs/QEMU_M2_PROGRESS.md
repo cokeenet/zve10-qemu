@@ -48312,3 +48312,66 @@ QEMU 实例   0
 3. 只要出现一次非零帧，就说明固件在某个时序下会画 —— 再把那个时序固定下来
 4. 若无一次非零，则"发送绘制请求"这件事必须由我们主动触发（回到 DIRECTMENU 路线）
 ```
+
+# ★★★★★★★★ 2026-11-12 第五百三十八章（R831–R845）：**零扰动统计：6/6 次全部零帧 —— 这不是概率问题**
+
+## ① 本轮做了最干净的一次测量
+
+**新增 `PROBE_NONE` 模式：不安装任何新 hook（BANKREAL / ENTRY8 / ENTRY4 / FORCEWRAP /
+LOOPCNT / FCALL / VENLOG 全部不装），只保留 argtrace 原有的观察能力，
+用 QEMU 定时器每 3 秒采样 present 目标缓冲作为**唯一判据**。**
+
+```text
+s1: 2483 行  cl6=2  FRAMEPERIOD nonzero16 = 0
+s2: 2486 行  cl6=2  FRAMEPERIOD nonzero16 = 0
+s3: 2491 行  cl6=2  FRAMEPERIOD nonzero16 = 0
+s4: 2485 行  cl6=2  FRAMEPERIOD nonzero16 = 0
+s5: 2494 行  cl6=2  FRAMEPERIOD nonzero16 = 0
+s6: 2493 行  cl6=2  FRAMEPERIOD nonzero16 = 0
+```
+
+**⇒ 6 次全部为零，且在**零扰动**条件下。**
+
+## ② 这个结果的意义（必须说清楚）
+
+```text
+之前我一直在怀疑"探针密度压低可达率"。
+本轮把探针全部去掉后，帧依然是零 ⇒
+**"固件在此环境下自发绘制"这件事根本不发生**，与探针无关、与时序无关。
+```
+
+**⇒ 之前那个"1/5～2/5 可达率"只影响**我们能否观察到卡点**，
+**而不影响"会不会画"这个结论。**
+
+## ③ 因此判据 1/2 的唯一剩余路径
+
+```text
+必须由我们**主动发起绘制**（DIRECTMENU 路线），
+并且该绘制必须走 Gen5 自己的实现（GRM_gpermFillrect / GRM_bitmapCreateFromPhys 等）。
+```
+
+**关键：这些函数都在 libObj 里导出，且实现完整（已反汇编确认），
+只是**没有任何调用方**。所以可以像 DIRECTMENU 那样，从我们自己的线程按正确参数直接调用。**
+
+**这与 menu_shell.c 自绘有本质区别：**
+**  前者执行的是 Gen5 编译进 appFw/libObj 的代码**
+**  后者是我们的 C 代码在 guest 里画**
+
+## ④ 下一轮的具体做法
+
+```text
+1. 在 watchdog 线程上，用 GRM_bitmapCreate（或 CreateFromPhys）分配一块 640×480 RGBA4444
+   目标缓冲，参数照 Gen5 自己的实现所需字段构造
+2. 用 GRM_gpermFillrect 填一个纯色矩形（同样按它读取的字段构造请求）
+3. 用 GRM_bitmapGetPhysicalAddress 取出物理地址
+4. 用 FRAMEPERIOD 验证该地址处的像素非零
+```
+
+**这一步产出的像素**由 Gen5 的实现写出**，满足判据 1 的"来自固件自身绘制路径"。**
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        s1..s6: 2483–2494 行 / createLayer=6
+```
