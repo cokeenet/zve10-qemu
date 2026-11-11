@@ -45936,3 +45936,79 @@ QEMU 实例   0
 3. 启动锚点按真机方案的经验，考虑是否保留原厂
 ```
 **判据：`appFw.so` 能加载后，`createLayer` 是否从 6 增加、`GENIDPROBE` 是否出现第 5 个布局名。**
+
+# ★★★★★★★★ 2026-11-11 第五百零七章（R397–R404）：**更正两点误判 + 他们的做法揭示真正机制**
+
+## ① 更正：那 159 个库不是「ZV1F 的」，是多机型**字节相同**
+
+上一轮我把「多机型共有」误算成「来自 ZV1F」。重新按机型集合分类：
+
+```text
+部署树（161 个 .so）
+  ZV1M2 独有        31
+  多机型字节相同   159   ← 含 ZV1M2，无偏差
+  真正非 ZV1M2      6    （githash + 5 个 ZVE10 特有：libInfraCamera*/libclema 等）
+  未知来源         20
+```
+
+**而那 6 个 ZVE10 库在 ZV1M2 里**不存在**（ZV1M2 原厂没有它们）——
+它们属于 E10 硬件层，而真机方案也明确「保留 E10」。**
+
+**⇒ 库集合**基本正确**，我上一轮「159 个 ZV1F 是根本偏差」的推理是**错的**。**
+
+## ② 他们的日志揭示的真正机制（用户提供的现场）
+
+```text
+[Step 0] Preloading OSAL, libObj.so and Shadow-inherit MWF...
+  libosal_utm / libosal_uipc / libbackup / libObj / libMWF   ← 全部是【老】库
+[Step 1-5] Loading Gen5 Dependency Closure...
+  /log/g5/libObj.so        71.1 ms
+  /log/g5/libmpr.so        97.2 ms
+  /log/g5/libObjShim.so    ← ★ 自编写
+  /log/g5/AdjChkConfig.so
+  /log/g5/libappFwBoot.so
+[Step 6] appFw.so 64.3MB / 2730 构造器  → SUCCESS 2153.6 ms
+[Step 7] _Z4MainPv / Application_Start 解析成功
+```
+
+**⇒ 关键点：他们**先 preload 老 libObj，再 dlopen 新的 Gen5 libObj**——
+两套 libObj **同时存在于一个进程**，靠 dlopen 路径区分。
+而 `libObjShim.so` 正是让这两套共存/衔接的那个自编写件。**
+
+## ③ 我们的做法与他们的差异
+
+```text
+他们：老 libObj（preload）+ 新 libObj（/log/g5 下 dlopen）+ libObjShim 衔接
+我们：直接让 /usr/lib/libObj.so = Gen5 版，没有「老 libObj 共存」这回事
+      preload 只有 argtrace.so + wcp4.so
+```
+
+**⇒ 我们缺的不是库版本，而是**两套 libObj 共存的衔接机制**（libObjShim）。**
+
+## ④ 五个 Gen5 库我们已有 4 个
+
+```text
+libObj.so         ✓ ZV1M2 3,931,624
+libmpr.so         ✓ ZV1M2 3,038,540
+AdjChkConfig.so   ✓ ZV1M2    82,440
+appFwBoot.so      ✓ ZV1M2     8,312
+libObjShim.so     ✗ 需自编写
+```
+
+**⇒ 缺的只有 `libObjShim.so` 一个。**
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v116: 2651 行 / createLayer=6
+```
+
+## ⑥ 下一步
+
+**弄清 `libObjShim.so` 的作用：它要解决什么问题？
+最可能是「Gen5 libObj 与老 libObj 的符号冲突/共存」，或「把老 OSAL 的
+符号转发给 Gen5 libObj」。**
+
+**若能模拟它的作用（哪怕只在 QEMU 里），就把他们验证成功的路径复刻过来。
+这是 135 轮里第一次有「别人已经验证成功、只差一个 shim」的明确路径。**
