@@ -45094,3 +45094,76 @@ QEMU 实例   0
 
 **这意味着：此前所有"绘制链已通"的结论，都是**在启动流程根本未完成的前提下**观察到的现象。
 绘制函数被执行，是因为主循环被我们的探针反复驱动，而不是固件自己走到那一步。**
+
+# ★★★★★★★★ 2026-11-11 第四百九十五章（R330–R334）：**修正进程归属 + 发现 App 队列没有消费者**
+
+## ① 修正一个关键归属错误
+
+```text
+MY_TID Application_Start pid=115 tid=195
+```
+
+**⇒ `Application_Start` 跑在 `im.elf`（pid=115）里，不是 `bootin.elf`（pid=104）。**
+
+**因此「Application_Start 不返回」是**正常的**——它是主循环，本来就该一直跑。
+R328 把它当成"启动未完成"是误读。**
+
+## ② `AppConfig.so` 的 init 也没有阻塞全局
+
+```text
+1751  ARGTRACE init enter str="AppConfig.so"
+1752+ 其它线程继续正常工作（tid=180 轮询 0x16c8477、tid=110 心跳）
+1753+ UI 线程 tid=195 仍在跑渲染（PSMPROBE / GENIDPROBE / RENDERENTRY）
+```
+
+**⇒ 不是全局卡死；`/dev/gpio` 打不开也只是被跳过（tid=180 继续每 88 ms 轮询）。**
+
+## ③ 真正的新发现：`0x5503e0`（App 队列）**没有任何消费者**
+
+```text
+我们注入的 MENU 键（App32，32 字节，press+release）
+STATQ used=2   ← 消息确实进了队列
+RCVC 中 qid=0x5503e0 的记录 = 0   ← 但没有任何线程在收它
+```
+
+**引用该队列的模块：**
+
+```text
+appFw.so  8 处（0x52c1f4 / 0x54e864 / 0x54eac8 / 0x54f11c / 0x54f524 / 0x54fcbc / 0x1d11b3c / 0x2bb5fd4）
+libObj.so 3 处
+libInfraAppRemoteBoard.so 1 处
+```
+
+**⇒ 队列存在、消息进得去、但**消费者从未启动**。
+这正是"键注入了却没有任何 UI 反应"的直接原因。**
+
+## ④ 这与之前的输入探针结论一致
+
+```text
+InfraInput::SetCallback 0 次（INPUTCB 探针）
+InfraInput::SetEventKeyList 0 次
+⇒ 输入层没有注册任何消费者
+App32 队列同样没有消费者
+```
+
+**⇒ 输入链在三个层面（Infra 回调、键表、App 队列）都没有接收端。**
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v114: 2654 行 / createLayer=6
+```
+
+## ⑥ 结论
+
+**现在三条独立证据都指向同一件事：这套固件在 QEMU 里的 UI 消费端从未建立。**
+
+```text
+1. 输入：Infra callback / key list / App 队列，全都没有消费者
+2. 布局：genID 只 4 次，WidgetLayouter 0 次
+3. 绘制：drawFramebuffer 被驱动执行，但 panel 无内容
+```
+
+**而参考实现（A7C2/ZV-E10）能出帧，是因为它的 UI 消费端在启动时就建立起来了。**
+**ZV1M2 缺的那一环，是"UI 消费者注册"这个前置步骤。**
