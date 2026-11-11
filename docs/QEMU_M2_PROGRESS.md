@@ -45366,3 +45366,73 @@ QEMU 实例   0
 ```
 
 **这条已写入铁律候选。**
+
+# ★★★★★★★★ 2026-11-11 第四百九十九章（R353–R356）：**一处必须自我更正：init 探针其实有返回**
+
+## ① 我此前说「AppConfig.so init 未返回」，这是错的
+
+```text
+v114 实际记录：
+ARGTRACE init enter  arg=0x4126601 str="AppConfig.so"
+ARGTRACE init return 0x0
+```
+
+**`init enter` 1 条、`init return` 1 条 —— 它**返回了**，返回值为 0。**
+
+**⇒ 我此前把「没有看到后续动作」误当成了「没有返回」。这与 R319 把
+`dlsym` 解析当成执行、R347 把未对齐字节当成 `bl` 是**同一类错误**：
+把「我没观测到」当成「不存在/未发生」。**
+
+## ② 因此 R320「Application_System_Init 从未被调用」也需要修正
+
+**这个 `init enter/return` 对来自 `my_app` 包装器，而 `my_app` 正是装在
+`Application_System_Init` 上的。**
+
+**⇒ 它被调用了，并且返回 0。**
+
+**但此前 UXLIFE（`app_fw_init` 包装器）为 0 条 —— 那是**另一个符号**
+（`Application_Start` 系列），不是同一个函数。两者不必同时出现。**
+
+## ③ 与参考实现对照，看出真正差异
+
+参考实现（真正出帧）的 init 序列：
+
+```text
+UI_INIT_ENTER pid=103 name=odl_init            → RETURN result=0x1c6a8
+UI_INIT_ENTER pid=103 name=KikiLogGenerator_init → RETURN result=0
+（多条）
+```
+
+**而我们只有 1 条 `init enter/return` 对。**
+
+**⇒ 参考实现的模块 init 序列有很多条并有返回值；我们只有 1 条。
+这说明我们的启动链在**第一个 init 之后就再没有继续**。**
+
+## ④ 本轮净结论
+
+```text
+[可靠] bootin.elf / im.elf / appFwBoot.so 全部是 ZV1M2 原厂二进制（sha 一致）
+[可靠] bootin 的用法说明里 dmode 取值：0=kernel only, 1=Global Infra, 2=LIRO, 3=APP(默认)
+[可靠] 我们传 dmode=3 amode=normal target=qemu，参数正确
+[可靠] init 序列只发生 1 次（参考实现是多次）
+[可靠] /setting/mode/dmode（bootin 的默认模式文件）在我们树里不存在，open 返回 -1
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v114: 2654 行 / createLayer=6
+```
+
+## ⑥ 判断
+
+**`/setting/mode/dmode` 是 bootin 的**模式文件**（用法说明明确写着
+`mode_file : default is /setting/mode/dmode`）。我们的树里缺这个文件，
+open 返回 -1。**
+
+**虽然命令行也传了 `dmode=3`，但从「init 序列只有 1 条」这个现象看，
+启动链很可能没有按照 dmode=3（APP 模式）继续下去。**
+
+**下一轮应当：补上 `/setting/mode/dmode`（内容按原厂语义），
+观察 init 序列是否从 1 条变成多条。这是一个**改动极小、判据清晰**的实验。**
