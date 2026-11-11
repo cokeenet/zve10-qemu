@@ -44245,3 +44245,68 @@ QEMU 实例   0
 
 **按上述改动重编 QEMU，跑一轮，重点观察 `SND_TARGET`、DMP 相关日志、
 以及 createLayer 是否仍是 6（哨兵）。**
+
+# ★★★★★★★★★ 2026-11-11 第四百八十三章（R265–R268）：**照既有做法改用驱动池分配后，发送终于返回 0**
+
+## ① 铁律再次奏效：a7c2-re 的三步发送序列
+
+```c
+void *msg = 0;
+if (real_allocate_msg(queue, &msg, 48, 1)) return -1;   /* osal_valloc_msg_wait */
+real_set_source(msg, source);
+int result = real_send_msg(queue, msg);                  /* osal_snd_msg */
+```
+
+**关键点：消息必须来自 `osal_valloc_msg_wait` 的驱动共享池，不是普通堆。**
+
+## ② 改动前后对照（同一套探针）
+
+```text
+改动前（calloc 堆指针）
+  VDFREPLY snd to known-good qid=0x8f013a ret=-1024    ← 连已知良好队列都失败
+  VDFREPLY osal_snd_msg ret=-1024
+
+改动后（osal_valloc_msg_wait 池内分配）
+  VDFREPLY valloc ret=0 msg=0x477bf8c
+  VDFREPLY snd to known-good qid=0x8f013a ret=0        ← ★ 同一个队列，成功了
+  VDFREPLY reg_queue ret=0 handle=0x8ded58e0
+  VDFREPLY osal_snd_msg ret=0                          ← ★ 目标队列也成功了
+```
+
+**⇒ `-1024` 的真正原因确认：消息缓冲不在驱动池内。改用 valloc 后发送全部返回 0。**
+
+## ③ 但等待方仍未收到
+
+```text
+tid=136 的 RCVC（qid=0x1706085, tmo=-1）  4 次
+tid=136 的 RCVC_RET                        0 次
+全日志 RCVC_RET 只出现在 tid=127/129
+```
+
+**⇒ 发送成功，但 `tid=136` 没有收到消息。**
+
+**最可能的原因：我在该队列上注册了 `vdfreply_dummy_cb`（`REG n=50 cb=…`），
+而 OSAL 的「注册回调」与「同步接收」是两条投递路：
+注册回调后消息投给回调，`osal_rcv_msg_tmo` 的等待者收不到。
+我的 dummy 回调什么也不做，所以等待者依旧在等。**
+
+## ④ 这一轮的真实成果
+
+```text
+[通]  osal_snd_msg 对任意队列返回 0（此前 20 余轮一直是 -1024）
+[通]  消息格式已完整解出并可投递
+[阻]  投递路径与等待者的接收方式冲突（回调 vs 同步接收）
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v101: 2630 行 / createLayer=6
+```
+
+## ⑥ 下一步
+
+**去掉自己注册的回调，改为「不注册、直接把消息投进队列」让 `osal_rcv_msg_tmo` 取到；
+或在 dummy 回调里把消息转发给该队列的同步等待者。
+判断依据：消息内容的 `[+4..5]/[+6..7]` 已确认是其校验字段，投递成功即应能通过校验。**
