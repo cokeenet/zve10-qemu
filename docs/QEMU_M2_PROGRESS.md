@@ -47400,3 +47400,85 @@ QEMU 实例   0
 **回到 `menuBuilder(0x723aac)` 的第 7 次 switchBank 处，用**入口 pin**
 给 `switchBankEth` 之后的第一个可 hook 的内部函数装探针，
 并同时读取该处的 `bak` 与 `r` 寄存器状态（用校正后的签名）。
+
+# ★★★★★★★★ 2026-11-12 第五百二十五章（R631–R645）：**appFw 有两套 PLT，我的 veneer 重定向只适用于其中一套**
+
+## ① 本轮尝试：重定向 `switchBankEth@plt`（0x528f7c）以捕获第 7 次调用
+
+**思路与 stage1 那次成功的技术相同：改写 veneer 后紧跟的字面量，把调用转到一个记日志再尾调用的桩。**
+
+**结果：**
+
+```text
+SWITCHVENEER orig=0x110bf5ba -> ?+0        ← 解出的目标完全不对
+SWITCHVENEER installed … ok=1               ← 写入"成功"
+（命中 0 次）
+```
+
+## ② 根因：appFw 里存在**两套不同编码的 PLT**
+
+```text
+0x9246b8: 04c09fe5 0cc08fe0 1cff2fe1   ← ARM veneer（e59fc004/e08fc00c/e12fff1c）
+          ⇒ 字面量在 +12，target = literal + veneer + 12   （stage1 实测正确）
+
+0x528f7c: 7cea07f1 d0012046 9ff74af6   ← **普通 Thumb 代码**
+0x52a664: 00c09fe5 0cf08fe0 7c1284fd   ← 又是 ARM veneer
+```
+
+**⇒ `objdump` 把 `0x528f7c` 标成 `switchBankEth@plt`，但那里**并不是 ARM veneer**。
+**我把 `+12` 当字面量去写，等于**把 appFw 自己的代码字节改写了**，并解出了一个垃圾目标。**
+
+## ③ 已立即停用该重定向
+
+```c
+/* SWITCHVENEER: retired — 0x528f7c is not an ARM PLT veneer */
+```
+
+**并核对 v166 那次运行：`行数 2378 / createLayer=6` —— 基线未崩
+（被改写的字节没有被执行到，但这次写入本身是错的，必须记录）。**
+
+**这是本会话第 6 次「测量手段破坏被测对象」。**
+
+## ④ 铁律 1 复查：参考项目怎么做出帧的
+
+**按铁律先 grep 了 `a7c2re/report/2026-10-17-qemu-native-camera/runtime/analysis/`：**
+
+```text
+gpe-copy.h / gpe-raster.c / gpe-sprite.c / gpe-sprite.h
+gpe_fill_rgba4444(...)   ← 软件实现 fill
+gpe_draw_sprite(...)      ← 软件实现 sprite
+gpe_plan_copy(...)        ← 把 GPE 参数解析成 copy plan
+```
+
+**它们的参数结构（`gpe_plan_copy` 里逐字段校验）：**
+
+```text
+p[0..1]   destination 物理地址（64 位拆两半）
+p[14..15] source 物理地址
+p[2..3]   dx, dy      p[10..11] 目标偏移   p[20..21] 裁剪偏移
+p[4..5]   width,height（= p[18],p[19]）
+p[12]     dst_stride  p[22] src_stride
+p[16..17] sx, sy
+p[13]     =1 时 bpp=4，否则 bpp=2
+raw[0x72] = 255（alpha）
+```
+
+**⇒ 这是一套**完整且已验证的 GPE 参数语义**，我们可以直接对照它来判断
+Gen5 究竟有没有发出绘制命令。**
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v166: 2378 行 / createLayer=6
+```
+
+## ⑥ 下一步
+
+**不要再猜 PLT 形态。改为在**已确认有调用的位置**做计数：**
+**`menuBuilder` 的 6 次成功 switchBank 说明这条链是活的，
+**第 7 次停住 —— 而 `switchBankEth` 的真实实现（`0x1a7280`/`0x1a72a2`）
+**又被证明从未进入。**
+**下一步应直接在 `switchBankEth` 的**函数体内**（0x10334c+0x10 之后的开头处）
+**找一个可 pin 的 8 字节窗口并装入口探针，从而把"wrapper 返回了但真实现没进"**
+**这个矛盾直接测出来。**
