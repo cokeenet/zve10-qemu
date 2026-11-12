@@ -52957,3 +52957,67 @@ B. 该接收者属于**真机独有的服务/内核侧**（例如某个硬件相
 QEMU 实例   0
 基线        v281: 5723 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百一十二章（R2451–R2480）：**查清了：引用 0x61003c 的库都已部署，但进程里只加载了 3 个库**
+
+## ① 引用 0x61003c 的库（按字面量出现次数）
+
+```text
+libObj.so                    31 处
+dataflowInfraFramework.so    10 处
+appFw.so                      9 处
+libInfraRemote.so             9 处   ← 已部署
+libInfraStreamingUsb.so       8 处   ← 已部署
+libInfraCCPF.so               7 处   ← 已部署
+libmpr.so                     7 处   ← 已部署
+libInfraCCPFStatic.so         7 处   ← 已部署
+libInfraMediaCommon.so        4 处   ← 已部署（且是 libObj 的 DT_NEEDED）
+```
+
+**⇒ 所有引用它的库**文件都在部署树里**。**
+
+## ② 但运行日志显示：进程实际只加载了 3 个库
+
+```text
+ARGTRACE dlopen 全表：
+  appFwBoot.so
+  appFw.so
+  /usr/lib/libObj.so
+⇒ 只有这 3 个
+```
+
+**⇒ 而 `libInfraRemote / libInfraCCPF / libInfraStreamingUsb` 等**
+**虽然部署了，却**从未进入进程**。**
+
+## ③ 因此"接收方不存在"的原因定位了
+
+```text
+接收方（注册 0x61003c 的那个组件）很可能就在这些**未加载的库里**
+⇒ 它们本该由 im.elf 的 IMDB 模块表或 appFw 的后续 dlopen 加载
+⇒ 而实际加载只走到 3 个库就停了
+⇒ **这与本会话一开始就记录的"im.elf 反复 dlopen libObj 19 次"现象吻合**
+```
+
+## ④ 结论：A 假设成立，且缺口很具体
+
+```text
+**缺的不是硬件，是"后续应该被 dlopen 的那批 Infra 库"。**
+⇒ 若能把这批库加载进来（它们都在部署树里，不缺文件），
+   接收方就会注册 0x61003c，vdf 的回执就会到达。
+```
+
+## ⑤ 下一轮
+
+```text
+查 im.elf 为什么只加载 3 个库就停：
+  · 它的 IMDB 模块表（M2 版 libIMDB）本该列出一长串
+  · 但日志显示只有 3 个 dlopen
+⇒ 看 libIMDB 的表是否被正确读取（这与早期的"M2DLERR=0 条"记录一致）
+```
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v281: 5723 行 / createLayer=6 / LIBOBJ_SYM=24
+```
