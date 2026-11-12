@@ -51841,3 +51841,65 @@ QEMU 实例   0
 QEMU 实例   0
 基线        v270: 5786 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第五百九十三章（R1881–R1910）：**决定性读数：状态推进函数从未被调用**
+
+## ① 本轮定位到两个关键函数
+
+```text
+0x129aa0（状态推进）：入口 stmdb(4)+mov(2)+add(2) = 恰好 8 字节，可安全 hook
+    0x129ab4: ldr  r3, [r4, #16]     ← 读状态字
+    0x129ab6: cmp  r3, #1            ← 必须是 1
+    0x129ab8: bne  0x129aec          ← 不是 1 就跳过
+    ...
+    0x129ad2: cbz  r0, 0x129af2
+    0x129ad4: movs r2, #16
+    0x129ad6: str  r2, [r4, #16]     ← **把状态字写成 16**
+
+0x12a238（分配门）：要求 [self+0x10] == 16，否则返回 -9999
+```
+
+## ② 实测 v271（基线合格）
+
+```text
+行数 5743 / createLayer=6 / LIBOBJ_SYM=24
+
+FRSTEP statedrive 命中 = **0**      ← ★ 状态推进函数**从未被调用**
+FRSTEP alloc_gate  命中 = **0**      ← 分配门也从未进入
+FRSTEP draw_entry  命中 = 10         ← 绘制入口仍在正常工作
+GCSWEEP2 fmt=1 ... -> -9999          ← 我们的直调仍然失败
+```
+
+## ③ 这给出了完整的因果解释
+
+```text
+我们的直调路径：
+  我们调 GRM_bitmapCreate
+    → 构造 space 对象（state = 1）
+    → 直接调分配 helper 0x12aee4
+    → 0x12a238 检查 state == 16 → **是 1，不是 16**
+    → 返回 -9999
+
+而固件的正常运行路径会先调用 0x129aa0（把 state 1 → 16），再分配。
+⇒ **我们的直调跳过了那次状态推进**，所以才一直失败。
+```
+
+**⇒ 这不是"固件不能画"，也不是"缺驱动"，而是：**
+**我少调了一个前置函数。**
+
+## ④ 下一轮的直接做法（明确、可执行）
+
+```text
+在 GCREATE 里，创建 space 对象之后、调用 GRM_bitmapCreate 之前：
+  先调 0x129aa0（状态推进），再调 BMP_Create
+  ⇒ 若它返回 0 且 state 变 16，BMP_Create 就有望成功
+注意：0x129aa0 的签名未知（从 129aa4 mov r4,r0 看 r0=self；r1/r2/r3 另有用途）
+      但它内部只做 state 检查+推进，先用 (self, 0,0,0) 试
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v271: 5743 行 / createLayer=6 / LIBOBJ_SYM=24
+```
