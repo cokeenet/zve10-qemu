@@ -1,0 +1,25 @@
+{
+  "when": "2026-11-12T20:40+08:00",
+  "situation": "After image_drop and a battery pull the camera produced no USB enumeration and no display, the third brick of this investigation.",
+  "declined_option": {
+    "proposal": "write factory /usr (nflasha15) and /etc (nflasha10) images over fastboot",
+    "why_declined": "Wrong diagnosis. The WBI header was still zero from image_drop, so Loader2 had no snapshot to restore and never reached the kernel at all; /usr and /etc contents were never consulted during boot. Rewriting 249 MB and 12 MB of partitions would have changed nothing about the failure while costing hours of flash time and a large new risk surface."
+  },
+  "what_was_actually_wrong": "Only nflasha5 sector 0. It was zeroed on purpose by image_drop, and with a zero header none of Loader2's four predicates match, so the camera does not reach a display.",
+  "recovery_steps": [
+    "Pico inject stage1 (prebuilt/stage1.bin), fastboot appears as 18d1:4ee0 in about 57 s",
+    "host/bootstrap.py loads stage2-flash-20261026 and verifies eMMC (emmc-init rc 0, 30 partitions)",
+    "restore_zero_header.py --dry-run: gate 1 (bytes 0..511 all zero) and gate 2 (bytes 512..4095 match archive) both OK",
+    "restore_zero_header.py: wrote 512 bytes at LBA 180224, readback byte-exact"
+  ],
+  "result": {
+    "readback_magic": "WBI1",
+    "sections": 664,
+    "flag": "0x09",
+    "sector_size": 512,
+    "r_data_size": "0x02219800",
+    "byte_exact": true
+  },
+  "state_after": "fastboot reboot issued; the camera then enumerated as 054c:0994 (charging mode), which is the PID a Sony body shows over USB while it is powered off or charging. No agent yet.",
+  "lesson": "The WBI header is the single point of failure for boot on this camera and it is reachable without any partition rewrite. Restore it first, always, before considering /usr or /etc work."
+}
