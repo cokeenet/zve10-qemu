@@ -51337,3 +51337,79 @@ libObj (BMP_Create space 参数)
 2. 查 BMP_Create 发出的分配请求去向（它发出后有没有 RCVC 回来）
 3. 若消息发出但无应答 ⇒ 在 QEMU 侧（或用户态 shim）实现该队列的应答者
 ```
+
+# ★★★★★★★★ 2026-11-12 第五百八十五章（R1641–R1670）：**sugilite 路线侦察完成 + 两个 hook 的实验与撤销**
+
+## ① 参考实现侦察结论（铁律 1，先读再看）
+
+```text
+a7c2-re（A7C2 / CXDC90047）：
+  黑屏根因 = 原 sequence_boot 在 Dataflow pin 拓扑上等待
+  GRM 9080003b Get {type=1,dir=3,index=0}（provider: OsdPinIF，单对象）
+  解法 = 实现一个 **只读 registry 服务**，原固件自己接收释放，sequence 继续
+  ⇒ **原固件自己画出了首设页**（帧 e74a9d8d…）
+
+sony-fw-zve10-qemu（ZV-E10）：
+  source/qemu/hw/arm/{zve10.c, zve10-gpe-init.h} + hw/timer/sony_hwtimer.c
+  source/modules/dma330-stub/
+  ⇒ 面向 ZV-E10 自己的固件，GPE 语义可借鉴
+```
+
+## ② Gen5（CXD90045）与 A7C2 的**结构差异**（实测）
+
+```text
+0x9080003b：Gen5 appFw 只有 1 处、libObj **0 处**（A7C2 appFw 有 4 处）
+⇒ Gen5 的 GRM→内核路径**不是** Dataflow pin
+GRM_fbrm 全家族 = 3 指令空壳（return 0）
+dmpgles2 设备可 open（ret=13）但 **ioctl = 0 次**
+ioctl 只有 /dev/mem（fd=3）159 次；29 次 mmap 全部成功
+```
+
+**⇒ 真正的分配路径判定为：**
+
+```text
+libObj BMP_Create(space)
+  → 内核 grm_ma.ko（ma_create_msp_impl / create_mspace / ma_dmm_close_send_recv）
+     它是内核 OSAL 客户端（osal_reg_sync_msg_queue_cb 注册队列）
+  → 分配请求走 **OSAL 消息**，不是 pin、不是 ioctl、不是寄存器
+```
+
+**两个模块（grm_ma / grm_gles）在我们 QEMU 里都已成功加载（status=0）。**
+
+## ③ 本轮做了 MAQ 实验（记录队列注册）
+
+```text
+v259：加了 osal_reg_sync_msg_queue_cb / unreg 两个 hook
+  ⇒ 1779 行 / LIBOBJ_SYM=8 / createLayer 缺失 ⇒ **基线崩**
+  ⇒ 但拿到数据：28 次注册，含内核侧（cb=0x13220 内核地址）
+v260：改成"永不失败"（real 不可用时返回 0）
+  ⇒ 仍 1779 行 / LIBOBJ_SYM=8 ⇒ 不是返回值问题
+v261：把 hook 门控在 MAQ_HOOK=1 后面
+  ⇒ 仍 1759 行 ⇒ **光是导出这两个符号就破坏启动**
+v262：**完全移除两个 hook**
+  ⇒ 6078 行 / createLayer=6 / LIBOBJ_SYM=24 ⇒ **基线恢复**
+```
+
+**⇒ 结论：`osal_reg_sync_msg_queue_cb` 这个符号**不能被 argtrace 重定义**。
+**原因：它是 OSAL 注册链的入口，libObj/im.elf 在早期就会调用；用 LD_PRELOAD 覆盖它
+会改变动态链接器对该符号的解析路径，进而影响 im.elf 的库装载（dlopen 次数 24→8）。**
+
+**⇒ 这记入方法论：**不是所有符号都适合 LD_PRELOAD 拦截；
+**必须考虑"该符号是否在启动早期被解析"这一维度。**
+
+## ④ 本轮净收获
+
+```text
+✓ 读完两个参考实现，确定了 Gen5 与 A7C2 在 GRM 路径上的结构差异
+✓ 定位真正分配路径：libObj → grm_ma.ko → OSAL 消息（非 pin/ioctl/寄存器）
+✓ 确认 grm_ma / grm_gles 都已加载
+✓ 发现并撤销了一个破坏基线的 hook（记录在案，避免再犯）
+✓ 基线恢复：v262 = 6078 行 / createLayer=6 / LIBOBJ_SYM=24
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v262: 6078 行 / createLayer=6 / LIBOBJ_SYM=24
+```
