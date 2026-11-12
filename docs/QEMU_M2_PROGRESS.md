@@ -49511,3 +49511,74 @@ QEMU 实例   0
 
 **把 gbmin_fill 移到容器 wrapper 里（与 RENDERENTRY 同一位置），
 **并保留"createLayer>=6"作为额外门控 —— 因为 wrapper 本身就可能早于 createLayer。**
+
+# ★★★★★★★★ 2026-11-12 第五百五十六章（R1116–R1130）：**驱动终于在最合适的时机触发：容器 wrapper 里、createLayer=6 之后、UI 线程上**
+
+## ① 上一轮定位到了正确位置，本轮把驱动搬过去
+
+```text
+从 watchdog 循环 → 移到容器 wrapper（RENDERENTRY 那条路径）
+额外门控：g_cl_n >= 6（createLayer 已完成）
+理由：wrapper 在每一轮运行里都确实被进入，且晚于 createLayer
+```
+
+## ② 实测 v223 —— 三个条件同时成立，且驱动真的跑了
+
+```text
+行数 3552
+createLayer n=6        ✓
+LIBOBJ_SYM  24         ✓
+DRIVEHERE cl_n=6 about to drive gbmin_fill tid=**195**
+GBMIN built bitmap=0x4c16b0 geo=0x4c16f8 pixels=0x20100800
+GBMIN before-dlsym / after-dlsym fn=0x40fbb14
+GBMIN about-to-call fn=0x40fbb14 bitmap=0x4c16b0 mode=1
+GRMFILL n=1 a=0 b=0 c=0x373ba250
+GRMHOOK fillrect n=1 tid=195 req=0x373ba250 mode=1
+```
+
+**⇒ 这是本会话第一次做到：**
+
+```text
+✓ 驱动在 createLayer 之后触发（cl_n=6 判据成立）
+✓ 驱动在 **UI 线程**（tid=195）上执行，而不是 watchdog
+✓ Gen5 的 Fillrect 通过了 bitmap 校验并进入参数解析（mode=1 被接受）
+✓ 基线哨兵全部合格（createLayer=6 / LIBOBJ_SYM=24）
+```
+
+## ③ 但像素仍未写入 —— 而且这次的原因是**采样时机**
+
+```text
+XPEEK 采样点在第 20/30/40 个定时器 tick ≈ 60/90/120 秒
+驱动实际发生在 "APPSTART tick t=235s" ≈ 235 秒
+⇒ **所有 XPEEK 采样都早于驱动**，因此无法判定驱动是否写入了像素
+```
+
+**这是一个明确的覆盖缺口，不是否定结论。**
+**下一轮把 XPEEK 采样点后移到 tick 60/70/80（≈180/210/240 秒）即可覆盖。**
+
+## ④ 另一个待确认点
+
+```text
+"GBMIN fillrect returned" 仍缺席
+⇒ 调用进入了 GRMFILL 更深处的实现（日志显示两个 hook 都命中），
+  但尚未返回
+```
+
+**这与 v202（null bitmap 立即断言）和 v203（通过校验后无断言）相比，
+**已经是本会话进入最深的一次**。
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v223: 3552 行 / createLayer=6 / LIBOBJ_SYM=24
+```
+
+## ⑥ 下一轮
+
+```text
+1. XPEEK 采样后移到 tick 60/70/80，覆盖驱动之后的时刻
+2. 若 0x20100800 仍为 16384/2 色不动 → 说明 Fillrect 在更深处返回/放弃，
+   记录返回码即可（下一版把 returned 也放到更早位置输出）
+3. 若像素变化 → 直接得到判据 2 所需的证据链（物理地址 + 非零像素 + 结构）
+```
