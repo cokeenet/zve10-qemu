@@ -50828,3 +50828,75 @@ C. 绕过分配器，自己构造 bitmap 对象结构（但上一轮已证明它
 QEMU 实例   0
 基线        v253: 5455 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-12 第五百七十七章（R1521–R1540）：**本轮把 GRM 层的真实/桩实现分辨清楚了**
+
+## ① 追查 `space` 缺口的去向
+
+```text
+assert("space") 来自 Bitmap.cpp:70
+r4 = 0x11b968 的返回值（"从分配器取 52 字节对象"），返回 0 ⇒ 分配失败
+```
+
+**我原以为要去修 `DMP_2D_Initialize`，但本轮读代码后发现：**
+
+## ② GRM_fbrm 系列在本机型上**全是 3 行空壳**
+
+```text
+GRM_fbrmInitializeYUV   @0x1156a0: push {r7,lr} ; movs r0,#0 ; pop {r7,pc}
+GRM_fbrmTerminateYUV    @0x1156a8: 同上
+GRM_fbrmPrepareUpdateYUV@0x1156c8: 同上
+GRM_fbrmUpdateYUV       @0x1156d8: 同上
+GRM_fbrmFillrectYUV     @0x1156e0: 同上
+GRM_fbrmRectblitYUV     @0x1156e8: 同上
+```
+
+**⇒ 这些函数直接返回 0，没有任何实现。**
+
+**⇒ 因此 appFw 里"从未调用 fbrm"这件事，其实**调用也不会有任何效果** ——
+**它们本来就是桩。**
+
+## ③ 同样，`GRM_screenGetOnBitmap` @0x115680 也是空壳
+
+```text
+115680: push {r7,lr}
+11568c: bl 0x11f28c        ← 调了某个东西
+115690: movs r0, #0        ← **然后无条件返回 NULL**
+115692: pop {r7,pc}
+```
+
+**⇒ 这个"取当前屏幕 bitmap"的接口在本 libObj 上**永远返回 0**。**
+
+**⇒ 这解释了我们为什么一直找不到 bitmap：**不是我们没找到，而是这个接口不会给出任何 bitmap。**
+
+## ④ 真正有实现的是这 8 个（前面已逐个读过）
+
+```text
+GRM_bitmapCreate / CreateComposite / CreateFromPhys
+GRM_bitmapGetPhysicalAddress / GetRowPixelCount / GetSubRectangle
+GRM_bitmapRelease / WriteLockBits / WriteUnlockBits
+GRM_gpermFillrect / gpermRectblit
+```
+
+**⇒ 所以正确路线不是"从系统取画布"，而是**用 Create 造一个**。**
+
+## ⑤ 因此 `space` 缺口的含义更清楚了
+
+```text
+BMP_Create 需要的 space 不是"屏幕缓冲区"，而是**它内部用来放 bitmap 元数据的堆**
+⇒ 那个 52 字节的分配请求失败，说明 libObj 的 bitmap 堆尚未初始化
+⇒ 需要找到"bitmap 堆的初始化入口"（可能就是 dmp_allocator_lib_init / mmap_init）
+```
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v253: 5455 行 / createLayer=6 / LIBOBJ_SYM=24
+```
+
+## ⑦ 下一轮
+
+**试探性调用 `dmp_allocator_lib_init` 与 `dmp_allocator_mmap_init`**
+**（两者都是导出符号，实现是真实的：前者在 0x11c28c，后者在 0x11c844），
+**看它们是否能把 bitmap 堆立起来；断言恢复机制保证试错不会毁掉整轮。**
