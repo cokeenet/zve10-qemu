@@ -51157,3 +51157,66 @@ GCREATE returned **-9999** bitmap=(nil)
 QEMU 实例   0
 基线        v256: 5469 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-12 第五百八十二章（R1621–R1640）：**-9999 是 BMP_Error 的通用失败码，需要逐个试参数**
+
+## ① -9999 的来源分析
+
+```text
+-9999 = 0xFFFFD8F1
+在 libObj .text 里作为字面量出现 **60+ 处**（0x8ca70, 0x114e1c, 0x114f94, 0x1199d4, …）
+⇒ 它是 BMP 层的**通用错误返回值**，而不是"某个特定分支"
+⇒ 所以不能靠反汇编定位"为什么 -9999"，只能靠**改变入参**来看它何时变成 0
+```
+
+## ② 已知的参数表（来自断言自曝的签名）
+
+```text
+BMP_Create(void* space, short w, short h, BMP_PixelFormat fmt, BMP_YUVMode yuv,
+           short ?, short ?, void** bitmapOut, BMP_PixelSortingOrder sort,
+           BMP_PixelStartPosition start)
+```
+
+**我当前的调用：**
+
+```text
+BMP_Create(space=128字节零块, 640, 480, fmt=1, yuv=0, 0, 0, &created, sort=0, start=0)
+⇒ 返回 -9999
+```
+
+**⇒ space 与 bitmapOut 已确认正确（否则会 assert，不会返回码）。
+**⇒ 因此失败在 fmt / yuv / 两个 short / sort / start 之一。**
+
+## ③ 本轮没有跑实验的原因（如实）
+
+```text
+上一轮 cpio 又出现 I/O error（本会话第 3 次），重建后 v256 才成功
+本轮若立刻改参数并跑，会再次消耗 ~25 分钟
+⇒ 先把候选空间缩小：PixelFormat 的合法值可以从**导出符号名**推出
+```
+
+**libObj 里已知的枚举线索：**
+
+```text
+BMP_PixelFormat / BMP_YUVMode / BMP_PixelSortingOrder / BMP_PixelStartPosition
+⇒ 都是强类型枚举 ⇒ 编译器会给合法值检查
+⇒ 试错方法是：固定其余参数，**逐个枚举 0..9**，看哪个返回 0
+```
+
+## ④ 下一轮的执行计划（一轮内多次试）
+
+```text
+利用已验证的两项能力：
+  · 断言可恢复（siglongjmp）
+  · 错误码不致命（-9999 只是返回值）
+
+⇒ 在同一轮里循环调用 BMP_Create，fmt 从 0 到 9，
+   每次都打印 (fmt, 返回值)，一轮就能扫完整个 PixelFormat 空间
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v256: 5469 行 / createLayer=6 / LIBOBJ_SYM=24
+```
