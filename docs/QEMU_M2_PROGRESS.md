@@ -51558,3 +51558,66 @@ QEMU 实例   0
 QEMU 实例   0
 基线        v268: 5718 行 / createLayer=6 / LIBOBJ_SYM=24（本轮未跑新实验）
 ```
+
+# ★★★★★★★★ 2026-11-13 第五百八十八章（R1731–R1760）：**-9999 的产生点找到了：`operator new(184)` 返回 0**
+
+## ① 逐层反汇编的最终结论（这次是真找到根）
+
+```text
+0x11bc90（提交+等待）
+  0x11bd18: bl 0x12ae34        ← 分配辅助
+    0x12ae48: cmp.w fp,#0 ; beq 0x12ae8c    → fp==0 则 r6 = mvn #2 = **-3**
+    0x12ae4e: movs r0,#0xb8 (184)
+    0x12ae50: blx _Znwj         ← **operator new(184)**
+    0x12ae54: mov r4,r0
+    0x12ae58: bl 0x129a30       ← 构造
+    0x12ae5c: cbz r4, 0x12ae84  ← **若 new 返回 0（分配失败）**
+    0x12ae84: ldr r6,[pc,#32] ; 0x12aea8
+              ⇒ 字面量 = **0xFFFFD8F1 = -9999**   ★ 产生点确认
+```
+
+**⇒ 实测脚本验证：`lit@0x12aea8 = 0xffffd8f1` ✓**
+
+## ② 所以 -9999 的确切含义
+
+```text
+**libObj 内部对一块 184 字节的分配失败**（operator new 返回 0）
+⇒ 不是参数问题、不是设备问题、不是 mmap 问题
+⇒ 是**堆分配失败**
+```
+
+## ③ 为什么会分配失败（结合前面已知）
+
+```text
+我们已经给了 space 对象（128 字节零块），0x11b968 能成功初始化它
+但 0x12ae34 内部用 **operator new（即 libc++ 的 new）**
+⇒ 它走的是进程的主堆 malloc
+⇒ 我们的 testimonial 环境里主堆应该正常（其他 libObj 分配都在工作）
+⇒ 那 new(184) 为什么会失败？**必须看 new 的实际返回值与 errno**
+```
+
+**三种可能：**
+
+```text
+A. 主堆被耗尽（我们给了 640×480 的请求，但 184 字节不至于）
+B. operator new 被我们自己的 shim/preload 覆盖成了返回 0 的桩
+C. space 对象里的 vtable/回调让 0x129a30 构造过程中改坏了堆
+```
+
+**⇒ B 最可疑**：我们确实导出了大量符号（libObjShim 196 个），
+**若其中包含 `_Znwj`（operator new），就会把所有 new 变成桩。**
+
+## ④ 下一轮（一步就能验证）
+
+```text
+1. 查 argtrace/libObjShim 的导出符号里有没有 operator new / new[] / delete
+2. 若有 ⇒ 删掉它（我们不该导出它）
+3. 若没有 ⇒ 在 0x12ae34 入口加一个探针，记录 operator new 的返回值和 malloc 状态
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v268: 5718 行 / createLayer=6 / LIBOBJ_SYM=24
+```
