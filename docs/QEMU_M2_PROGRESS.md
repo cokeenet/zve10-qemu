@@ -48864,3 +48864,79 @@ QEMU 实例   0
 2. 若改写了：记录该区域前后摘要差异 → 这就是"Gen5 自己画出了像素"的直接证据
 3. 若没改写：说明它在更深处需要更多 bitmap 字段（按 Bitmap.cpp 的断言位置继续补）
 ```
+
+# ★★★★★★★★ 2026-11-12 第五百四十六章（R956–R970）：**Fillrect 没写缓冲，但触发了绘制链 —— 两条新事实**
+
+## ① 宿主机三次采样证明：目标缓冲**没有被写**
+
+```text
+（第 20 / 30 / 40 个定时器 tick 各采一次）
+XPEEK phys=0x20100800 nonzero16=16384 colours=2
+XPEEK phys=0x20100000 nonzero16=16384 colours=2
+XPEEK phys=0x20108000 nonzero16=16384 colours=2
+XPEEK phys=0x2010a000 nonzero16=16384 colours=2
+（三次完全相同）
+```
+
+**⇒ 我们给 Fillrect 的那个 bitmap（pixels=0x20100800）**一个字节都没变**。
+**⇒ 本次 Fillrect **没有完成绘制**。**
+
+## ② 但出现了两个此前没有的新事实
+
+### 2.1 `GRMFILL` 真实执行到了 mode 检查之后
+
+```text
+GBMIN calling fillrect bitmap=0x50edd0
+GRMFILL n=1 a=0 b=0 c=0x5a5ed28
+GRMHOOK fillrect n=1 tid=117 req=0x5a5ed28 mode=1
+（无断言）
+```
+
+**⇒ 与 v202 的 null-bitmap 那次相比，这次**通过了 bitmap 校验**并进入参数解析。**
+**而 `GBMIN fillrect returned` 仍然缺席 ⇒ 它卡在更深处。**
+
+### 2.2 我们的调用之后，`DRAWSTAGE 6/7` 又出现了
+
+```text
+DRAWSTAGE enter 6 =1 tid=152 caller=libObj+0x123dca
+DRAWSTAGE leave 6 =1
+DRAWSTAGE enter 7 =1 tid=152 caller=libObj+0x123dd4
+DRAWSTAGE leave 7 =1
+DRAWSTAGE enter 6 =2 tid=152 caller=libObj+0x11d51a
+```
+
+**⇒ 这是在 GBMIN 调用之后发生的（行号顺序确认）。
+**说明我们的 Fillrect 调用**推动了绘制链的一步** —— 之前 DRAWSTAGE 在所有运行里都是 0。**
+
+**（注意：这两条 DRAWSTAGE 的 tid 是 152，不是 watchdog 的 117，
+所以可能是被填充动作间接触发的另一条线程，而不是我们的直接调用返回。）**
+
+## ③ 因此当前状态
+
+```text
+✓ Gen5 的 Fillrect 通过了 bitmap 校验（v203）
+✓ 它进入了参数解析与真实执行（v203/v204）
+✓ 我们的调用触发了 DRAWSTAGE 6/7（v204，此前从未出现）
+✗ 目标缓冲未被写入（三次采样一致）
+✗ Fillrect 未返回
+```
+
+## ④ 约束
+
+```text
+QEMU 实例   0
+基线        v204: 2500 行 / createLayer=6
+```
+
+## ⑤ 下一轮
+
+**两个并列方向：**
+
+```text
+A. 继续补 bitmap 字段：它没写缓冲，说明还有字段不满足它的内部条件。
+   下一轮在 Fillrect 内部装探针（它的入口 0x117b4c 前 10 字节可 pin），
+   看它卡在第几个检查。
+
+B. 既然 DRAWSTAGE 6/7 被触发了，就顺着这条已有活动的链往下推 ——
+   这可能比继续补 bitmap 更快到达"真正出帧"。
+```
