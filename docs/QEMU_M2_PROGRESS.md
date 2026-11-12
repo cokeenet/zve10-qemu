@@ -50376,3 +50376,68 @@ FRAMEPERIOD 无输出（best_nz 仍为 0）
 QEMU 实例   0
 基线        v243: 5387 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-12 第五百七十章（R1376–R1395）：**notifyDraw 的 widget 循环被确认执行了 6 次**
+
+## ① 在 notifyDraw 的循环体上装了探针（0x106540）
+
+```text
+选择依据：0x106540 = `ldr r3,[r4,#0] / ldr r3,[r3,#0] / blx r3`，
+           位置无关（无 PC 相对），可安全 hook
+同时移除了 0x3bf70（ARM 编码 PLT 项，Thumb 桩 hook 不了）
+```
+
+## ② 实测 v244（基线合格）
+
+```text
+行数 5466 / createLayer=6 / LIBOBJ_SYM=24
+DRIVE_AT_SEND notifyDraw CALLING wg=0x502938
+FRSTEP notify_loop n=1 tid=195
+FRSTEP notify_loop n=2 tid=195
+FRSTEP notify_loop n=3 tid=195
+FRSTEP notify_loop n=4 tid=195
+FRSTEP notify_loop n=5 tid=195
+FRSTEP notify_loop n=6 tid=195
+DRIVE_AT_SEND notifyDraw returned 912688340
+FRSTEP getallocrect n=1 tid=199
+```
+
+**⇒ 这是本会话第一次确证：**
+**notifyDraw 的 widget 遍历循环**确实执行了 6 次**（针对 6 个 widget 节点）。**
+
+## ③ 但循环体内的真正绘制分支仍未触发
+
+```text
+循环体逻辑：
+    106540: ldr r3,[r4,#0]      ; widget vtable
+    106544: ldr r3,[r3,#0]      ; 槽 0
+    106546: blx r3              ; 调用，返回 r0
+    106548: cbz r0, 106558      ; **r0 == 0 ⇒ 跳过绘制**
+    10654e: bl 0x105f98         ; 否则进入真正绘制
+```
+
+**⇒ 循环 6 次都走到，但没有 `0x105f98` 的任何痕迹 ⇒ 槽 0 的返回值在 6 次里**全是 0**。**
+
+## ④ 因此下一步的判据非常明确
+
+```text
+需要确认"槽 0 返回 0"这件事：
+  - 若确实全为 0 ⇒ widget 的 vtable 槽 0 在说"现在不需要重绘"
+  - 这意味着固件认为**没有脏区**，而不是"不会画"
+  ⇒ 触发重绘的正确方式可能是：先让某个 widget 被标记为脏（如通过键事件）
+```
+
+**这也与判据 4（键注入后菜单有可见状态变化）天然衔接：
+**按键 → widget 状态变脏 → notifyDraw 的槽 0 返回非 0 → 真正绘制 → 出像素。**
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v244: 5466 行 / createLayer=6 / LIBOBJ_SYM=24
+```
+
+## ⑥ 下一轮
+
+1. 在 0x106546（`blx r3` 之后）读 r0 的实际值，直接确认"是 0 还是非 0"
+2. 若为 0：改用键注入制造脏区（INJECT_CP 已在用，但键盘事件确认从未被消费）
