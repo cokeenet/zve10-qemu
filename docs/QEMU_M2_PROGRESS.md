@@ -49853,3 +49853,65 @@ QEMU 实例   0
 - 或把报告彻底移到另一个线程（watchdog 只做计数）
 - 之后驱动就能被观察数百圈，而不是 1 圈
 ```
+
+# ★★★★★★★★ 2026-11-12 第五百六十一章（R1211–R1230）：**线程化解决了 UI 卡死；确认 Fillrect 卡在 BMP_GetAllocatedRectangle 内部**
+
+## ① 三组时间对照，得到一个确定结论
+
+```text
+sleep(1) 版（v233）  : 第 47 圈，墙钟 606 s  ⇒ createLayer 在墙钟末端
+200ms  版（v234）    : 第 230 圈，墙钟 800 s ⇒ 圈数翻 5 倍，但 createLayer 仍在末端
+WINDOW=1600（v235）  : 第 456 圈，墙钟 1600s ⇒ 同上
+⇒ **createLayer 完成时刻由墙钟决定，与圈数无关**；
+⇒ 单纯的"加快循环"或"加长窗口"都不能把观察窗口从 ~1 圈拉长
+```
+
+## ② 真正的障碍是**驱动阻塞了调用它的线程**
+
+```text
+v235：驱动之后只剩 21 行，GBMINTHREAD 不存在（那时还在 UI 线程上）
+⇒ Fillrect 在 UI 线程（tid=195）里进入 BMP_GetAllocatedRectangle 后不再返回
+⇒ 整个 UI 被它卡住
+```
+
+**这就是"驱动之后什么都测不到"的真正机制**，也是本会话一直没定位的那层原因。
+
+## ③ 改法：把驱动放到独立线程（v236，基线合格）
+
+```text
+行数 5492
+createLayer n=6        ✓
+LIBOBJ_SYM  24         ✓
+GBMINTHREAD enter tid=199   ← 驱动现在跑在自己的线程上
+FRSTEP getallocrect n=1 tid=199
+驱动之后输出 **77 行**（此前 21 行）⇒ **UI 没有被卡死**
+```
+
+**⇒ 但 `GBMINTHREAD leave` 仍缺席 ⇒ 该线程自身卡在 `BMP_GetAllocatedRectangle` 内部。**
+
+## ④ 宿主机采样仍未看到像素变化
+
+```text
+XPEEK 0x20100800/0x20100000/0x20108000/0x2010a000 全部 16384 / 2 色
+⇒ 与驱动前完全一致
+```
+
+**但注意：本轮 XPEEK 的采样点仍集中在 tick 190..520（约 570..1560 秒），
+而 createLayer 在墙钟末端才完成 —— 采样范围很可能仍早于驱动。**
+**这个覆盖缺口需要与"卡在 getallocrect"分开判断。**
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v235: 5363 行 / createLayer=6
+            v236: 5492 行 / createLayer=6 / LIBOBJ_SYM=24
+```
+
+## ⑥ 下一轮
+
+```text
+1. 需要先证明 XPEEK 采样确实覆盖了驱动时刻（把采样点改成"每 10 tick 但跨度覆盖到窗口末端"）
+2. 同时确认 getallocrect 卡住的原因：它需要 bitmap 的哪些前置字段
+   （0x114e78 的实现可从反汇编读出，且它只读 bitmap 与一个输出指针）
+```
