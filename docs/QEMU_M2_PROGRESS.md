@@ -49123,3 +49123,71 @@ QEMU 实例   0
 2. 把 gbmin_fill 改成**只在容器入口线程执行一次**（不进 watchdog 循环）
 3. 观察 "before-dlsym" 是否能出现
 ```
+
+# ★★★★★★★★ 2026-11-12 第五百五十章（R1016–R1030）：**定位到 watchdog 只醒一次的真因：循环里有一段调用固件后永不返回的代码**
+
+## ① 本轮先简化，再逐层排除
+
+```text
+步骤1：把 watchdog 循环里的探针安装 + 驱动调用全部移除，只留 WDTICK 一行日志
+步骤2：把探针安装移到 renderentry 的一次性安装序列
+步骤3：关掉 directmenu_maybe
+实测 v210：WDTICK = 1，APPSTART = 1  ⇒ **循环仍然只转一圈**
+```
+
+## ② 于是继续往下找，读到了循环体后半段
+
+```text
+if (n >= 0) {
+    static int rex_once;
+    if (!__atomic_exchange_n(&rex_once, 1, __ATOMIC_RELAXED)) {
+        ...
+        void (*rf)(unsigned long) = (void (*)(unsigned long))(ab + 0x54ed12UL + 1UL);
+        vdfreply_try();
+        screenstate_dump();
+        rf(a0);                       ← **调用固件 0x54ed12**
+        logline("RENDEREXEC returned");  ← 永远到不了
+    }
+}
+```
+
+**而 `0x54ed12` 的执行体会进入 `osal_rcv_msg_tmo(qid=0x1706085, tmo=-1)` —— 永久等待。
+**⇒ 这就是 watchdog 只醒一次的真因：第一圈跑到底部的 `rf(a0)` 就死在那里。**
+
+## ③ 处置
+
+```text
+把整个 `if (n >= 0)` 块改为 `if (0)`（代码保留，注明原因）
+⇒ 循环体不再含任何"调用固件后永不返回"的语句
+```
+
+**这是本会话第 14 次同类型问题：
+**"我自己放的诊断代码阻塞了后续所有诊断"。**
+
+## ④ 修后实测（v211，基线 2499 行 / createLayer=6）
+
+```text
+WDTICK = 1     ← **仍然只转一圈**
+```
+
+**⇒ 说明还有**别的**阻塞点，或者在 `if (0)` 之后仍有语句会卡住。**
+
+**下一步必须把循环体**整段**打印出来逐条审一遍，而不是继续局部猜。**
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v211: 2499 行 / createLayer=6
+```
+
+## ⑥ 结论
+
+**两轮下来，最重要的产出不是新机制，而是确认：**
+
+```text
+watchdog 线程在整个会话里**一直只执行一圈**
+⇒ 所有依赖"第 N 圈"的探针（包括 FBDESC 的 done、WDTICK 的 n>1、GPEOBS 的第二次报告）
+  **从来就不可能执行**
+⇒ 之前基于这些"第二圈以后"的数据得出的结论，都需要重新审视
+```
