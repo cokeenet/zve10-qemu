@@ -50505,3 +50505,67 @@ C. 让 appFw 的 createLayer 走完它自己的分配流程（需先弄清它为
 ```
 
 **优先 A：它的 10 个参数可从 0x114c98 的读取偏移逐字段推出，且失败会 assert 而不是静默。**
+
+# ★★★★★★★★ 2026-11-12 第五百七十二章（R1416–R1435）：**断言改为可恢复；vtable 路径被调用 3 次**
+
+## ① 把 Gen5 的断言从"致命"改成"可恢复"
+
+```text
+原实现：__assert_fail 打印后直接 _exit(1)
+⇒ 任何一次探测触发断言都会**报废整轮**（v202 就是这样，2400 行后全部丢失）
+新实现：若 g_assert_jb_armed，则 siglongjmp 回驱动方
+       驱动方 sigsetjmp 包住调用，捕获后打印 "ABORTED by assert (recovered=N)" 并继续
+⇒ 一轮之内可以试多种参数，而不是一次一条
+```
+
+## ② 实测 v246（基线合格）
+
+```text
+行数 5302 / createLayer=6 / LIBOBJ_SYM=24
+DRIVEHERE cl_n=6 about to drive gbmin_fill tid=195
+DRIVEHERE spawned gbmin thread
+GBMINTHREAD enter tid=199
+GBMINVT slot6 called n=1 bitmap=0x4de730 slot=0x38ef7d64
+GBMINVT stored record=0x40a5a48 as {0,0,640,480}
+GBMINVT slot6 called n=2 slot=0x38ef7d60    ← 递减 4
+GBMINVT slot6 called n=3 slot=0x38ef7d5c    ← 再递减 4
+```
+
+**⇒ 两个新事实：**
+
+```text
+1. GetAlocatedRectangle 被**反复调用**（3 次），每次的 out-slot 依次 0x…64 / 0x…60 / 0x…5c
+   ⇒ 这正是父函数 0x117b74 里 `add r1,r7,#0x50` 配合 `str [r1,#-8]!` 的递减栈槽
+   ⇒ 也就是说，Gen5 在逐个 widget 地请求矩形，而不是只请求一次
+2. 断言恢复机制就位（虽然本轮没有断言触发）
+```
+
+## ③ 仍未得到的内容（如实）
+
+```text
+GBMIN fillrect returned / ABORTED 均缺席 ⇒ 该线程仍在执行中
+像素仍为零 ⇒ 3 次矩形请求都没有走到真正写像素
+```
+
+## ④ 这与上一轮的结论一致并强化
+
+```text
+✓ notifyDraw 被调用（v243）
+✓ widget 循环 6 次（v244）
+✓ 槽 0 返回 1，绘制分支被选中（v245）
+✓ GetAlocatedRectangle 被调用 3 次（v246）
+✗ 仍未写像素 ⇒ 缺画布这一点不变
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v246: 5302 行 / createLayer=6 / LIBOBJ_SYM=24
+```
+
+## ⑥ 下一轮
+
+**利用刚获得的"断言可恢复"能力，直接试 GRM_bitmapCreate：
+**它失败会 assert 并给出 Bitmap.cpp 的行号，那正是"缺哪个字段"的精确答案；
+**而这次失败不会再毁掉整轮。**
