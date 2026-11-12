@@ -50977,3 +50977,63 @@ DEVOPEN n=29 path=/dev/mem flags=0x1002 ret=8 tid=132
 QEMU 实例   0
 基线        v254: 5478 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-12 第五百七十九章（R1561–R1580）：**那个设备是 `/dev/mem`；而它在我们环境里**能打开** —— 问题在别处**
+
+## ① 解出设备路径字符串
+
+```text
+0x119f44: ldr r0,[pc,#44]   ; 字面量在 0x119f74 = 0x0016a882
+0x119f4a: add r0,pc        ; PC = 0x119f4e
+⇒ 字符串地址 = 0x0016a882 + 0x119f4e = 0x2847d0
+⇒ .rodata 内容 = **"/dev/mem"**
+```
+
+## ② 但 `/dev/mem` 在我们环境里是可打开的
+
+```text
+DEVOPEN n=5  path=/dev/mem flags=0x1002 ret=4   ← 成功（fd=4）
+DEVOPEN n=13 path=/dev/mem flags=0x1002 ret=7   ← 成功
+DEVOPEN n=14 path=/dev/mem flags=0x2    ret=4   ← 成功
+（v254 里 /dev/mem 相关 DEVOPEN 共 10 条，全部 ret >= 0）
+```
+
+**⇒ 所以 `open("/dev/mem")` **并不是**失败点。**
+
+## ③ 于是 `space` 失败必然发生在 open 之后的下一步
+
+```text
+0x119f30 的完整逻辑：
+    ldr r4,[全局]              ; r4 = 句柄槽
+    ldr r3,[r4,#0]
+    cmp r3, #-1               ; 若已开过就直接返回
+    bne → pop
+    open("/dev/mem", 0x1002)  ; O_RDWR|O_SYNC
+    cmp r0, #-1
+    str r0,[r4,#0]            ; 保存 fd
+    bne → pop                 ; **打开成功就返回**
+    否则 __assert_fail         ; 只有 open 失败才断言
+```
+
+**⇒ 注意这个函数的断言文本不是 `space`，而是另一个。
+**⇒ 也就是说 `space`（Bitmap.cpp:70）**不是在这里触发的**，
+**而是**在这之后**，当调用方用这个 fd 去做映射/取空间时才发生。**
+
+## ④ 现在的准确缺口
+
+```text
+✓ /dev/mem 可打开（10 条 DEVOPEN 成功记录）
+? 用它 mmap 某段物理内存时失败（很可能是 mmap 的 offset/size 不被 QEMU 接受）
+⇒ 所以要把"mmap 请求"本身记录下来：谁调 mmap、参数是什么、返回什么
+```
+
+**我们的 argtrace 里已有 `DEVOPEN` 钩子，但**没有 mmap 钩子**。**
+**下一轮加一个 mmap 钩子，把每次调用的 (addr,len,prot,flags,fd,offset) 与返回值记录，
+**就能看到 bitmap 堆的 mmap 为什么失败。**
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v254: 5478 行 / createLayer=6 / LIBOBJ_SYM=24
+```
