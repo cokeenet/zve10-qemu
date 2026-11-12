@@ -1,0 +1,99 @@
+{
+  "when": "2026-11-12T18:36+08:00",
+  "purpose": "Everything on the camera that the official VERSKIP firmware flash will destroy, so it can be re-deployed afterwards.",
+  "why_destroyed": "part_image.sum rewrites nflasha5/15/7/3, and VERSKIP falls into us_mkfs default branch which full-formats the rest, so /etc (nflasha10) and /setting (nflasha2) are wiped too.",
+  "restore_reminders": [
+    "zve10_agent.so is 18,104 bytes on the camera but the repo copy at tools/payload/agent/zve10_agent.so is 18,052 bytes; the camera version is newer, this backup is authoritative.",
+    "/etc/libnewmenu.so, /etc/nmlib.so and /usr/lib/libnewmenu_usr.so are the same 135,332-byte file.",
+    "ld.so.preload currently lists both /etc/zve10_agent.so and /usr/lib/libnewmenu_usr.so; ld.so.preload.orig lists only the agent.",
+    "After flashing, agent TCP 7777 will be gone. Rebuild path: push zve10_agent.so into nflasha10 via Pico/fastboot, then recreate /etc/ld.so.preload.",
+    "mode and mode6 are the updater markers that arm VERSKIP; they will be removed by the format, which is correct: the next boot must return to normal."
+  ],
+  "files": [
+    {
+      "file": "dmode",
+      "bytes": 1,
+      "sha256": "4e07408562bedb8b60ce05c1decfe3ad16b72230967de01f640b7e4729b49fce"
+    },
+    {
+      "file": "env.txt",
+      "bytes": 25,
+      "sha256": "5be52e8d7b5e89eb7bfeac99d166cf245a0119baf73cc706929a543c09129e18"
+    },
+    {
+      "file": "etc-libnewmenu.so",
+      "bytes": 135332,
+      "sha256": "58360091d415bc68f0748aa31cf718cac286e108fe511e322de296e5d5392123"
+    },
+    {
+      "file": "etc-nmlib.so",
+      "bytes": 135332,
+      "sha256": "58360091d415bc68f0748aa31cf718cac286e108fe511e322de296e5d5392123"
+    },
+    {
+      "file": "kemco.txt",
+      "bytes": 1925,
+      "sha256": "f381ea714449ac9c66f7155cb4a74bb9274d5453c7effcf34e9693b462cd5aa9"
+    },
+    {
+      "file": "ld.so.preload",
+      "bytes": 47,
+      "sha256": "d1519bf60d7744aa5eb6e47fda9c723c0f4adf5d6a62dcbd5056288a1671c186"
+    },
+    {
+      "file": "ld.so.preload.bak",
+      "bytes": 20,
+      "sha256": "e5237164e3dc71e30222b7c6fd5741aaff9b0a58b090fe6093380cd5dff4fa83"
+    },
+    {
+      "file": "ld.so.preload.before-exp",
+      "bytes": 47,
+      "sha256": "d1519bf60d7744aa5eb6e47fda9c723c0f4adf5d6a62dcbd5056288a1671c186"
+    },
+    {
+      "file": "ld.so.preload.before-usr-20261109",
+      "bytes": 39,
+      "sha256": "6335163968267fbe14acbabc8eafb75fd043808ccb6d5c4a9dfbb579ba37ed02"
+    },
+    {
+      "file": "ld.so.preload.orig",
+      "bytes": 20,
+      "sha256": "e5237164e3dc71e30222b7c6fd5741aaff9b0a58b090fe6093380cd5dff4fa83"
+    },
+    {
+      "file": "libnewmenu_usr.so",
+      "bytes": 135332,
+      "sha256": "58360091d415bc68f0748aa31cf718cac286e108fe511e322de296e5d5392123"
+    },
+    {
+      "file": "setting_apply_og.sh",
+      "bytes": 15574,
+      "sha256": "1bdc90d878e500a54028409e71e9b836e1afceb880b022ed838491e926211c50"
+    },
+    {
+      "file": "setting_inode_fix.bin",
+      "bytes": 128,
+      "sha256": "658bd2003f34c719b27ed4faf0519643648d71e2fe8cead31f9ebc36ef791040"
+    },
+    {
+      "file": "setting_mem_patch.elf",
+      "bytes": 6124,
+      "sha256": "b518a127d7b0686f86ebf76828f7b8a4e1a15b7e693dfc4ecc831e5a351335b1"
+    },
+    {
+      "file": "updater-mode",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "updater-mode6",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "zve10_agent.so",
+      "bytes": 18104,
+      "sha256": "db58176e4e3aa92bd09c2903e8a096366dea55ddd5854516796c4e42b651da30"
+    }
+  ]
+}

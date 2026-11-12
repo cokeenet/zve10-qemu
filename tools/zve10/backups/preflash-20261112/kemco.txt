@@ -1,0 +1,66 @@
+kemco
+ramdisk_size=8192
+rw noatime noalign lpj=1757184
+page_alloc.minkb=128
+page_alloc.lokb=1024
+page_alloc.hikb=1280
+heap_profile.records=0
+snsc_workqueue.kipid=130 manage.irqd=129 softirq.sirqd=123
+adrs_conv.debug=1
+adrs_conv.null=Y
+exception.reboot=1
+exception.console_option=115200n8
+wdt.timeout=500
+warm.mode=2
+warm.tmo=100000
+warm.resume_drop=0
+warm.boot_drop=0
+warm.ignore_drop=1
+basic.prof_path=/log/ssbi_prof.bin
+snsc_boot_time.us=Y
+cache_l2x0.wait=3
+cache_l2x0.prio=130
+pgd.n=15
+cache_l2x0.prio=130
+cfg.uart=9
+pcie.ch0_enable=Y pcie.ch0_select=1 pcie.ch0_start=0
+pcie.ch1_enable=Y pcie.ch1_select=1 pcie.ch1_start=0
+pcie.cold_delay=0 pcie.pon_delay=0
+pcie_ports=native pci=ecrc=on,hpiosize=0,hpprefsize=0 pciehp.pciehp_force=Y pcie_aspm.policy=performance
+error.led=0,0
+cfg.poff=10,5
+cmpr.path=/system/sabin/ssboot.bin cmpr.path2=/system/sabin/ssboot_any.bin
+cgroup_disable=memory
+console=ttynull xrstreq=1 wdt.mode=1 stack_usage=n cxd900x0.bam=N mmu.dac=Y exec.coremode=1
+ip=off
+tmonitor.addr=0xF00000 tmonitor.size=0x8000 tmonitor.mask=0
+rootfstype=ext2 root=/dev/ram0 init=/sbin/init initrd=0x700000,8M
+pm.resume=0x20021054 pm.sus_error=0x20021060
+pm.ddr_ctrl=sref pm.ddr_ctrl2=sref
+pm.pasr1=0xff pm.pasr2=0xff pm.pasr3=0xff
+wbi_memclr=0x200210e8
+em_console=0x200210ec
+wbimem=0x1000@0x20021000
+wbimem=0xEC000@0x20028000
+wbimem=0x8000@0x20145000
+wbimem=0x500000@0x03085000
+wbimem=0x96D000@0x11000000
+wbimem=0x2A48000@0x20200000
+wbimem=0x200000@0x23E00000
+cmpr.mem=0x8000@0x15800000
+warm.mem_dst=0xC00000@0x15900000
+warm.mem_work=0x600000@0x16500000
+wbi_cmpr.waddr=0x6AA00000 wbi_cmpr.wsize=0x100000
+wbi_cmpr.nbuf=12
+boottime=0x20000@0x03585000
+klog.addr=0x035A5000 klog.size=0x20000
+alog.addr=0x03524FC0 alog.size=0x60040 alog.clock=cpu
+mem=1G@0
+memrsv=1M@0
+memrsv=0x8000@0xF00000
+memrsv=0x1A5E000@0x02E68000
+memrsv=0xAEEB000@0x0A915000
+memrsv=680M@0x15800000:uc
+mem=256M@0x80000000@1
+memrsv=256M@0x80000000:uc
+*
