@@ -1,0 +1,54 @@
+{
+  "when": "2026-11-12T20:35+08:00",
+  "operation": "WBI header invalidation through /sys/power/image_drop (Sony's own kernel path)",
+  "camera": {
+    "version": "30110_06.2026060501",
+    "boot_id_before": "30a915db-8abd-4586-88a2-4b9d22fca89c",
+    "uptime_before_s": 2641.87,
+    "agent": "tcp 10.42.0.158:7777"
+  },
+  "pre_state": {
+    "image_mode": 2,
+    "state": "mem warm",
+    "wbi_fVersion": "WBI1",
+    "wbi_sections": 664,
+    "wbi_resume_vector": "0x00124E1C",
+    "wbi_o_data_size": "0x08234000",
+    "block0_sha256": "f0d60c7df606d5ea8d4337e15f47de5af81a991cb003cef1b7d870a7c4938054",
+    "matches_20261109_archive": true,
+    "matches_stock_package": true,
+    "pid157_im_elf_starttime": 104,
+    "pid157_means": "restored from snapshot, not exec'd",
+    "lm_caution_config_sha256": "14f42cc09ee1b9ddde5352482c13b68e5a5e97d9d79e8456087b5e0b7af6ff6a",
+    "lm_caution_config_is_patched": true
+  },
+  "action": {
+    "command": "echo 1 > /sys/power/image_drop",
+    "kernel_path": "image_drop_store -> _wbi_drop(); returns n on success",
+    "which_is": "the same sysfs entry Sony's ud_wbi_drop.elf uses"
+  },
+  "post_state": {
+    "bytes_0_511_all_zero": true,
+    "bytes_512_4095_unchanged": true,
+    "block0_sha256": "19a15ad4396a9fb834571980694e1369e5af5672acc6cc4f9a6811c8c5825b12",
+    "new_fVersion": "\\0\\0\\0\\0",
+    "sections": 0,
+    "resume_vector": "0x00000000",
+    "o_data_size": "0x00000000"
+  },
+  "evidence_files": {
+    "live-block0-4096.bin": "pre-drop capture, matches both archives byte for byte",
+    "live-block0-after-drop-4096.bin": "post-drop capture, header zeroed, neighbour intact",
+    "state-before-drop.txt": "boot_id, uptime, image_mode, pid157 stat, dmode, updater dir, CautionConfig hash"
+  },
+  "next_step_required": "PHYSICAL POWER CYCLE ONLY. Remove the battery for >=30 s. Never use fastboot reboot or any software reboot: the two past failures both used a software reboot while the WBI was invalid, which left the camera in an incomplete power transition with no USB enumeration.",
+  "recovery": {
+    "precondition_after_boot": "a normal boot proves a real cold start happened; the WBI is still zero",
+    "restore_source_1": "/root/fw/zve10_backup/nflasha5.img (62,914,560 B, header WBI1)",
+    "restore_source_2": "tools/zve10/backups/wbi-A-applied-20261109/live-block0-4096.bin",
+    "restore_source_3": "tools/zve10/backups/wbi-pre-drop-20261112/live-block0-4096.bin",
+    "restore_path": "Pico inject stage1 -> stage2 -> tools/zve10/wbi/restore_zero_header.py",
+    "restore_gate": "requires bytes 0..511 entirely zero and bytes 512..4095 to match the archive"
+  },
+  "why_this_should_give_a_cold_boot": "With a zero header none of Loader2's four predicates match, so the ssboot/ss_bis rows cannot fire. The cldboot row's handler at 0xFE049A43 is preceded by 0xFE049A42 'movs r0,#0 ; bx lr', an always-zero stub, so boot mode falls through to a real cold path instead of restoring the snapshot."
+}
