@@ -51220,3 +51220,54 @@ BMP_PixelFormat / BMP_YUVMode / BMP_PixelSortingOrder / BMP_PixelStartPosition
 QEMU 实例   0
 基线        v256: 5469 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-12 第五百八十三章（R1641–R1660）：**参数扫描完成：30 组合无一成功，但得到一条关键线索**
+
+## ① 一轮内扫完 fmt×yuv 全空间（30 组合）
+
+```text
+v257（基线合格：5716 行 / createLayer=6 / LIBOBJ_SYM=24）
+GCSWEEP fmt=0 yuv=0 ASSERTS (1)
+GCSWEEP fmt=0 yuv=1 ASSERTS (2)
+GCSWEEP fmt=0 yuv=2 ASSERTS (3)
+GCSWEEP fmt=1..9 × yuv=0..2 → 全部 -9999 bitmap=(nil)
+GCSWEEP no combination succeeded
+```
+
+## ② 这组数据给出两条确定的结论
+
+```text
+✓ fmt=0 被**类型检查**拒绝（断言）⇒ 合法 PixelFormat 从 1 开始
+   （与我们自家 ZV-1F 的 bpp 表 {0,2,4,2,1,2,2,2,4,4} 完全吻合：下标 0 就是非法）
+✓ fmt=1..9 全部进入函数体但返回 -9999 ⇒ **space/bitmapOut/fmt 都已被接受**，
+   失败在剩余参数（两个 short、sort order、start position）
+```
+
+## ③ 反汇编给出下一处线索
+
+```text
+0x1193b2:  cmp r2, #6
+0x1193b4:  beq 0x11940e      ← **r2 == 6 时跳到 0x11940e**
+0x11940e:  mvn.w r5, #4      ← 即返回 **-5**，而不是 -9999
+```
+
+**⇒ 也就是说：**某个参数（很可能是 PixelFormat，此处 r2 承载）取值 6 时会走一条
+**不同的返回路径（返回 -5）**，而不是 -9999。**
+**⇒ 这说明 -9999 是在**其它参数的校验**里产生的。
+
+## ④ 下一轮的具体做法
+
+```text
+1. 把 sort order 与 start position 也纳入扫描（0..3 各值）
+2. 同时扫两个 short 参数（当前都传 0；可能要求非零，如 stride 或 depth）
+3. 一轮内可扫 10×3×4×4 = 480 组，仍可承受（每次调用只花一条日志）
+```
+
+**注意：每次调用都要用**独立的 space 对象**，因为 0x11b968 会写穿那块内存。
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v257: 5716 行 / createLayer=6 / LIBOBJ_SYM=24
+```
