@@ -52034,3 +52034,64 @@ FRSTEP statedrive n=1 obj=0x4108004 [+0]=0xaa57280 [+4]=0xedfefeca [+8]=0 [+12]=
 QEMU 实例   0
 基线        v274: 5505 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第五百九十六章（R1971–R2000）：**画布分配藏在 vdf_if_port_init 内部 —— 而它正是已知的永久等待点**
+
+## ① 本轮撤销了上一轮卡住线程的实验，基线恢复
+
+```text
+移除 STATEADV/CTORADV 块后：
+v275: 5716 行 / createLayer=6 / LIBOBJ_SYM=24
+statedrive 命中 = 0（已不再主动调用）
+draw_entry 命中 = 10（绘制入口照常）
+```
+
+## ② 然后顺着"谁真正调用 0x129aa0"往上追，得到一个关键结论
+
+```text
+0x129aa0 的两个调用点：0x12ab98 与 0x12ac3a
+它们所在的父函数：0x12ab3e 与 0x12abe6
+用 nm 对照导出符号 ⇒ **两者都落在 `vdf_if_port_init`（0x124e20）内部**
+```
+
+**⇒ 也就是说：**画布分配（0x129a30 构造 → 0x129aa0 推进 → BMP_Create）
+**是 `vdf_if_port_init` 的一个内部阶段**，不是可以随便单独调的 API。**
+
+## ③ 而这解释了本会话长期以来的一个现象
+
+```text
+`vdf_if_port_init` 内部 0x127b54 一带会进入 **永久等待**（账本早已记录：
+  它最终走到 osal_rcv_msg_tmo(qid=0x1706085, tmo=-1)）
+⇒ 因此：
+  · 固件自己的 createLayer/notifyDraw 流程走到 vdf_if_port_init 就停下
+  · 该阶段之后的画布分配**永远不会执行**
+  · 我们看到的"statedrive 命中 0"正是这个后果
+```
+
+## ④ 现在缺口被归结为一句话
+
+```text
+**vdf_if_port_init 里的那次 osal 等待（qid=0x1706085, tmo=-1）没有应答者。**
+⇒ 只要给它一个应答，vdf_if_port_init 就能继续，
+   它内部的 0x129a30 → 0x129aa0 → BMP_Create 就会依次执行，
+   **画布由固件自己创建，完全符合判据 1。**
+```
+
+**这比"自己拼调用"干净得多，也解释了为什么直调总是失败。**
+
+## ⑤ 下一轮（唯一正确的方向）
+
+```text
+给 qid=0x1706085 的 OSAL 请求构造应答
+  · 该队列已在我们的运行里出现（RCVC qid=0x1706085 有记录）
+  · 需要在 vdf 等待之前把应答投进去
+  · 账本里已有 vdfreply_try 的雏形可以复用/扩展
+⇒ 这是从"猜参数"转为"补一个消息应答"，工作量小且语义正确。
+```
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v275: 5716 行 / createLayer=6 / LIBOBJ_SYM=24
+```
