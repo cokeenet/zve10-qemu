@@ -51976,3 +51976,61 @@ STATEADV state=**0x1**                     ← 状态仍是 1，没有推进到 
 QEMU 实例   0
 基线        v273: 5713 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第五百九十五章（R1941–R1970）：**传入真实几何后，advance 调用把线程卡住了**
+
+## ① 本轮按上一轮结论补了真实几何参数
+
+```text
+真实调用者（0x12ab98 / 0x12ac3a）传的是：
+    r0 = self
+    r1 = [obj+4]            ← 宽度
+    r2 = [obj+8]            ← 高度
+    r3 = [obj+0xc] 或 r8    ← 格式
+    [sp] = [obj+0xc] / [obj+0x1c]
+⇒ 即 (self, w, h, fmt, ...)
+而我之前传的是 (self, 0, 0, 0) ⇒ 字节数 0 ⇒ 0x129830 范围检查失败 ⇒ -5
+本轮改成 (self, 640, 480, 1)
+```
+
+## ② 实测 v274（基线合格）
+
+```text
+行数 5505 / createLayer=6 / LIBOBJ_SYM=24
+FRSTEP statedrive installed at 0xa834aa0 wrote=8
+STATEADV base=0xa70b000 ctor=0xa834a31 adv=0xa834aa1
+STATEADV ctor done state=0x1          ← 构造成功
+FRSTEP statedrive n=1 tid=195 r0=0x4108004   ← 我们的调用进入了 0x129aa0
+FRSTEP statedrive n=1 obj=0x4108004 [+0]=0xaa57280 [+4]=0xedfefeca [+8]=0 [+12]=0
+（之后 STATEADV returned 缺席、statedrive n=2 缺席、GCSWEEP2 = 0 条）
+```
+
+## ③ 结论：这次不是返回错误码，而是**调用没回来**
+
+```text
+✓ 构造成功（state=1）
+✓ 我们的 advance 调用确实进入（statedrive n=1）
+✗ advance 没有返回（STATEADV returned 缺席）
+✗ 后续的 GCREATE 扫描从未执行（GCSWEEP2 条数 = 0）
+⇒ 线程卡在 0x129aa0 内部（很可能是 0x129830 走到 mmap/设备操作）
+```
+
+**而 `obj+4 = 0xedfefeca` 是个垃圾值**（不是我们传的 640）——
+**说明构造 0x129a30 并没有把几何写进对象，字段布局与我假设的不同。**
+
+## ④ 下一步必须换方法
+
+```text
+不能再"猜参数然后直调" —— 已经连续两轮猜错（零长度 → 卡住）。
+正确做法：**复用固件自己的运行路径**，而不是自己拼调用。
+即：让 appFw 自己的 createLayer/notifyDraw 流程走到"分配画布"那一步，
+    我们在旁边只做观测。
+⇒ 这与 QEMU 目标本身就是一致的（判据要求"来自 Gen5 自己的绘制路径"）
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v274: 5505 行 / createLayer=6 / LIBOBJ_SYM=24
+```
