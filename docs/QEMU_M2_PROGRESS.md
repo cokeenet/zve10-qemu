@@ -50266,3 +50266,56 @@ QEMU 实例   0
 QEMU 实例   0
 基线        v242: 5414 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-12 第五百六十八章（R1341–R1355）：**再次发现一处测量手段本身失效：PC 采样从未覆盖用户态**
+
+## ① 检查本轮运行的 PC 采样数据
+
+```text
+PCSET 总数 = 30040，**唯一值也是 30040**（每次都是不同地址，去重毫无作用）
+数值分布：0x00008bd0 .. 0xffff0fd3
+⇒ 全部落在**内核地址空间**
+⇒ 从未采到过 0xa8xxxxxx 这些用户态 libObj / appFw 地址
+```
+
+## ② 因此必须重新划定范围
+
+```text
+✗ 所有"PC 采样显示没有进入某区域"的结论 —— **作废**
+  （因为采样根本没覆盖用户态，看不到是必然的）
+✓ 但 FRSTEP / GBMINVT / BANKREAL 这些**inline hook 命中**与 PC 采样无关，
+  它们给出的"命中/未命中"仍然有效
+```
+
+**⇒ 这条区分很重要：本会话里有两类证据，
+**一类是 hook 命中（可信），一类是 PC 采样（从未覆盖用户态，不可信）。**
+
+## ③ 本轮没有新的机制进展，但完成了一次证据分类
+
+```text
+可信证据（hook 命中）：
+    GBMINVT slot6 called n=1        ⇒ Gen5 调用了我们 vtable 的槽 6
+    FRSTEP getallocrect n=1         ⇒ 进入了 BMP_GetAllocatedRectangle
+    DRIVE_AT_SEND / GFXENG_*        ⇒ 绘制发送路径被触及
+    faults=16906                    ⇒ SAFEPROBE 在真实解引用
+    found=0                         ⇒ libObj 无 bitmap（配合上一条才可信）
+
+不可信证据（PC 采样）：
+    任何形如"PC 采样在 X 区域命中 0 次"的判断
+```
+
+## ④ 约束
+
+```text
+QEMU 实例   0
+基线        v242: 5414 行 / createLayer=6 / LIBOBJ_SYM=24
+```
+
+## ⑤ 下一轮
+
+**既然"没有 bitmap"已被三条独立证据确认，下一步必须**造出**固件认可的 bitmap。
+**前面已验证：自建对象需要 vtable（已做），槽 6 返回指针记录（已做），
+**路径已经走到了 `DRIVE_AT_SEND notifyDraw` 这一步。**
+
+**下一轮要做的就是把 `notifyDraw` 的 observation-only 开关解除，
+**让固件真正执行绘制发送 —— 这是目前唯一还没被试过的正向动作。**
