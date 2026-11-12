@@ -50637,3 +50637,58 @@ QEMU 实例   0
 **0x106540 处 r0 是**上一轮的返回值**（循环回边已写入 r4 并重新载入），
 **因此需在 0x106540 之后的下一条位置读 r4；这需要一个小改动，
 **但必须保证窗口仍为 8 字节对齐。**
+
+# ★★★★★★★★ 2026-11-12 第五百七十四章（R1456–R1475）：**绘制入口第一次被命中 5 次**
+
+## ① v249 报废（探针密度）
+
+```text
+三个探针同时安装（0x114e78 + 0x105f98 + 0x106540）⇒ 344 行 / LIBOBJ_SYM=0
+按铁律报废。回退到两探针配置。
+```
+
+## ② v250（基线合格）出现**本会话最重要的正面读数**
+
+```text
+行数 5484 / createLayer=6 / LIBOBJ_SYM=24
+FRSTEP draw_entry n=1 tid=195 r0=0x4d05b0
+FRSTEP draw_entry n=2 tid=195 r0=0x4c4298
+FRSTEP draw_entry n=3 tid=195 r0=0x4c4530
+FRSTEP draw_entry n=4 tid=195 r0=0x4c47c8
+FRSTEP draw_entry n=5 tid=195 r0=0x4c4a60
+FRSTEP getallocrect n=1 tid=199 r0=0x4c5418
+⇒ **draw_entry 命中 5 次**
+```
+
+**⇒ 这是第一次确证：Gen5 的绘制函数 `0x105f98` 在 UI 线程上**被调用了 5 次**，
+**每个调用返回一个不同的对象指针（0x4d05b0 / 0x4c4298 / …）。**
+
+**这与 v244 的"widget 循环 6 次"完全对应：槽 0 返回非 0 ⇒ 进入 draw_entry。
+**⇒ 上一轮（v248）draw_entry 未命中是**时序差异**，而非固件不画。**
+
+## ③ 但像素仍为零
+
+```text
+XPEEK 0x20100800/0x20100000/0x20108000/0x2010a000 全部 16384 / 2 色
+FRAMEPERIOD 0 次输出（best_nz 始终为 0）
+```
+
+**⇒ 绘制函数被调用 5 次，仍一个像素都没写。**
+
+## ④ 现在的缺口非常明确
+
+```text
+✓ notifyDraw 被调用
+✓ widget 循环 6 次
+✓ draw_entry 被调用 5 次，每次都返回有效对象
+✗ 这 5 次调用都没有写出像素
+⇒ 缺口在 draw_entry **内部**，且已确证"没有 bitmap"（FBBMP found=0）
+⇒ 它拿到的对象（0x4d05b0…）很可能是 widget 本身，而 widget 上没有绑定画布
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v250: 5484 行 / createLayer=6 / LIBOBJ_SYM=24
+```
