@@ -51101,3 +51101,59 @@ MMAPOBS 总数 = 29
 QEMU 实例   0
 基线        v255: 5543 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-12 第五百八十一章（R1601–R1620）：**重大突破：找到 `space` 的真身 —— 它就是第一个参数，我自己一直传 0**
+
+## ① 上一轮两个假设都被本轮的读代码推翻
+
+```text
+✗ "缺 /dev 设备"     → /dev/mem 打开成功（10 条 DEVOPEN ret≥0）
+✗ "mmap 失败"        → 29 次 mmap 全部成功（0 次 MAP_FAILED）
+✓ 真正原因：BMP_Create 的**第一个参数**（space 对象）被我传成了 NULL
+```
+
+## ② 证据链（三条指令即可定案）
+
+```text
+0x1193ce  mov r4, r0        ← r0 是参数 1，保存到 r4
+0x1193d0  bl 0x11b968       ← 用 r4 初始化对象（写满 r4+0x00..+0x7c，并 calloc 52 字节）
+0x1193d4  cbnz r4           ← **r4 为 0 就 assert("space")**
+```
+
+**⇒ `space` = 调用者提供的第一个对象。
+**⇒ 它既不是设备、不是映射、也不是分配器。**
+
+**而 0x11b968 自己会把 `r4+0x00..+0x7c` 全部写一遍并 calloc 内部记录，
+**⇒ 所以**只要给一块 ≥0x80 字节的零内存，它就能自行完成初始化**。**
+
+## ③ 实测 v256（基线合格）
+
+```text
+行数 5469 / createLayer=6 / LIBOBJ_SYM=24
+GCREATE sym=0x408070c
+GCREATE returned **-9999** bitmap=(nil)
+```
+
+**⇒ **不再断言！** 函数进入了函数体、走完了初始化、并给出了一个错误码。
+**⇒ 这是从 v202 以来第一次真正走完 `BMP_Create` 的主体。**
+
+## ④ -9999 的含义
+
+```text
+它是 BMP_Error 域的错误码（不是 assert）
+⇒ 说明 space 与 bitmapOut 都已满足，失败在**后面某个参数**上
+⇒ 参数表：space, w=640, h=480, PixelFormat=1, YUVMode=0, ?, ?, &out, SortOrder=0, StartPos=0
+⇒ 最可疑的是 PixelFormat / YUVMode 的取值（我按 0/1 猜的）
+```
+
+## ⑤ 下一轮
+
+**逐个试 PixelFormat（0..9）与 YUVMode，找出能返回 0 的组合。
+**断言已可恢复、错误码也不再致命，所以一轮内可以试多次。**
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v256: 5469 行 / createLayer=6 / LIBOBJ_SYM=24
+```
