@@ -49661,3 +49661,67 @@ XPEEK 0x20100800 nonzero16=16384 colours=2           ← 驱动前后无变化
 QEMU 实例   0
 基线        v226: 3564 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-12 第五百五十八章（R1151–R1170）：**内部计步探针第一次命中：Fillrect 走到了第 2 步（BMP_GetAllocatedRectangle）**
+
+## ① 本轮先修掉一个"探针从未被安装"的问题
+
+```text
+FRSTEP 的两个安装调用原本写在探针集的 `else` 分支里
+而真正驱动 Fillrect 的运行都用 MIN_ONLY=1
+⇒ 探针**从未安装**（v226 实测 FRSTEP 命中 = 0，而 GRMFILL n=1）
+修法：把 frace_install() 移到分支之外，无条件安装
+```
+
+## ② 途中还遇到一次 deploy 拒绝
+
+```text
+build-deploy.sh 校验：cpio 哈希 ≠ 内核已嵌入的 initramfs 哈希
+  want b4ad4977…
+  got  861b4545…
+⇒ 脚本按设计拒绝，本轮报废
+修法：重新生成 cpio 后再 deploy（这是该脚本防止"静默跑错 cpio"的保护）
+```
+
+## ③ 部署成功后的实测 v227（基线合格）
+
+```text
+行数 3552
+createLayer n=6                     ✓
+FRSTEP subrect_2     installed at 0xa7e1f70 wrote=8
+FRSTEP getallocrect  installed at 0xa8bae78 wrote=8
+DRIVEHERE cl_n=6 about to drive gbmin_fill tid=195
+GBMIN about-to-call fn=0x402fb14 bitmap=0x4c9f10 mode=1
+GRMFILL n=1 a=0 b=0 c=0x36b27250
+GRMHOOK fillrect n=1 tid=195 req=0x36b27250 mode=1
+**FRSTEP getallocrect n=1 tid=195**          ← ★ 第一次命中内部计步
+```
+
+**⇒ Gen5 的 Fillrect 走到了**有序调用的第 2 步**（`0x114e78` / BMP_GetAllocatedRectangle）。**
+
+## ④ 关键的时间关系（这解释了"为什么没有 returned"）
+
+```text
+驱动触发时刻：APPSTART tick t=235s
+本次运行窗口：WINDOW=260（约 260 秒）
+⇒ 驱动只被观察了约 **25 秒**
+⇒ "GBMIN fillrect returned" 缺席，很可能只是**窗口不够长**，而不是它卡死
+```
+
+**✅ 这是一个必须区分的点：此前我一直把"没有 returned"当作"卡住"，
+但本轮的行号顺序显示，驱动启动后运行仍继续输出 14 行，随后窗口到期。**
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v227: 3552 行 / createLayer=6
+```
+
+## ⑥ 下一轮
+
+```text
+1. 把 WINDOW 提高到 600，给驱动足够的时间跑完或暴露真正的阻塞
+2. XPEEK 采样范围扩到 tick 70..180（覆盖更长时间）
+3. 若仍无 returned 且像素不变 → 那时才是"卡在第 2 步之后"的确证
+```
