@@ -49971,3 +49971,57 @@ B. 或者干脆不用自建对象：复用固件自己已经分配的 bitmap
 QEMU 实例   0
 基线        最近合格：v236 5492 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-12 第五百六十三章（R1246–R1265）：**vtable 补齐成功，路径走到了 mode 分支之前**
+
+## ① 补上 vtable 后，Gen5 真的调用了我们的槽 6
+
+```text
+GBMIN built（现在带 vtable：+0x00 -> 8 槽表，槽 6 = 最小 ARM 桩）
+GBMINVT slot6 called n=1 tid=199      ← ★ vtable 路径被真正执行
+FRSTEP getallocrect n=1 tid=199
+```
+
+**⇒ 上一轮的诊断被证实：**
+**bitmap 必须在 +0x00 带 vtable，其槽 6 会被 `0x1195a4-0x1195a8` 直接调用。
+**补上之后，那条 `ldr r3,[r3,#24] / blx r3` 不再访问非法地址。**
+
+## ② 但四个探针里只有第 2 个命中
+
+```text
+安装全部成功：
+    subrect_2    @0xa887f70
+    getallocrect @0xa960e78
+    mode1_a      @0xa961884
+    mode1_b      @0xa961968
+命中：
+    getallocrect n=1     （第 2 个）
+    mode1_a  = 0         （第 3 个，未命中）
+    mode1_b  = 0         （第 4 个，未命中）
+```
+
+**⇒ 路径停在 `BMP_GetAllocatedRectangle` 内部或之后、`mode1_a` 之前。**
+
+## ③ 现在的问题被压缩到一个很小的范围
+
+```text
+0x114e78 (getallocrect) -> 0x11958c（vtable 槽 6）-> 返回 0
+之后 0x114c60 处理第二参数（输出矩形指针）
+然后回到 0x117b4c 的调用链，接着 0x117b90（GRM_bitmapGetSubRectangle, 第 1 个探针）
+但 subrect_2 也未命中
+```
+
+**⇒ 它停在**vtable 调用之后、GetSubRectangle 之前**的那一小段。**
+**这段包含：0x114c60（对输出指针的处理）与 0x117b66-0x117b90 之间的字段读取。**
+
+## ④ 约束
+
+```text
+QEMU 实例   0
+基线        v238: 5452 行 / createLayer=6 / LIBOBJ_SYM=24
+```
+
+## ⑤ 下一轮
+
+**把 0x114c60 加入 FRSTEP（第 5 个探针），并同时在 vtable 桩里返回一个非零值，
+**以排除"桩返回 0 导致调用方走异常路径"这一可能。**
