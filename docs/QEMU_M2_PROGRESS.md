@@ -49061,3 +49061,65 @@ QEMU 实例   0
 **把 `GBMIN calling` 这行日志提前到 `gbmin_build()` 之前，并在其后立刻加一行
 "about-to-call"，这样即使调用阻塞，也能确定它到底走没走到调用点。**
 **同时把 FRSTEP 的两个安装行移到 `directmenu_maybe` 之前（不依赖任何驱动调用）。**
+
+# ★★★★★★★★ 2026-11-12 第五百四十九章（R1001–R1015）：**watchdog 线程在 bitmap 构建之后彻底停住，连下一条日志都打不出来**
+
+## ① 本轮为定位"GBMIN calling 缺失"加了两侧标记
+
+```text
+在 dlsym 前后各加一条日志：
+    logline("GBMIN before-dlsym");
+    fn = dlsym(RTLD_DEFAULT, "GRM_gpermFillrect");
+    logline("GBMIN after-dlsym fn=%p", fn);
+```
+
+**并确认这两条字符串确实编进了部署的 so（`strings` 各命中 1 次，
+且 `src/argtrace.so` 与部署副本 sha 完全一致）。**
+
+## ② 实测（v209，基线 2469 行 / createLayer=6）
+
+```text
+GBMIN built bitmap=0x4d2d08 geo=0x4d2d50 pixels=0x20100800
+（之后再无任何 GBMIN 行，**连 before-dlsym 都没有**）
+```
+
+**进一步确认：**
+
+```text
+GBMIN built 之后，watchdog 的周期报告（STAGEMAP / GPEOBS / DRAWSTAGE）**全部停止**
+⇒ 整个 watchdog 线程在 gbmin_build() 返回之后就再没跑过
+```
+
+## ③ 这是一个非常具体、也很反常的现象
+
+```text
+"GBMIN built" 是 gbmin_build() 的最后一条语句
+⇒ 函数已正常走到末尾
+⇒ 但紧接其后的下一句 logline("GBMIN before-dlsym") 从未执行
+⇒ 且该线程的后续循环也全部停止
+
+可能原因（都未验证，如实列出）：
+  1. calloc 在 gbmin_build 内部分配成功但触发了堆的某种状态，
+     使该线程下一次内存分配（logline 的栈不需要，但 stdio 缓冲区可能需要）阻塞
+  2. 我们在 watchdog 循环里新增的 bankreal_install() 与容器入口那次重复安装，
+     第二次安装破坏了某个页，导致该线程后续代码出错
+  3. 该线程被 UI 线程长期抢占（单核 + 高优先级），根本没机会再执行
+```
+
+## ④ 约束
+
+```text
+QEMU 实例   0
+基线        v209: 2469 行 / createLayer=6
+```
+
+## ⑤ 本轮不做新实验的原因
+
+**继续在这个点上叠加探针，只会再次触发"观察者与被观察者互相干扰"。
+下一轮应先简化：**
+
+```text
+1. 移除 watchdog 循环里新增的 bankreal_install()（消除重复安装这个可疑点）
+2. 把 gbmin_fill 改成**只在容器入口线程执行一次**（不进 watchdog 循环）
+3. 观察 "before-dlsym" 是否能出现
+```
