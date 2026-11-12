@@ -50025,3 +50025,64 @@ QEMU 实例   0
 
 **把 0x114c60 加入 FRSTEP（第 5 个探针），并同时在 vtable 桩里返回一个非零值，
 **以排除"桩返回 0 导致调用方走异常路径"这一可能。**
+
+# ★★★★★★★★ 2026-11-12 第五百六十四章（R1266–R1280）：**先纠正自己的探针缺陷，再读清楚 getallocrect 的内部顺序**
+
+## ① 上一轮那两个"未命中"的探针本身是坏的
+
+```text
+我把 FRSTEP 探针装到了 0x115884 与 0x115968 上，它们都"未命中"。
+读字节后确认原因：**那两个地址的头几条指令是 PC 相对寻址**
+    115884: ldr r3,[pc,#40]     ; 从字面量池取值
+    115886: ldr r2,[pc,#44]
+    115888: add r3,pc
+⇒ 我的 trampoline 会把这段代码复制到新地址执行，
+   **PC 变了，字面量就会读错** —— 这是探针自身的缺陷，不是固件的结论。
+⇒ 已把这两个站点从 FRSTEP 移除（只保留两个真正的、位置无关的站点：
+  0x3bf70 GRM_bitmapGetSubRectangle 与 0x114e78 BMP_GetAllocatedRectangle）
+```
+
+## ② 读清楚了 getallocrect 的内部顺序（关键）
+
+```text
+0x114e78 BMP_GetAllocatedRectangle：
+    114e7e: mov  r0, r1
+    114e80: bl   0x114c60        ← **(a) 先处理"输出矩形指针"参数**
+    114e84: mov  r1, r0
+    114e86: mov  r0, r4
+    114e88: bl   0x11958c        ← **(b) 再取 bitmap 的 vtable 槽 6 并调用**
+    114e8c: ldmia.w sp!, {...}
+    114e90: b.w  0x114c24        ← 尾 thunk
+```
+
+**⇒ 因为 `GBMINVT slot6 called n=1` 已经命中，说明 (a) 与 (b) **都已完成**。
+**⇒ 因此卡点**不在 getallocrect 内部**，而是在它返回之后。**
+
+## ③ 那么卡点就在 Fillrect 自己的下一段
+
+```text
+    117b6c: bl  0x114e78        ← getallocrect（已完成）
+    117b70: ldr r3,[r7,#0x4c]   ← 读回矩形指针
+    117b80: ldrh r0,[r3,#4]     ← **解引用它**
+    117b82: ldrh r3,[r3,#6]     ← **解引用它**
+    117b90: blx 0x3bf70         ← GRM_bitmapGetSubRectangle（探针未命中）
+```
+
+**⇒ 最可能的卡点：`0x117b70` 读到的矩形指针是**无效或未初始化**，
+**于是 `0x117b80` 的 `ldrh` 解引用非法，线程静默死亡。
+**而我们的 vtable 桩只返回 0（不写输出参数），正好导致那个指针保持未填充。**
+
+## ④ 这解释了本轮全部观察
+
+```text
+GBMINVT slot6 命中   ⇒ vtable 被调用
+FRSTEP getallocrect 命中 ⇒ 进入了 getallocrect
+subrect_2 未命中     ⇒ 没走到 GetSubRectangle
+⇒ 中间只有 0x117b70-0x117b8e 那几条，正是解引用矩形指针的地方
+```
+
+## ⑤ 下一轮
+
+**让 vtable 桩把第二参数（输出矩形指针）**填成有效值**再返回：
+**它的签名可由 0x114c60 的调用约定推出（r0=输出指针），
+**填入 {0,0,w,h} = {0,0,640,480} 即可让后续解引用合法。**
