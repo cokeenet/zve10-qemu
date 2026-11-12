@@ -49443,3 +49443,71 @@ g_cl_n 定义在 6982、递增在 6993（createLayer 包装器）
 QEMU 实例   0
 基线        v221: 3807 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-12 第五百五十五章（R1101–R1115）：**门控读数为 0 的真因不是可见性，是循环在 createLayer 之前就已离开那个分支**
+
+## ① 本轮加了每圈门控值打印
+
+```text
+WDGATE tick=1..5, 20, 40  → cl_n 始终 = 0
+而 CREATELAYER 记录确实存在（12 条，两进程各 6）
+```
+
+**于是我第一反应是"跨线程可见性问题"。核查后否定了这个方向：**
+
+```text
+nm -D argtrace.so | grep g_cl_n   → 只有 **一个** 符号（0002acb4 B）
+⇒ 不是双符号/链接问题
+```
+
+## ② 决定性证据：行号顺序
+
+```text
+WDGATE 出现在第 606 / 842 行（启动非常早期）
+CREATELAYER n=1 出现在第 3136 行
+⇒ **watchdog 的门控代码在 createLayer 之前就已经不再执行**
+```
+
+**WDBEFORE-SLEEP 最大 i = 48，WDGATE 最大 tick = 40 —— 循环确实只活到启动早期。**
+
+**⇒ 所以：**
+
+```text
+✗ "计数器跨线程不可见" —— 不成立
+✓ "循环在 createLayer 之前就离开了这个分支" —— 这才是原因
+```
+
+**而它离开分支的方式，仍是 `g_ever_in_start` / `g_in_start` 那条判定链
+**在启动早期为真、之后为假（或反之）的同一类问题。**
+
+## ③ 这解释了前几轮所有"驱动不触发"
+
+```text
+驱动门控写在循环体里 → 而循环体在 createLayer 之前就不执行了
+⇒ 门控永远不会成立
+⇒ 无论我把门设成 tick>=5、层数>=6，还是别的什么，都无效
+```
+
+## ④ 因此正确的做法只有一条
+
+**把驱动放到**确实会在 createLayer 之后执行的线程或时机**：**
+
+```text
+选项 A：放到 UI 线程（createLayer 的包装器里，第 6 次调用之后立刻驱动）
+选项 B：放到 Application_Start 的某个后续回践上
+选项 C：放到容器 wrapper 里（它确实在每一轮运行里都执行）
+```
+
+**C 是本会话已验证过的（RENDERENTRY 每次都进），代价最低。**
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v222: 3846 行 / createLayer=6 / LIBOBJ_SYM=24
+```
+
+## ⑥ 下一轮
+
+**把 gbmin_fill 移到容器 wrapper 里（与 RENDERENTRY 同一位置），
+**并保留"createLayer>=6"作为额外门控 —— 因为 wrapper 本身就可能早于 createLayer。**
