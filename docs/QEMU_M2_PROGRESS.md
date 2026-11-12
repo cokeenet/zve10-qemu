@@ -51271,3 +51271,69 @@ GCSWEEP no combination succeeded
 QEMU 实例   0
 基线        v257: 5716 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-12 第五百八十四章（R1601–R1640，续）：**sugilite 路线的完整侦察（按用户指示，参考 a7c2-re 与 sony-fw-zve10-qemu）**
+
+## ① 先把参考实现都读了一遍（铁律 1）
+
+**a7c2-re（CXDC90047 / A7C2）的关键做法：**
+
+```text
+OFFICIAL-BOOT-BLOCKER.md：官方出厂路线黑屏的根因不是版本数据，
+而是原 sequence_boot 在 Dataflow pin 拓扑上等待：
+  InfraBB(21项) → VEF → PinMem → DRAW_INFO 三步 Get 之后，
+  第 4 步是 GRM 9080003b Get {type=1,dir=3,index=0}
+该 provider 是 cpgrm::fbm::osdpinif::OsdPinIF（只有 1 个对象）
+⇒ 他们实现了一个 **registry 服务**（pin-registry-core.c，响应 Get），
+  原固件自己接收并释放（waiter=1 rc=0），sequence 继续，
+  **原固件自己绘制出首设「言語」页**（帧 SHA e74a9d8d…）
+```
+
+**sony-fw-zve10-qemu（ZV-E10，作者 qn06142）：**
+
+```text
+source/qemu/hw/arm/{zve10.c, zve10-gpe-init.h} + hw/timer/sony_hwtimer.c
+source/modules/dma330-stub/（DMA 控制器桩）
+⇒ 该项目面向的是**ZV-E10 自己的固件**，GPE 寄存器语义可借鉴
+```
+
+## ② 对我们 Gen5（CXD90045）的关键排查
+
+```text
+1. 0x9080003b 在 Gen5 appFw 只 1 处（a7c2 有 4 处）、libObj 0 处
+   ⇒ Gen5 的 GRM→内核路径**不是** Dataflow pin（与 a7c2 不同）
+2. GRM_fbrm* 全家族 = 3 指令空壳（return 0）→ 不是实现层
+3. dmpgles2 设备 open 成功（ret=13）但 **ioctl = 0 次**
+4. ioctl 只有 /dev/mem（fd=3）159 次，req 0x80000001..0x10
+5. 29 次 mmap 全部成功（0 失败）
+```
+
+## ③ 因此 Gen5 的 2D 路径判定为：
+
+```text
+libObj (BMP_Create space 参数)
+  → 内核模块 grm_ma.ko（ma_create_msp_impl / create_mspace / ma_dmm_close_send_recv）
+     它是内核 OSAL 客户端：osal_reg_sync_msg_queue_cb 注册队列
+  → 用户态 <--> 内核的分配请求走 **OSAL 消息**，不是 ioctl、不是 pin
+```
+
+**⇒ grm_ma.ko 在我们 QEMU 里已成功加载（status=0）。**
+
+## ④ 所以 sugilite 寄存器模型（B 方案）在 Gen5 上的对应物是
+
+```text
+不是模拟 0xF2xxxxxx 寄存器区，
+而是：让内核 grm_ma.ko 的 OSAL 队列与用户态 OSAL 库**真正互通**，
+使 BMP_Create 的 52 字节 ma-space 分配请求能得到应答。
+```
+
+**我们的 QEMU 里 OSAL 消息本身已经在通（SND_DRIVE 400 条 / RCVC 正常），
+**所以缺口更窄：**很可能是 grm_ma 的队列 id 从未被注册或应答**。**
+
+## ⑤ 下一轮
+
+```text
+1. 在 argtrace 里记录 grm_ma 注册的队列 id（hook osal_reg_sync_msg_queue_cb）
+2. 查 BMP_Create 发出的分配请求去向（它发出后有没有 RCVC 回来）
+3. 若消息发出但无应答 ⇒ 在 QEMU 侧（或用户态 shim）实现该队列的应答者
+```
