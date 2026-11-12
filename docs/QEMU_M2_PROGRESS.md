@@ -49002,3 +49002,62 @@ QEMU 实例   0
 ```
 
 **这次每个探针点都先反汇编确认语义，再下结论。**
+
+# ★★★★★★★★ 2026-11-12 第五百四十八章（R986–R1000）：**本轮报废两轮：一处 undefined symbol，一处探针安装顺序**
+
+## ① 自伤一（第 13 次同类）：`g_frs_orig` 未定义
+
+```text
+v205: 349 行 / createLayer=0
+bootin.elf: symbol lookup error: /usr/lib/argtrace.so: undefined symbol: g_frs_orig
+原因：naked 汇编 .word 引用的数组又被声明为 static ⇒ 链接器当未定义
+修法：改成全局（nm 确认 0002bcf0 B g_frs_orig）
+```
+
+### ② 自伤二（第 3 次同类）：探针安装被排在阻塞调用之后
+
+```text
+v206: 探针一次都没命中、连安装行都没有
+原因：我把 frace_install() 排在 gbmin_fill() 之后，
+      而后者调用固件后**永不返回** ⇒ 安装代码从未执行
+修法：安装必须排在驱动调用之前（本轮已调换）
+```
+
+**由此固化成一条规则：**
+**任何观察者都必须在被驱动的调用之前安装完毕。**
+
+## ③ 修好之后（v207，基线 2489 行 / createLayer=6）
+
+```text
+FRSTEP subrect_2     installed at 0xa997f70 wrote=8
+FRSTEP getallocrect  installed at 0xaa70e78 wrote=8
+GBMIN built bitmap=0x4d1818 geo=0x4d1860 pixels=0x20100800
+（然后 GBMIN calling 这一行没有出现）
+```
+
+**⇒ 探针这次是真的装上了，但驱动调用**连自己的 "calling" 日志都没打出来**。**
+
+**⇒ 说明在 `gbmin_build()` 之后、`GBMIN calling` 之前**就有东西卡住或改变了时序**。**
+**这也意味着**本轮没有拿到 FRSTEP 的命中数据**。`
+
+## ④ 净进展
+
+```text
+✗ 没有新的机制结论
+✓ 修掉两个自伤
+✓ 探针安装顺序规则固化为可复用经验
+✓ 基线保持（v207: 2489 行 / createLayer=6）
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v207: 2489 行 / createLayer=6
+```
+
+## ⑥ 下一轮
+
+**把 `GBMIN calling` 这行日志提前到 `gbmin_build()` 之前，并在其后立刻加一行
+"about-to-call"，这样即使调用阻塞，也能确定它到底走没走到调用点。**
+**同时把 FRSTEP 的两个安装行移到 `directmenu_maybe` 之前（不依赖任何驱动调用）。**
