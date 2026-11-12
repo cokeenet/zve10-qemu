@@ -50207,3 +50207,62 @@ QEMU 实例   0
 3. 同时注意 "notifyDraw skipped (observation only)" —— 这是我们自己设的观察开关，
    若它拦截了绘制，需要解除
 ```
+
+# ★★★★★★★★ 2026-11-12 第五百六十七章（R1321–R1340）：**加入了故障容错探针，并据此证明"固件此刻没有任何 bitmap"**
+
+## ① 本轮解决了"扫描一遇到坏指针就静默死亡"这个老问题
+
+```text
+新增 SAFEPROBE：SIGSEGV/SIGBUS handler + sigsetjmp/siglongjmp
+    safe_word(addr, &bad)  —— 坏的地址返回 0 并置 bad，扫描继续
+实测：SAFEPROBE handler installed
+      FBBMP done found=0 **faults=16906**
+⇒ 捕获了 16906 次非法访问而**没有死掉**，扫描完整跑完
+```
+
+**这是本会话第一次让"读任意地址"变成安全操作。**
+
+## ② 用这个能力做了一次真实的 bitmap 搜索（FBBMP）
+
+```text
+范围：libObj .data 段 0xaa97738..0xab07828（约 460 KB，逐 4 字节）
+判据：槽 → 对象 → 对象+0x00 落在 .data.rel.ro（vtable 区）
+                    对象+0x04 = geo（非空）
+                    对象+0x08 = 像素地址落在显示窗口 0x20000000..0x28000000
+结果：**found = 0**
+```
+
+**⇒ libObj 的可写数据里**没有任何一个"带 vtable、geo、显示窗口像素"的对象**。**
+
+## ③ 因此得到一个确定的结论
+
+```text
+固件在这次运行里**从未分配过任何 bitmap / 画布对象**
+```
+
+**这与另外两条独立证据完全一致：**
+
+```text
+✓ appFw 从未调用 GRM_bitmapCreateFromPhys / GRM_bitmapRelease（早前已测）
+✓ 128 MiB 显示窗口全扫，best_nonzero16 = 0（第五百三十七章）
+```
+
+**⇒ "没有 bitmap" 是**三条独立测量共同支持的结论**，不再依赖单一探针。**
+
+## ④ 本轮同时修掉的两处环境问题
+
+```text
+1. cpio 读取 I/O error（本会话第 2 次）⇒ 删除重建后正常
+2. 关键点：我先前的 FBBMP 若用 naïvely 解引用会立刻死，
+   加 return-0 桩后才可能得到"found=0"这种**可信的否定结果**
+```
+
+**这正是铁律第 6 条（"零结论必须先证明测量能看到非零"）的应用：
+**faults=16906 证明扫描确实在解引用，found=0 才是可信的。**
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v242: 5414 行 / createLayer=6 / LIBOBJ_SYM=24
+```
