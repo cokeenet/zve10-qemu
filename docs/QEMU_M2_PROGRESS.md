@@ -48731,3 +48731,69 @@ QEMU 实例   0
 **1. 修正扫描判据：改成 614400 字节滑动窗口（步进 64 KB），避免小块被摊薄。**
 **2. 按 swgpe_shim 的已验证字段表，构造 FillRectParam 并**直接调用** Gen5 的
    `GRM_gpermFillrect`，让它自己写出像素 —— 这是判据 1 允许的（走 Gen5 实现）。**
+
+# ★★★★★★★★ 2026-11-12 第五百四十四章（R921–R940）：**首次真正调用 Gen5 的 Fillrect：它执行了，并在自己的断言处停下 —— 缺的是 bitmap 对象**
+
+## ① 先说本轮修掉的一个真 bug（会影响所有调用者）
+
+```text
+`GRM_gpermFillrect` 的真实签名是 **4 个参数**：
+    r0/r1 分别保存（117b58 mov r5,r0 / 117b5a mov sl,r1）
+    r3 存到 r9（117b60 mov r9,r3）
+    我们自己的 ZV-1F shim 也写成 int GRM_gpermFillrect(void*, void*, const u8 *p, u64 c)
+
+但 argtrace 的 wrapper 只转发 1 个参数：
+    static void *grm_fill_wrapper(void *a0) { return orig(a0); }
+⇒ r1/r2/r3 到真实实现时是垃圾值。
+并且 argtrace.so **也导出这个符号**，所以 RTLD_DEFAULT 查找命中的是**我们的 wrapper**，
+⇒ 这个截断影响了**每一个调用者，包括本轮新加的直调**。
+```
+
+**修法：把 wrapper 与 blit wrapper 都改成 4 参数转发（`fill4_fn` / `g_grm_fill_orig4`）。**
+
+## ② 修后第一次成功进入 Gen5 的真实实现
+
+```text
+GRMFILLDRIVE calling with zeroed request
+GRMFILL n=1 a=0 b=0 c=0x58f3d30
+GRMHOOK fillrect n=1 tid=117 req=0x58f3d30 mode=0
+AS a=bitmap f=Bitmap.cpp l=219
+AS fn=BMP_Error grm::bmp::BMP_GetAllocatedRectangle(void*, BMP_RectangleRecord**)
+AS lr=0xa98d5a5
+ASSERTBASE base=0x2e167000 name=/usr/lib/appFw.so
+STK 00: 058f3fa0 00000000 00000000 00000000
+```
+
+**⇒ Gen5 的 `gpermFillrect` **确实被我们调用并执行了**，
+**它的第一件事是 `BMP_GetAllocatedRectangle(bitmap, &rect)`，
+而请求里 bitmap 字段是 0 ⇒ 它自己断言失败。**
+
+## ③ 这是一个**极其有价值的负面结果**
+
+```text
+它不是"函数不可用"，而是"必须先有一个合法的 bitmap 对象"。
+而且它自己给出了断言位置：Bitmap.cpp:219 / BMP_GetAllocatedRectangle
+⇒ Gen5 的 bitmap 管理是**强校验**的，不会接受空对象。
+```
+
+**⇒ 所以"直接调 Fillrect"这条路**是通的**，只差**先造一个合法 bitmap**。**
+
+## ④ 约束
+
+```text
+QEMU 实例   0
+基线        v202: 2514 行 / createLayer=6
+XPEEK       phys=0x22140800 nz=0 / 0x22b00040 nz=0 / 0x20100800 nz=16384 / 0x20030030 nz=263
+```
+
+## ⑤ 下一轮
+
+**目标明确：先拿到一个合法的 bitmap 对象，再调 Fillrect。两条可选路径：**
+
+```text
+A. 用 GRM_bitmapCreate 造一个（它是导出的、实现完整，需要 10 参数请求）
+B. 复用系统里已有的 bitmap —— FBDESC 扫到的 16 个显示窗口候选里可能有
+   （但上一轮宿主机读显示两个"像地址"的全零，需要按新的滑动窗口判据重扫）
+```
+
+**优先 A：因为它的参数可以从反汇编逐字段确定，而且造出来的对象必然合法。**
