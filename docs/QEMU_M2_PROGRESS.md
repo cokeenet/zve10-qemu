@@ -48797,3 +48797,70 @@ B. 复用系统里已有的 bitmap —— FBDESC 扫到的 16 个显示窗口候
 ```
 
 **优先 A：因为它的参数可以从反汇编逐字段确定，而且造出来的对象必然合法。**
+
+# ★★★★★★★★ 2026-11-12 第五百四十五章（R941–R955）：**自建 bitmap 后，Gen5 的 Fillrect 不再断言 —— 它真的开始执行了**
+
+## ① 上一轮的负面结果给出了明确线索
+
+```text
+v202：请求 bitmap=0
+    GRMFILL n=1 ...
+    AS a=bitmap f=Bitmap.cpp l=219
+    AS fn=BMP_Error grm::bmp::BMP_GetAllocatedRectangle(void*, BMP_RectangleRecord**)
+    ⇒ Gen5 自己的代码断言失败，缺的是 bitmap 对象
+```
+
+## ② 本轮按我们自己的 ZV-1F shim 布局造了一个最小 bitmap
+
+```text
+来源：oss/tools/port/swgpe/swgpe_shim.c（自家已验证）
+    bitmap +0x04 = geo, bitmap +0x08 = pixels
+    geo    +0x0C = x,y,w,h ; +0x18 = stride(px) ; +0x1C = format
+像素来源：0x20100800（宿主机实测有 16384 个非零 word）
+⇒ GBMIN built bitmap=0x4faa40 geo=0x4faa88 pixels=0x20100800
+```
+
+## ③ 实测（v203，基线 2485 行 / createLayer=6）
+
+```text
+GBMIN calling fillrect bitmap=0x4faa40
+GRMFILL n=1 a=0 b=0 c=0x59e1d28
+GRMHOOK fillrect n=1 tid=117 req=0x59e1d28 mode=1
+（无 AS 断言、无 Bitmap.cpp 记录）
+```
+
+**⇒ 与 v202 的关键差别：**
+
+```text
+v202（bitmap=0）  ：立刻进入 BMP_GetAllocatedRectangle 并断言失败
+v203（自建 bitmap）：**没有任何断言**，直接进入 GRMFILL 的真实执行
+```
+
+**这是本轮最重要的进展：**Gen5 的 Fillrect 通过了它的第一道校验**。**
+
+## ④ 但也还没有返回（如实记录）
+
+```text
+GBMIN fillrect returned 缺席
+⇒ 它仍在执行中（或者卡在更深一层），本轮无法判定是"画了但没返回"还是"卡住了"
+```
+
+**下一轮用**宿主机侧 XPEEK 读 0x20100800**，看那 614400 字节里是否出现我们指定的纯色
+（0xF8F8F8F8 → RGBA4444 打包后应有规律），就能判定"到底有没有写进去"。**
+
+**这个判据完全在宿主机侧，不受 guest 线程阻塞影响。**
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v203: 2485 行 / createLayer=6
+```
+
+## ⑥ 下一轮：三步
+
+```text
+1. 把 0x20100800 加入 ZVE10_PROBE_PHYS，看 Fillrect 是否真的改写了它
+2. 若改写了：记录该区域前后摘要差异 → 这就是"Gen5 自己画出了像素"的直接证据
+3. 若没改写：说明它在更深处需要更多 bitmap 字段（按 Bitmap.cpp 的断言位置继续补）
+```
