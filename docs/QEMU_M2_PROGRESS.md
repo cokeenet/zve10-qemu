@@ -49315,3 +49315,80 @@ QEMU 实例   0
 - FBDESC：只在第 1 圈跑一次，并加分段进度
 - 驱动调用：只在满足条件后跑一次
 ```
+
+# ★★★★★★★★ 2026-11-12 第五百五十三章（R1061–R1080）：**修正生效：每圈观测恢复，并第一次完整观察到驱动调用的返回**
+
+## ① 前一轮的自我纠正带来了立刻可见的收益
+
+```text
+在 sleep 两侧加标记 → WDBEFORE=97 / WDAFTER=95
+⇒ 循环一直在跑，之前"只转一圈"是标记写在 g_in_start 分支里造成的假象
+```
+
+## ② 按"每圈都跑"前提改了三处
+
+```text
+1. 恢复 9 个 _report()（原本被我二分掉）
+2. 把每圈工作移出 if (g_in_start) 分支 —— 该标志启动结束就被清 0
+   改用**锁存器 g_ever_in_start**（进入过一次就永久为 1）
+3. 去掉 else 里 n=0 的重置，tick 计数不再回零
+4. 在 tick 5 安排一次 gbmin_fill 驱动，用于观察"报告是否因驱动而停止"
+```
+
+## ③ v217 的关键读数（第一次把驱动调用走完）
+
+```text
+COUNTERS-DONE = 11      ← 每圈报告生效（此前最多 1～2）
+STAGEMAP report = 11
+WDTICK5 about to drive gbmin_fill
+GBMIN built bitmap=0x142d0 geo=0x14318 pixels=0x20100800
+GBMIN before-dlsym
+GBMIN after-dlsym fn=0x4064abc
+GBMIN about-to-call fn=0x4064abc bitmap=0x142d0 mode=1
+GBMIN fillrect returned **-1**        ← ★ 第一次看到它返回！
+WDTICK5 gbmin_fill returned           ← 循环继续
+```
+
+**⇒ 两个此前一直测不到的事实，一次性都拿到了：**
+
+```text
+✓ Fillrect 返回 -1（明确的失败码，而不是"卡住"）
+✓ 驱动调用之后循环仍在继续（报告没有停）
+```
+
+## ④ 但 v217 的基线**不合格**（createLayer 缺失）
+
+```text
+v217: 行数 1257, createLayer 记录 0, LIBOBJ_SYM=5, Application_Start ENTER=0
+⇒ 按铁律该轮报废
+```
+
+**原因：把每圈工作移出分支后，tick 5 的驱动在**启动尚未完成时**就执行了，
+**它调用固件后返回 -1，但已扰乱了启动顺序。**
+
+## ⑤ 修正（v218）：用锁存器而不是无条件执行
+
+```text
+v218: 行数 2680, createLayer=**6**, LIBOBJ_SYM=**24**
+      COUNTERS-DONE=0
+```
+
+**⇒ 基线恢复，但 COUNTERS-DONE=0 说明**循环在启动完成前就已经离开了那个分支**，
+**或者锁存器没被置上。** 这需要下一轮定位。**
+
+## ⑥ 本轮净收获
+
+```text
+✓ 证明 watchdog 每圈都在跑（97 次）
+✓ 恢复了每圈报告（COUNTERS-DONE 达 11 次）
+✓ 第一次观察到 Fillrect 的返回值 -1
+✓ 发现"启动未完成就驱动"会破坏基线（v217 报废）
+✓ 基线在 v218 恢复（createLayer=6, LIBOBJ_SYM=24）
+```
+
+## ⑦ 约束
+
+```text
+QEMU 实例   0
+基线        v218: 2680 行 / createLayer=6 / LIBOBJ_SYM=24
+```
