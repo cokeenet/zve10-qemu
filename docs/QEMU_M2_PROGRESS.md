@@ -51413,3 +51413,86 @@ v262：**完全移除两个 hook**
 QEMU 实例   0
 基线        v262: 6078 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第五百八十六章（R1671–R1700）：**形态 A（dlmopen 双命名空间）在本机 glibc 上实测通过**
+
+## ① 先验证前提：设备 glibc 有没有 dlmopen
+
+```text
+/lib/libdl.so.2      0000127c T dlmopen      ✓ 存在
+dlfcn.h              LM_ID_BASE=0 / LM_ID_NEWLM=-1  ✓
+glibc 版本：2.11.2
+```
+
+## ② 第一轮实测：LM_ID_NEWLM 报 "invalid mode"
+
+```text
+v264: dlmopen libc -> (nil) err=invalid mode: Invalid argument
+```
+
+**但我做了对照组，发现关键细节：**
+
+```text
+v265 对照实验：
+  A) LM_ID_BASE  -> 0x4045a78 err=ok        ← 基命名空间可用
+  B) LM_ID_NEWLM -> (nil) err=invalid mode  ← **带 RTLD_GLOBAL 时失败**
+  C) NEWLM LOCAL -> 0x22070 err=ok          ← ★ **不带 RTLD_GLOBAL 时成功！**
+  D) NEWLM lib   -> (nil) err=invalid mode  ← 同样因 GLOBAL 失败
+```
+
+**⇒ 结论：glibc 2.11.2 支持 `dlmopen(LM_ID_NEWLM, ..., RTLD_LOCAL)`，
+**但**拒绝 `LM_ID_NEWLM + RTLD_GLOBAL` 的组合**（`RTLD_GLOBAL` 在非基命名空间无意义）。**
+
+## ③ 决定性实验：两代 libObj 能否在独立命名空间共存
+
+```text
+v267（RTLD_LAZY，避开 libMWF 的未定义符号）：
+  A) base LAZY   -> 0x22020 err=ok
+  B) NEWLM LAZY  -> 0x4cd88 err=ok        ← ★ 同一路径在新命名空间加载成功
+  B) lmid=1 dlinfo=0                       ← ★ **确实拿到了独立命名空间 (lmid=1)**
+  C) base again  -> 0x22020 (same as A? yes) ← ★ 基命名空间仍是原来那个
+```
+
+**⇒ 这是本会话第一次**实测证明**：**
+
+```text
+同一进程内，同一个 SONAME（libObj.so）可以在**两个独立命名空间**里各存在一份，
+两个 handle 不同（0x22020 vs 0x4cd88），且基命名空间的实例不受影响。
+```
+
+**⇒ 形态 A（进程内新老 UI 并存）**在技术上成立**，不是猜测。**
+
+## ④ 但必须同时记录两个实测约束
+
+```text
+① 首个实验用 RTLD_NOW 时失败：
+     err=/usr/lib/libMWF.so: undefined symbol: osal_wait_thread_exit
+   ⇒ Gen5 libObj 的 DT_NEEDED 链里有 libMWF，而我们的环境缺那个符号
+   ⇒ 用 RTLD_LAZY 可以绕过（但运行到该符号时才会真正报错）
+② 在 init 里提前 dlopen libObj 会干扰后续启动
+   （v266/v267 只有 2238/737 行，createLayer 缺失）
+   ⇒ 测试程序必须"测完即走"，不能过早加载
+```
+
+**③ 撤除测试后基线恢复：**
+
+```text
+v268: 5718 行 / createLayer=6 / LIBOBJ_SYM=24  ✓
+```
+
+## ⑤ 真机并存方案的正确形态（据此更新）
+
+```text
+形态 A 可行，但需要三个配套：
+  1. 用 dlmopen(LM_ID_NEWLM, ..., RTLD_LAZY|RTLD_LOCAL)   ← 必须 LOCAL，不可 GLOBAL
+  2. Gen5 那一整套（libObj/appFw/appFwBoot/…）都必须在**同一个新命名空间**内加载，
+     否则它们之间的符号解析会散落到基命名空间，混用两代实现
+  3. 需要一层"显示仲裁"：Gen5 画到 offscreen，老 UI 负责 blit（或反之）
+```
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v268: 5718 行 / createLayer=6 / LIBOBJ_SYM=24
+```
