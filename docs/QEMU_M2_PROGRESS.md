@@ -50142,3 +50142,68 @@ QEMU 实例   0
 2. 桩里写 *(void **)rect = &record，record 按该布局填 0,0,640,480
 3. 若 subrect_2 命中 ⇒ 路径终于走通到 GetSubRectangle
 ```
+
+# ★★★★★★★★ 2026-11-12 第五百六十六章（R1301–R1320）：**修正间接层后路径继续前进；同时确认第二个探针本身无效**
+
+## ① 按上一轮的语义修正改了桩
+
+```text
+不再是 *(unsigned short *)slot = {0,0,640,480}
+而是   *(void **)slot = &record   ，record = {0,0,640,480}
+```
+
+## ② v241 实测（基线合格）
+
+```text
+行数 5419 / createLayer=6 / LIBOBJ_SYM=24
+FRSTEP getallocrect n=1 tid=199
+GBMINVT slot6 called n=1 tid=199 bitmap=0x4d4b48 slot=0x38801d6c
+GBMINVT stored record=0x40cb894 as {0,0,640,480}
+```
+
+**⇒ 槽里现在存的是**合法指针**，`0x117b70` 的 `ldr` 与随后的 `ldrh` 都不再非法。**
+
+## ③ 但 subrect_2 仍未命中，而且找到了原因：**那个探针本身是坏的**
+
+```text
+0x3bf70 是 **ARM 编码的 PLT 项**：
+    3bf70: e28fc603  add  ip, pc, #0x300000
+    3bf74: e28cca19  add  ip, ip, #0x19000
+    3bf78: e5bcf674  ldr  pc, [ip, #1652]!
+⇒ 它是 4 字节 ARM 指令流，**而我用 Thumb 桩去 hook 它**
+⇒ 探针装错了指令集，所以"未命中"是探针缺陷，不是固件结论
+
+对比 0x114e78（Thumb，prologue 为 b5b0 = push{r4,r5,r7,lr}），hook 后确实命中。
+```
+
+**⇒ 这是本会话第 19 次"探针缺陷伪装成固件结论"。**
+**⇒ `subrect_2 未命中` 这条证据**作废**，不能再据此判断路径停在哪。**
+
+## ④ 本轮同时观察到一个新的正面信号
+
+```text
+GBMINVT 之后出现了 DRIVE_AT_SEND 系列：
+    DRIVE_AT_SEND why=snd gfxinst=0xa7cde71 updres=0x40b30dc wgtsys=0xa7d17d1 nd=0x40af2ec cl_n=6
+    DRIVE_AT_SEND wgtsys=0x4ce1b0
+    DRIVE_AT_SEND notifyDraw skipped (observation only)
+    GFXENG_POSCTRL sym=0x40b3e3c
+```
+
+**⇒ 我们的 Fillrect 调用**推动了 notifyDraw / GFXENG 这一侧的活动** ——
+**这是第一次在"填好矩形之后"看到绘制发送路径被触及。**
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v241: 5419 行 / createLayer=6 / LIBOBJ_SYM=24
+```
+
+## ⑥ 下一轮
+
+```text
+1. 用 **ARM 桩**重新 hook 0x3bf70（或改用 0x117b90 的 blx 之后、即 GetSubRectangle 返回处）
+2. 顺着本轮新出现的 DRIVE_AT_SEND 路径继续观察（这是第一次真正有希望的线索）
+3. 同时注意 "notifyDraw skipped (observation only)" —— 这是我们自己设的观察开关，
+   若它拦截了绘制，需要解除
+```
