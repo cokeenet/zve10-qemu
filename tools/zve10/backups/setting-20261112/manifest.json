@@ -1,0 +1,43 @@
+{
+  "when": "2026-11-12T18:31+08:00",
+  "purpose": "Full /setting snapshot taken before arming the official updater VERSKIP mode",
+  "camera": {
+    "version": "30110_06.2026060501",
+    "boot_id_at_capture": "unknown-this-session",
+    "agent": "tcp 10.42.0.158:7777"
+  },
+  "archive": {
+    "path": "setting-full.tar",
+    "bytes": 7583232,
+    "md5": "a75af9e4dfc9a55447061c6fef04e8c1",
+    "members": 57,
+    "live_copy": "/log/setting-backup.tar"
+  },
+  "critical_members_verified": [
+    "setting/Backup.bin",
+    "setting/Backup.bak",
+    "setting/kemco.txt",
+    "setting/env.txt",
+    "setting/psd.bin",
+    "setting/mode/dmode",
+    "setting/updater/dat4"
+  ],
+  "armed_markers": {
+    "created": [
+      "/setting/updater/mode",
+      "/setting/updater/mode6"
+    ],
+    "reason": "Official p1 getCurrentMode() requires /setting/updater/mode to exist before it tests mode6; without mode it forces MODE_PROD. mode6 selects MODE_VERSKIP=6, which execute_ufp.sh routes to 'sauu -s' -> GetVersionSkipUpdater(), skipping the same-version refusal.",
+    "source": "firmware.tar_unpacked/0400_updater/dev/nflasha1_unpacked/boot/initrd.img_unpacked/usr/bin/UdtrMain.sh and execute_ufp.sh, common.src",
+    "state_before": "only dat4 was present; comp absent (comp would rm -rf mode*)"
+  },
+  "rollback": {
+    "delete_markers": "rm -f /setting/updater/mode /setting/updater/mode6",
+    "restore_whole_partition": "untar setting-full.tar at / (only valid if /setting was not reformatted)"
+  },
+  "warnings": [
+    "MODE_VERSKIP falls into us_mkfs.sh's default branch, which runs edisx and full formatting; expect /setting and other partitions to be rewritten.",
+    "The official updater package itself is unmodified, so RSA/SHA-256 signature checks should pass.",
+    "Do not power off during the update. Battery must be charged."
+  ]
+}
