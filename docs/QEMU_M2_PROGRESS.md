@@ -50900,3 +50900,80 @@ QEMU 实例   0
 **试探性调用 `dmp_allocator_lib_init` 与 `dmp_allocator_mmap_init`**
 **（两者都是导出符号，实现是真实的：前者在 0x11c28c，后者在 0x11c844），
 **看它们是否能把 bitmap 堆立起来；断言恢复机制保证试错不会毁掉整轮。**
+
+# ★★★★★★★★ 2026-11-12 第五百七十八章（R1541–R1560）：**找到了 space 的真实来源 —— 一个惰性打开的 /dev 句柄**
+
+## ① 本轮先试了分配器初始化，但没能解决问题
+
+```text
+v254（基线合格：5478 行 / createLayer=6 / LIBOBJ_SYM=24）
+GCREATE sym=0x4080580
+ALLOCINIT lib_init=0xa80d28d mmap_init=0xa80d845
+ALLOCINIT lib_init returned 0
+AS a=space f=Bitmap.cpp l=70
+GCREATE aborted by assert (total recovered=1)
+```
+
+**⇒ `dmp_allocator_lib_init` 返回 0（看起来"成功"），但 `space` 断言依旧。**
+**⇒ 说明 `space` 不来自那个初始化路径。**
+
+## ② 继续深挖 0x11b968 的分配链，找到了真正的实现
+
+```text
+0x11b968:
+    11b978: bl 0x119f14            ← 真正的分配器入口
+    11b97c: ldr r3,[pc,#140]       ← 取全局表
+    11b97e: add r5, pc
+    11b980: movs r0,#1
+    11b982: movs r1,#52 ; 0x34     ← 请求 52 字节
+    11b984: ldr r3, [r5, r3]       ← 从全局表取分配器指针
+```
+
+## ③ 0x119f14 内部：一个**惰性打开的 /dev 句柄**
+
+```text
+0x119f30:
+    119f34: ldr r3,[pc,#52] ; ldr r2,[pc,#56] ; add r3,pc ; ldr r4,[r3,r2]
+    119f3c: ldr r3, [r4, #0]
+    119f3e: cmp.w r3, #0xffffffff        ← **检查全局是否 == -1（未打开）**
+    119f42: bne.n 119f6a                 ← 已打开就直接返回
+    119f44: ldr r0,[pc,#44]              ← 取设备路径字符串
+    119f46: movw r1, #0x1002             ← O_RDWR(2) | O_... 
+    119f4c: blx open@plt                 ← **打开 /dev/xxx**
+    119f56: bne.n 119f6a                 ← 打开成功就继续
+    119f58..119f66: 失败则 __assert_fail ← **设备必须可打开**
+```
+
+**⇒ 这是本会话第一次看到 libObj 的 bitmap 分配器**真正依赖一个 /dev 设备**。**
+**⇒ `space` 的本质是："那个 /dev 设备没有打开成功"。**
+
+## ④ 这对我们的意义（重要）
+
+```text
+我们的 QEMU 机器模型里 /dev 下的设备是我们自己造的（mknod）
+⇒ 那个特定设备文件很可能**不存在或打不开**
+⇒ 所以 52 字节分配必然失败 ⇒ space 断言必然触发
+⇒ **这不是固件不会画，而是它的内存分配器依赖一个我们没有的 /dev 设备**
+```
+
+**同时注意日志里已有的线索：**
+
+```text
+DEVOPEN n=29 path=/dev/mem flags=0x1002 ret=8 tid=132
+```
+
+**⇒ 我们的环境里 `/dev/mem` 是**可打开的（ret=8，即 fd）** ——
+**如果那个设备就是 /dev/mem，则断言不该触发；若不是，就需要补上它。**
+
+## ⑤ 下一轮
+
+**1. 从 0x119f44 的字面量里读出那个设备路径字符串（用 objdump 的 PC 相对计算）**
+**2. 若该设备不在我们的 /dev 里，就在 initramfs 的 init 里 mknod 补上**
+**3. 这会直接解决 `space`，进而让 BMP_Create 真正返回一个 bitmap**
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v254: 5478 行 / createLayer=6 / LIBOBJ_SYM=24
+```
