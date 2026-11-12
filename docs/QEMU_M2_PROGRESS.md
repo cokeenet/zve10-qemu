@@ -49915,3 +49915,59 @@ QEMU 实例   0
 2. 同时确认 getallocrect 卡住的原因：它需要 bitmap 的哪些前置字段
    （0x114e78 的实现可从反汇编读出，且它只读 bitmap 与一个输出指针）
 ```
+
+# ★★★★★★★★ 2026-11-12 第五百六十二章（R1231–R1245）：**卡在 GetAlocatedRectangle 的原因找到了：bitmap 对象缺 vtable**
+
+## ① 反汇编给出了确切原因
+
+```text
+0x114e78 (BMP_GetAllocatedRectangle 入口)
+    push {r4,r5,r7,lr}; mov r4,r0; add r7,sp,#0; mov r0,r1
+    bl 0x114c60 ...              ← 先处理第二参数（输出指针）
+然后进入 0x11958c：
+    119590: cbnz r0, 1195a4        ← **bitmap 指针为 NULL 就 assert(Bitmap.cpp:219)**
+    1195a4: ldr r3, [r0, #0]       ← **从 bitmap+0x00 取 vtable**
+    1195a6: ldr r3, [r3, #24]      ← **取 vtable 槽 6**
+    1195a8: blx r3                 ← **调用它**
+    1195aa: movs r0, #0  ; pop
+```
+
+**⇒ 这解释了两件事：**
+
+```text
+1. v202（bitmap=0）为什么立刻断言：就是 119590 的 cbnz
+2. v203/v236（我们自建 bitmap）为什么"不返回也没报错"：
+   我们的 bitmap 是用 calloc 造的，**+0x00 = 0（没有 vtable）**
+   ⇒ ldr r3,[r0,#0] 得到 0
+   ⇒ ldr r3,[r3,#24] 从地址 24 读取 ⇒ 数据异常（不是断言，是 AP 之外的一次非法访问）
+   ⇒ 该线程就死在那里，既没有日志也没有断言输出
+```
+
+## ② 这是本轮最重要的发现
+
+```text
+我们自建的 bitmap 违反了 Gen5 的对象协议：**任何 bitmap 必须在 +0x00 带 vtable**
+并且该 vtable 的槽 6（偏移 24）必须是一个可调用的函数。
+```
+
+**这也说明"构造最小 bitmap"这条路本身不成立 ——
+**不是字段不够，而是对象需要多态前缀。**
+
+## ③ 下一轮的正确做法（两条）
+
+```text
+A. 给自建 bitmap 补 vtable：
+   +0x00 = 指向一张 8 槽表，槽 6 指向一个"返回 0"的最小桩
+   （桩可以直接在 argtrace 里用 ARM 指令实现，不依赖固件）
+B. 或者干脆不用自建对象：复用固件自己已经分配的 bitmap
+   （FBDESC 曾在可写段找到 16 个指向显示窗口的槽，其中可能有真 bitmap）
+```
+
+**A 的代价最小且可控，B 更"真实"但需要先确认哪个槽是真 bitmap。**
+
+## ④ 约束
+
+```text
+QEMU 实例   0
+基线        最近合格：v236 5492 行 / createLayer=6 / LIBOBJ_SYM=24
+```
