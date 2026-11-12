@@ -50757,3 +50757,74 @@ QEMU 实例   0
 
 **回到"造画布"：用 `GRM_bitmapCreate`（Gen5 自己的创建函数），
 **参数已从 0x114c98 逐字段定位；断言现在可恢复，所以试错不会毁掉整轮。**
+
+# ★★★★★★★★ 2026-11-12 第五百七十六章（R1496–R1520）：**断言的签名自曝了完整 ABI —— 并逐层指出缺什么**
+
+## ① 断言的可恢复性立刻兑现了价值
+
+```text
+v252：GCREATE sym=0x40ff434
+      AS a=bitmapOut f=Bitmap.cpp l=69
+      AS fn=BMP_Error grm::bmp::BMP_Create(void*, short int, short int,
+             BMP_PixelFormat, BMP_YUVMode, short int, short int, void**,
+             BMP_PixelSortingOrder, BMP_PixelStartPosition)
+      GCREATE aborted by assert (total recovered=1)
+```
+
+**⇒ Gen5 自己的断言把**完整签名**打印出来了：
+**这正是前几轮只能靠反汇编逐字段猜的东西。**
+**⇒ 第 8 个参数是 `void**` 输出槽，我传 NULL 正是它拒绝的原因。**
+
+## ② 按签名补上 out 槽，断言前进一层
+
+```text
+v253：GCREATE returned ... （未打印）
+      AS a=space f=Bitmap.cpp l=70
+      AS fn=BMP_Error grm::bmp::BMP_Create(...)  ← 同一个函数
+      GCREATE aborted by assert (total recovered=1)
+```
+
+**⇒ 从 `Bitmap.cpp:69`（bitmapOut）前进到 `:70`（space）。**
+**⇒ 也就是说：**输出槽这一步已经通过，现在缺的是"空间"。**
+
+## ③ 追查到 space 的真正含义
+
+```text
+0x1193d4: cbnz r4 → r4 == 0 就 assert("space")
+r4 = 0x11b968 的返回值
+0x11b968 内部： movs r0,#1 ; movs r1,#52 ; ldr r3,[r5,r3] ; str r5,[r4,#8]
+⇒ 这是"从分配器取一块 52 字节的对象"，返回 0 = **分配失败**
+```
+
+**而运行日志里有一行关键信息：**
+
+```text
+===== DMP_2D_Initialize : 0
+```
+
+**⇒ 那个 `%d` 是**返回值/参数，值为 0**。
+**⇒ 也就是 2D 分配器初始化时拿到的是 0（可能是 0 字节空间，或失败码 0）。**
+
+## ④ 现在缺口的定位非常具体
+
+```text
+BMP_Create(..., void** bitmapOut, ...)
+  ① bitmapOut 非空          ✓ 已通过（v253 前进到 :70）
+  ② space（分配器可用）      ✗ 当前为 0 ⇒ assert("space")
+⇒ 必须先让 2D 分配器拿到真正的空间。
+```
+
+**三条可选做法：**
+
+```text
+A. 找 DMP_2D_Initialize 的调用点，看谁给了 0，改成给真实空间
+B. 直接把一块我们自己 mmap 的内存交给分配器（若它有注册接口）
+C. 绕过分配器，自己构造 bitmap 对象结构（但上一轮已证明它需要 vtable 且要有合法矩形）
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v253: 5455 行 / createLayer=6 / LIBOBJ_SYM=24
+```
