@@ -55684,3 +55684,61 @@ INITEXEC resolved uxengine_init2 = 0xa764815
 QEMU 实例   0
 基线        v304: 5673 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百五十九章（R4681–R4750）：**决定性进展：uxengine_init2 执行了且返回了，之后固件继续初始化**
+
+## ① 发现 argtrace 里**早就有**符号级 interposition（INIT2PROBE）
+
+```text
+argtrace.c 第 1277 行的注释（我早期写的）：
+  "Interpose uxengine_init2 by symbol, not by dlsym interception.
+   ... appFwBoot resolves it through the PLT instead, so that hook never installed."
+⇒ 符号级 interpose 已就位，且专门为这个函数加的
+```
+
+## ② 纯观测基线（v303）里它**命中并返回**
+
+```text
+INIT2PROBE enter  n=1 real=0x40607f8 tid=195
+INIT2PROBE return n=1 **r=0x4cc0c0** tid=195
+⇒ **uxengine_init2 真的执行了，而且返回了**
+```
+
+## ③ 并且它之后固件**继续正常初始化**（全部在纯观测下记录）
+
+```text
+MAINTRACE initializeArena
+RM getInst ×3 → MMAPOBS ×3（0x22312000 / 0x22a52000 / 0x22712000，约 9 MB）
+MAINTRACE setCurrentDirectory path=/usr/share/app/
+GFXENG enter n=5 → leave n=5 ret=0x4cc0c0
+RM getInst n=4 → MAINTRACE setDatabase path=global.xdb
+```
+
+**⇒ 这是一条**清晰的、未被污染的进展链**：UI 引擎初始化 → 内存竞技场 → 资源目录 → 图形引擎 → 资源数据库。**
+
+## ④ 因此阻断点在 `setDatabase` **之后**
+
+```text
+✓ createLayer = 6
+✓ uxengine_init2 执行并返回
+✓ GFXENG 被进入并返回
+✓ setDatabase 执行
+✗ 之后没有 notifyDraw / 没有 GPE 绘制包
+⇒ 阻断点在 **setDatabase 之后到首次绘制请求之间**
+```
+
+## ⑤ 下一步
+
+```text
+顺着 setDatabase 之后继续追（纯观测），
+把这条链一直走到"应该发 notifyDraw 的那一刻"，
+看它在哪一步停住。
+```
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v303: 5668 行 / createLayer=6 / LIBOBJ_SYM=24
+（本轮改动：新增 UXINIT wrapper，但 v303 数据来自改动前，仍有效）
+```
