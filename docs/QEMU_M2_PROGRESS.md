@@ -58008,3 +58008,38 @@ A9 侧的 layer 绘制虚槽是**占位空壳**，
 QEMU 实例   0
 基线        v323: 5805 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+## ⑤ 同轮补充：bitmap 对象也从未被创建
+
+```text
+v323 实测：GRM_bitmapCreate / BitmapCreateFromPhys / WriteLockBits 等
+  **全部 0 命中**
+⇒ 固件从未创建过任何 bitmap 对象
+⇒ 因此"调用 WriteLockBits 写像素"这条路，也**缺 bitmap 对象这个前提**
+```
+
+**⇒ 但那 8 个 GRM_bitmap* 接口都是**导出符号**：**
+```text
+GRM_bitmapCreate / CreateComposite / CreateFromPhys
+GetPhysicalAddress / GetRowPixelCount / GetSubRectangle / Release
+WriteLockBits / WriteUnlockBits
+⇒ 我们可以**自己调用它们**创建一个 bitmap 并写入像素
+```
+
+**⇒ 这与判据 1 的关系需要说清：**
+```text
+· 用固件的 GRM_bitmap* API 创建/写入 = 用固件自己的绘图设施
+· 但"画什么"若由我们决定，那就接近"自绘" ⇒ 需要谨慎
+· 合理的做法：**像素来自固件的绘制意图**（几何/颜色由固件给出），
+  我们只负责把它落到 bitmap 里
+
+⇒ 但目前固件连"绘制意图"都没给出（无 widget、无绘制包）
+⇒ 所以这条路的前提仍未满足
+```
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v323: 5805 行 / createLayer=6 / LIBOBJ_SYM=24
+```
