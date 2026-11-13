@@ -54034,3 +54034,60 @@ notifyDraw → draw_entry → GRM_bitmapCreate（24 次）
 QEMU 实例   0
 基线        v297: 5756 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百三十三章（R3101–R3140）：**新发现：liro.ko 在运行时加载失败，因为它缺 dma330 符号**
+
+## ① 按铁律先 grep a7c2-re，然后对照 Gen5
+
+```text
+a7c2-re：CP 走 **eDMA**（CP-EDMA-DIRECT.md），有完整的直接 RAM 搬运子集
+        门铃触发、64 位 SRC/DST、总线读写、DONE
+Gen5：/usr/kmod 里有 **dma330.ko**（256532 B，真实的 DMA330 驱动）
+      和 **dma330_stub.ko**（24216 B，桩）
+```
+
+## ② 但本轮在日志里发现了一个一直没注意的错误
+
+```text
+DEVOPEN n=6 path=/usr/kmod/liro.ko flags=0 ret=4 tid=115
+<4>liro: Unknown symbol **dma330_mem_transfer_async** (err 0)
+
+⇒ liro.ko 是 **im.elf 在运行时**去加载的
+⇒ 它加载**失败**了，因为没有 dma330_mem_transfer_async 这个符号
+⇒ 而 init 的模块加载列表里 **没有 dma330.ko**
+```
+
+## ③ 这两个事实连起来就是：dma330 驱动从未加载
+
+```text
+init 加载列表：devno / dmac / osal_utm / osal_uipc / backup / utimer /
+              osal_ulogio / kikilog / stream / stream2 / dmm / grm_ma /
+              grm_gles / udate
+⇒ **没有 dma330.ko**
+⇒ 所以 im.elf 尝试加载 liro.ko 时，依赖未满足，加载失败
+```
+
+## ④ 这条线索与"画不出帧"可能直接相关
+
+```text
+a7c2 的画布搬运走 eDMA；Gen5 对应的是 dma330
+⇒ 若 Gen5 的图像搬运也依赖 dma330，那它没加载就是**硬的缺失**
+⇒ 而 liro.ko 是"LIRo"（很可能是 image/ro 相关的显示链路模块）
+```
+
+## ⑤ 下一轮（一个非常具体的改动）
+
+```text
+在 init 的 load 列表里，在合适的顺序位置加入 dma330.ko（在 liro 之前），
+跑一轮看：
+  ① liro.ko 是否加载成功
+  ② 画布是否出现非零
+这会直接验证"dma330 缺失是否是出帧缺口"。
+```
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v297: 5756 行 / createLayer=6 / LIBOBJ_SYM=24
+```
