@@ -53695,3 +53695,64 @@ QEMU 实例   0
 基线        v289: 5801 行 / createLayer=6 / LIBOBJ_SYM=24
 frame.raw   sha256=34c69899…  614400 B  非零=0
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百二十七章（R2891–R2930）：**决定性发现：notifyDraw 被调用后从未返回**
+
+## ① 本轮先遇到一次 cpio I/O 错误（本会话第 4 次）
+
+```text
+v290 部署时 sha256sum 报 "Input/output error"
+⇒ 删除 cpio 重新生成（266254848 B），重新部署成功
+⇒ 这是已知的机械问题，非固件问题
+```
+
+## ② 然后在 v291（基线合格）拿到决定性证据
+
+```text
+行数 5732 / createLayer=6 / LIBOBJ_SYM=24
+
+DRIVE_AT_SEND notifyDraw CALLING wg=0x4cc378
+DRAW_PROBE notifyDraw n=1 self=0x4cc378       ← **进入**
+FRSTEP draw_entry n=1,2,3 …（共 6 次）
+**notifyDraw returned 出现 = 0**                ← ★ **从未返回**
+末尾线程态：bootin.elf 卡在 `osal_rcv_msg_tmo:1` / `__k_4u_wait_cb:2`
+```
+
+## ③ 这解释了本会话最核心的那个现象
+
+```text
+**绘制调用真的开始了（Gen5 自己的 notifyDraw 被进入，它内部的 draw_entry
+  被调用 6 次），但它在半途阻塞在 OSAL 消息等待上，永远回不来。**
+⇒ 所以：
+   · 画布存在（0x22d52000，614400 字节已映射）
+   · 画布全零（因为写像素的那一步在阻塞点之后）
+   · PRESREAD 探针没打印（因为它写在我调用的 notifyDraw **返回之后**，
+     而它永远不返回 —— 这是我探针位置的设计缺陷，本轮确认）
+```
+
+## ④ 因此"出帧"的完美阻塞链已经完整
+
+```text
+notifyDraw（Gen5 绘制入口）
+  → 遍历 widget（6 次）
+  → 调 draw_entry（6 次）
+  → 某处进入 osal 等待（__k_4u_wait_cb / osal_rcv_msg_tmo）
+  → **永远不返回**
+  ⇒ 写像素的代码从未执行
+  ⇒ 画布永远全零
+```
+
+## ⑤ 下一步（探针位置修正 + 定位阻塞点）
+
+```text
+把 PRESREAD 移到 draw_entry **每一次调用之后**（而不是 notifyDraw 之后），
+这样即使 notifyDraw 永不返回，也能看到 draw_entry 之后画布是否被写过。
+同时记录 draw_entry 内部谁进入了 osal 等待。
+```
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v291: 5732 行 / createLayer=6 / LIBOBJ_SYM=24
+```
