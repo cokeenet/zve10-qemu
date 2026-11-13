@@ -55638,3 +55638,49 @@ argtrace.c 第 3153 行注释（我自己几年前写的）：
 QEMU 实例   0
 基线        v303: 5668 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百五十八章（R4611–R4680）：**找到了 UI 初始化的关键函数：uxengine_init2 设 640×480**
+
+## ① 本轮先纠正上一章的误读（INITSEQ 只是 dlsym 解析）
+
+## ② 然后在纯观测基线上把三个 UI 引擎 init **解析到确切地址**
+
+```text
+INITEXEC resolved UIDG_init      = 0x61788c5
+INITEXEC resolved uxengine_init  = 0xa76480d
+INITEXEC resolved uxengine_init2 = 0xa764815
+
+经查：uxengine_init / uxengine_init2 在 **libObj** 里（0xe280c / 0xe2814，相距 8 字节）
+```
+
+## ③ 而 `uxengine_init2` 的第一行就写着 UI 的分辨率
+
+```text
+0xe2814  push {r4,r5,r7,lr} ; sub sp,#24
+0xe2818  ldr  r0,[pc,#188]
+0xe281a  mov.w r1, #**640**        ← 宽度
+0xe2822  mov.w r2, #**480**        ← 高度
+0xe2826  mov.w r3, #0x80000000
+0xe2832  str  r5,[sp,#8]
+0xe2834  bl   0x101574
+0xe2838  bl   0xe27a4              ← 内部初始化
+```
+
+**⇒ `uxengine_init2` 就是"建立 640×480 显示表面"的那一步。**
+
+## ④ 因此下一步的探针必须装在它上面
+
+```text
+现在只知道它被**解析**（dlsym 返回了地址），
+**不知道它是否被执行**。
+⇒ 装计数探针（纯计数，不发起调用）到 0xe2814
+⇒ 若命中 ⇒ UI 引擎初始化执行了，阻断点在其内部或之后
+⇒ 若 0    ⇒ UI 引擎初始化从未执行，阻断点在它之前（即 Application_Start 的调度里）
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v304: 5673 行 / createLayer=6 / LIBOBJ_SYM=24
+```
