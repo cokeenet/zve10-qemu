@@ -53269,3 +53269,43 @@ MODULE_END   /usr/kmod/dmm.ko status=0
 QEMU 实例   0
 基线        v286: 5755 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百一十八章（R2631–R2660）：**纠正：dmm 的队列是 0x8f013a，不是 0x61003c**
+
+## ① 本轮把上一轮的关键判断纠正了
+
+```text
+上一轮我说：dmm_ctrl_Init 里 mov r3,#0x61 ⇒ 0x61003c 是 dmm 的队列
+本轮读字面量：
+  0x6b74 字面量 = **0x8f013a**（不是 0x61003c）
+⇒ dmm 使用的队列是 **0x8f013a**（正是日志里 360 次高频的那个）
+⇒ **0x61003c 不属于 dmm**
+```
+
+**dmm.ko 里 18 处 `0x61003c` 分布在 .text（17）与 .exit.text（1），
+**是作为**数据/参数**出现，不是作为注册目标。**
+
+## ② 但本轮仍得到一个有价值的事实
+
+```text
+dmm_module_InitModule 确实调用了 dmm_ctrl_Init（0xbc）
+但 **它的返回值被忽略**（0xbc 之后直接 0xc0 调 dmm_log_lkm_CreateArea）
+⇒ 即使 ctrl_Init 失败，模块仍然 status=0 加载成功
+⇒ **"模块已加载"不能推出"它的队列已注册"**
+```
+
+**这是一条通用的判断纪律，之前几轮我都栽在这上面。**
+
+## ③ 因此 0x61003c 的接收方仍未确定
+
+```text
+已排除：dmm.ko（本轮纠正）
+待查：其余含 0x61003c 的内核模块 —— usbg_stillimage.ko（5 处）最可疑
+```
+
+## ④ 约束
+
+```text
+QEMU 实例   0
+基线        v286: 5755 行 / createLayer=6 / LIBOBJ_SYM=24
+```
