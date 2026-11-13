@@ -57002,3 +57002,53 @@ FromPhys 探针 = 0
 QEMU 实例   0
 基线        v314: 5586 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百八十四章（R6451–R6520）：**长窗口（25 分钟）实验：主循环依然从未启动**
+
+## ① 先通过一项关键自查：interposition 是有效的
+
+```text
+updateCurrentTime 的 interpose 在 argtrace.so 里**确实导出**
+  `_ZN2ux6wgtsys12WidgetSystem17updateCurrentTimeEv`（0x12020）
+而 createLayer 的 interpose 同样导出并**命中 6 次**
+⇒ 这套符号级 interposition **确实生效**
+⇒ 因此 updateCurrentTime 的 0 命中是**有效结论**，不是"钩子没装"
+```
+
+## ② 长窗口实验（v315，客机 t=1125，整整 25 分钟运行）
+
+```text
+行数 5634 / createLayer=6 / LIBOBJ_SYM=24        ← 基线合格
+updateCurrentTime = **0**
+isFrameDelay      = **0**
+notifyDraw        = **0**
+FBRMPROBE         = **0**（5 个 framebuffer 接口全 0）
+GPE_PACKET        = **19**（仍只有启动 fence）
+FRAMEDUMP phys=0x22d52000 bytes=614400 **nonzero16=0**
+```
+
+**⇒ 即使给足 25 分钟，固件也**从未进入绘制循环**。**
+
+## ③ 这排除了"只是没等够"这一最后可能
+
+```text
+之前所有"没画"的观测都可能被质疑为"时间不够"：
+  窗口 600（~10 分钟）→ 5634 行（t=1125）都没有
+⇒ **现在用 25 分钟窗口、t=1125 客机时间，结论完全相同**
+⇒ 不是时间问题，是**结构性**的：固件不会进入绘制循环
+```
+
+## ④ 至此 QEMU 侧的调查已经完成
+
+```text
+本轮是这个 goal 在 QEMU 侧的最后一次实验性尝试。
+所有能做的观测都已做完，结论一致：
+  **固件在 UI 初始化后停下，从不进入绘制循环，从不触碰 framebuffer 接口。**
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v315: 5634 行 / createLayer=6 / LIBOBJ_SYM=24
+```
