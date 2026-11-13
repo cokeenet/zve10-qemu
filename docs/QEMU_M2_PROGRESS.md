@@ -57100,3 +57100,88 @@ Backup.bin 已还原为 93205336…（避免留下改动）
 QEMU 实例   0
 基线        v316: 5656 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百八十六章（R6591–R6700）：**同步 sony-fw 组织后找到决定性参考：`a7m5-qemu`**
+
+## ① 三个仓库同步结果
+
+```text
+sonyfw-zve10-qemu  已是最新 42554a6（"wait for late menu font draws"）
+a7c2-qemu          ce25af2 → **8bce615**（CP GPIO 接线 / CP 原生进度验证）
+a7c2-re            d0bc267 → **790195b**（含 6e8a756"原 457 隐私页上下文门禁"）
+```
+
+## ② 组织仓库清单里发现了一个**此前完全没注意的项目**
+
+```text
+SONY-FW 组织共 7 个仓库，按更新时间：
+  a7c2-re            2026-11-12
+  **a7m5-qemu       2026-11-11**   ← ★ 新发现
+  a7c2-knowledge-base 2026-11-10
+  zve10-qemu         2026-11-10
+  a7c2-qemu-backup   2026-11-09
+  a7c-qemu           2026-11-06
+  a7m3-qemu          2026-11-06
+```
+
+**`a7m5-qemu` 的 README 明写：**
+
+```text
+"参考相邻 a7c2-qemu 建立的 **A7M5 独立移植工程**"
+"原厂拍摄主页 → MENU → DOWN / UP 焦点移动 → MENU 返回已在隔离 QEMU 实际完成"
+"原 AP 生成拍摄 HUD、菜单文字、分类栏和焦点；**软件 GPE 消费原绘制请求**，
+ 原 MP 提交真实 framebuffer 到虚拟 LCD"
+```
+
+**⇒ A7M5 是 Gen5 世代的机器（与 ZV-1M2 同代），而且**它成功了**。**
+
+## ③ ★ 决定性：A7M5 遇到过和我们**完全一样**的问题，并给出了解法
+
+它的 `source/ui/README.md` 原文：
+
+```text
+"原GPE线程实际停在 **LIRO 启动等待**，尚未进入worker"
+"新增**显式** `software-owned-queue-v1`，从原OSAL队列消费真实消息，
+ 调用下方已有软件栅格和原 SendDrawComp，
+ **不发送LIRO type1或更改原等待/ready**"
+"该新profile只在原liro模块确实不存在、80820884无队列消息/消费者/广播/sync callback时启用"
+```
+
+**⇒ 他们的解法正是我们缺的那一步：**
+```text
+**不启用真 LIRO（MUSASHI），改为自建一个"软件 GPE 队列消费者"，
+ 从原 OSAL 队列里取真实的绘制消息，用 CPU 软件栅格化消费它。**
+⇒ 这与我们的单变量对照结论完全呼应：
+   "av-cam.bin 存在 ⇒ 主流程被饿死" ⇒ 那就**不要它**，改用软件路径消费绘制消息。
+```
+
+## ④ 关键队列号（他们用的）
+
+```text
+SendDraw 根据 GP0/1 送 **0x80820884 / 0x80820885**（GPE0 / GPE1 队列）
+panel 输出信息事件发到 **0x828809be**
+final scanout 完成回 **0x828009b6**
+```
+
+## ⑤ 我们日志里的对照（本轮实测）
+
+```text
+grep '80820884|80820885' out/v314/serial0.log → **0 条**
+我们看到的 qid 全是别的（0x1706085 / 0x61003c / 0x8f013a …）
+⇒ 说明 ZV-1M2(Gen5) 的 GPE 队列号与 A7M5 不同，需要各自定位
+```
+
+## ⑥ 待办（下一步）
+
+```text
+① 在 ZV-1M2 的 libgpe/libObj 里定位它的 SendDraw 目标队列号
+   （对照 A7M5 的 0x80820884/885 规律：可能是 0x8 段 + 固定偏移）
+② 若能定位，就照 A7M5 的做法建一个软件消费者，绕过 LIRO
+```
+
+## ⑦ 约束
+
+```text
+QEMU 实例   0
+基线        v314/v316: 5586~5656 行 / createLayer=6 / LIBOBJ_SYM=24
+```
