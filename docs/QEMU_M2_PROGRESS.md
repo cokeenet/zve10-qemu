@@ -54430,3 +54430,17 @@ QEMU 实例   0
 QEMU 实例   0
 基线        v297: 5756 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+## ⑥ 补充（同轮）：找到了优先级设置
+
+```text
+liro_init 的 kthread_create 之后：
+  0xb8  mov r1, #5
+  0xbc  bl os_tsk_setprio        ← **把 RTOS 任务优先级设为 5**
+
+⇒ 在 uITRON 里 5 是较高的优先级（数值小 = 优先级高）
+⇒ 这解释了为什么单核下用户态进程被饿死：
+   RTOS 任务优先级 5 远高于 Linux 普通用户进程（nice 0 / SCHED_OTHER）
+```
+
+**⇒ 因此"让 MUSASHI 跑起来"和"让 UI 初始化跑完"在单核上是直接冲突的。**
