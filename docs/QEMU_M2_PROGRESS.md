@@ -58833,3 +58833,74 @@ grep 结果：**0 处**
 QEMU 实例   0
 基线        v328: 5501 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第七百一十三章（R9301–R9400）：**零风险静态发现：render container 是一个大循环，且只有一个出口**
+
+## ① 本轮完全用静态分析（不跑 QEMU，零风险）
+
+```text
+render container（0x54f664）的控制流：
+  0x54fb3e  blx UXEngine::gfxeng()
+  0x54fb42  blx GraphicsEngine::processSystemMessage()
+  0x54fb46  cmp  r0, #0
+  0x54fb48  **bne.w 0x54f700**        ← **向后跳：循环回 0x54f700**
+  0x54fb4c  ...
+  0x54fb58  add.w r7, #2048
+  0x54fb5c  mov  sp, r7
+  0x54fb5e  **ldmia.w sp!, {r4,r5,r6,r7,r8,r9,sl,fp,pc}**   ← **唯一的正常出口**
+
+而循环体起点 0x54f700：
+  0x54f700  add.w r0, r7, #1720
+  0x54f706  mov.w r2, #272
+  0x54f70a  blx   memset@plt         ← 每轮清 272 字节
+  0x54f70e  cbz   r5, 0x54f752
+  0x54f712  bl    0x54f004
+  0x54f716  bl    0x712100
+  0x54f71a  bl    0x60e2f4
+```
+
+## ② 这个发现解释了此前所有"卡住"的现象
+
+```text
+· render container 内部是一个**持续循环**（`bne.w 0x54f700` 回头）
+· 它的**唯一出口**在 0x54fb5e（`ldmia sp!,...pc`）
+· 而出口的条件是 `processSystemMessage()` 返回 0（`cmp r0,#0 ; bne` 不跳）
+
+⇒ 也就是说：**只要 processSystemMessage 每轮都返回非 0，
+   render container 就永远在循环里，永不返回。**
+
+⇒ 这正是我们观测到的：
+  · RENDERENTRY enter=1（进入）
+  · RENDERENTRY leave=0（窗口内没返回）
+  · 而主线程日志在 LOCKRET 之后停下
+```
+
+## ③ 因此"卡住"不是阻塞，而是**固件进入了它自己的主渲染循环**
+
+```text
+**这是固件的**正常工作状态**！render container 本来就是常驻循环，
+  它不返回是设计如此 —— 不是 bug。**
+
+⇒ 那么问题变成：**这个循环内为什么没有产生帧？**
+   · 每轮都会调 `0x54f004` / `0x712100` / `0x60e2f4`（疑似渲染阶段）
+   · 而 GATEWATCH (0x54f2ca) 0 命中 ⇒ 门在循环外，所以与循环无关
+   · FILLWATCH (0x1127f8) 0 命中 ⇒ **循环内没有触发填充**
+```
+
+## ④ 这彻底修正了对"卡点"的理解
+
+```text
+之前：以为固件"卡住"在某个调用里
+现在：**固件在跑它自己的常驻渲染循环，但循环内每一步都不产生像素**
+
+⇒ 卡点不再是一个"不返回的调用"，而是**循环体内的某个条件始终不成立**
+⇒ 下一步该看的是循环体（0x54f700~0x54fb48）里那些 bl 的返回值
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v328: 5501 行 / createLayer=6 / LIBOBJ_SYM=24
+（本轮未运行 QEMU，纯静态分析）
+```
