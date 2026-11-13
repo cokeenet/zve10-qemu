@@ -55473,3 +55473,69 @@ rc-pixel-layout-contract / yc-cpu-consumer-boundary …
 QEMU 实例   0
 基线        v299: 5784 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百五十五章（R4401–R4470）：**干净基线的决定性答案：固件自己从不进入绘制路径**
+
+## ① 本轮做了一次彻底的"去污染"实验
+
+```text
+把 init 里我们所有的驱动/注入全部关掉：
+  FORCE_MENU=0  DRIVE_NOTIFY=0  NO_DRIVE=1
+  INJECT_INPUT_QUEUES=0  INJECT_CP=0  FORCEDRAW=0
+⇒ 只剩纯观测（argtrace 只记录，不发起任何调用）
+```
+
+## ② v303（基线合格）的答案非常干净
+
+```text
+行数 5668 / createLayer=**6** / LIBOBJ_SYM=24    ← 基线正常
+
+**notifyDraw 命中 = 0**
+**draw_entry 命中 = 0**
+**from_phys 命中 = 0**
+**bmp_real 命中 = 0**
+```
+
+**⇒ 也就是说：**
+
+```text
+**没有任何驱动的情况下，Gen5 固件自己从不调用 notifyDraw，
+  更不会进入 draw_entry / bitmap 创建。**
+⇒ 之前所有"绘制路径被进入"的记录，**全部是我自己 DRIVE_NOTIFY=1 触发的那一次调用**
+⇒ 我前面几章把"notifyDraw 被调用"当作固件行为，这是一个根本性误解
+```
+
+## ③ 这是本会话最重要的一次去污染
+
+```text
+被污染的数据 → 修正后的真值
+  ✗ "draw_entry 命中 10 次（固件行为）"  → ✓ **固件从不调用**
+  ✗ "GRM_bitmapCreate 被调 24 次"        → ✓ **那 24 次是我调的**
+  ✗ "画布全零是因为绘制失败"             → ✓ **画布全零是因为固件根本没画**
+```
+
+## ④ 因此阻断点在**更上游**
+
+```text
+固件能到 createLayer=6（6 个 panel 都建了）
+但之后**再也不发出 notifyDraw**
+⇒ 阻断点在"createLayer 之后、notifyDraw 之前"
+⇒ 这正是本会话早期反复出现的 OSAL/VDF 消息循环所在位置
+```
+
+## ⑤ 剩余 47 轮的诚实结论
+
+```text
+**要让 Gen5 在 QEMU 里出帧，必须先让它自己愿意调用 notifyDraw。**
+这需要解开 "createLayer → notifyDraw" 之间那个 OSAL 消息循环，
+而该循环的语义（0x1706085 / 0x61003c / 0xe1700）本会话已查了很多轮仍未闭合。
+⇒ 在剩余轮次内完成的概率很低。
+```
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v303: 5668 行 / createLayer=6 / LIBOBJ_SYM=24
+init 当前为纯观测配置（无驱动/无注入）
+```
