@@ -57682,3 +57682,44 @@ GPE 包仍 19（驱动后 0 个新包）
 QEMU 实例   0
 基线        v320: 5534 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百九十四章（R7401–R7500）：**DRAWVSLOT 读数：两个绘制虚槽，一个是 libObj、一个是 libstdc++**
+
+## ① 本轮把 105f98 内部真正调用的两个虚槽读出来了
+
+```text
+反汇编 105f98 内部 4 处 blx：
+  0x105fc4  ldr r3,[r3,#0x24] ; blx r3     ← slot +0x24（两次）
+  0x106014  ldr r3,[r3,#0x28] ; blx r3     ← slot +0x28（两次）
+```
+
+**v321 实测（5 个 layer，读数完全一致）：**
+
+```text
+obj=0x4de400  vt=0xab49ca8  slot24=**0xa8e0af5**  slot28=**0x4238e50**
+（layer 2/3/4/5 相同，全部共用同一 vtable）
+```
+
+## ② 解析这两个地址
+
+```text
+slot24 = 0xa8e0af5 → **/usr/lib/libObj.so + 0xdeaf5**   （libObj 内，真绘制函数）
+slot28 = 0x4238e50 → **/usr/lib/libstdc++.so.6.0.14 + 0xa9e50**
+        ⇒ 这是 libstdc++ 的**虚表析构/类型信息槽**，不是绘制函数
+```
+
+**⇒ 也就是说：105f98 的两次 "slot28" 调用是**析构/元信息**调用，不是绘制。**
+
+## ③ 因此真正的绘制只有 `slot24 = libObj+0xdeaf5`
+
+```text
+它就是 UI 层"实际画这一层"的函数。
+⇒ 下一步唯一该做的：**给 0xdeaf5 装探针 / 或直接看它内部**
+```
+
+## ④ 约束
+
+```text
+QEMU 实例   0
+基线        v321: 5599 行 / createLayer=6 / LIBOBJ_SYM=24
+```
