@@ -56875,3 +56875,48 @@ v314: LOOPGATE self=0x4da000  [+0x870] = **0x64697567**
 QEMU 实例   0
 基线        v314: 5586 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百八十一章（R6241–R6310）：**观测路线的终点：那道门不是导出符号，无法安全观测**
+
+## ① 本轮确认了"读门"这条路已到尽头
+
+```text
+0x54f2ca（调度判据函数）不是导出符号：
+  它落在 **Application_Start（0x54d580）内部**，最近的导出符号就是它本身
+⇒ 无法用符号级 interpose
+⇒ inline hook 也不行（该处 4+2+4=10 字节窗口，8 字节 trampoline 会切断指令）
+⇒ **这条路在观测层面已经走到底**
+```
+
+## ② 转而看行为输出（v314，无污染基线）
+
+```text
+GPE 包 = **19 个**（全部是同一个启动 fence）
+FRAMEDUMP phys=0x22d52000 bytes=614400 **nonzero16=0** unique16=1
+⇒ 与所有前序运行一致：**没有任何绘制发生**
+```
+
+## ③ 至此，本会话的技术结论已经完整
+
+```text
+已确证（多条独立证据、多次交叉验证）：
+  ✓ 启动链全通（bootin → appFwBoot → im.elf → appFw，2730 构造函数）
+  ✓ createLayer ×6 全部成功（layer 树完整建立）
+  ✓ uxengine_init2 执行并返回非 0
+  ✓ GFXENG 被进入并返回
+  ✓ 画布已映射（0x22d52000，614400 B）且**读数全零**（6/6）
+  ✓ updateFrame 的 PLT 槽 **never-called**
+  ✓ isFrameDelay 探针 **0 命中**
+  ✓ GPE 只有 19 个启动 fence，**无任何绘制包**
+  ✓ av-cam.bin（MUSASHI 17 MB）存在时主流程停在 t=120；移除后 t=1125 健康
+
+未能确证：
+  ? 固件最终因何不进入绘制循环（0x54f2ca 不可观测）
+```
+
+## ④ 约束
+
+```text
+QEMU 实例   0
+基线        v314: 5586 行 / createLayer=6 / LIBOBJ_SYM=24
+```
