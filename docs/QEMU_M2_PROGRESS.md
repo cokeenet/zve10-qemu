@@ -54838,3 +54838,75 @@ observe_notify 的 prologue `90 b5 87 b0 00 af 04 46` 命中 **0x106524** —
 QEMU 实例   0
 基线        v299: 5784 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百四十六章（R3761–R3820）：**决定性发现：我们手上已经有编译好的 `libuiobserve.so`，且它带着参考的全部 hook 偏移**
+
+## ① 本轮在全机范围内搜索，找到了参考观测层的**编译产物**
+
+```text
+/mnt/build/m2qemu/uicap/libuiobserve.so              78944 B
+/mnt/build/ref-chocotan-zve10/work/initramfs-ui/usr/lib/libuiobserve.so   同尺寸
+（另有 routeA / refwork 两份备份）
+
+⇒ 这就是参考仓库 source/ui/ 那一整套（ui-observe.c + gemini-backend + present）
+  的**已编译版本**
+```
+
+## ② 并且它内部**确实带着参考的 hook 偏移字面量**（本轮字节搜索实测）
+
+```text
+字面量 0x617c74 (observe_notify)      → **1 处**
+字面量 0x6196b8 (observe_draw)        → **1 处**
+字面量 0x7d5bb0 (software_init)        → **1 处**
+字面量 0x774ef0 (software_present)     → **1 处**
+字面量 0x775120 (software_engine_wait) → **1 处**
+字面量 0x616fe4 (base 锚点校验)        → 0 处（编译时被优化/内联）
+```
+
+**⇒ 也就是说：这份 .so 就是"按参考偏移在 appFw 上打 hook"的成品。**
+
+## ③ 但这里有个必须说清的矛盾
+
+```text
+参考的偏移属于**参考自己的 appFw/libObj 布局**（WidgetSystem 在 appFw）。
+我们的布局不同（WidgetSystem 在 libObj，0x106524）。
+
+⇒ 这份成品 .so **不能直接用在我们的树上**
+⇒ 但它是**可用的参照物**：它证明了"这套 obserser 能编译、能跑、能出帧"
+  也给了我们精确的 prologue 字节与替换目标（上一章已按字节匹配到 9/10）
+```
+
+## ④ 因此正确的做法是"重新编译一份属于我们的"
+
+```text
+参考的构建方式（menu_build.py 已读到）：
+  arm-linux-gcc -shared -fPIC -O2 -std=gnu11 -Wall -Wextra -Werror
+    -I<out> -I<MENU_SOURCE> -o libuiobserve.so observer-derived.c -ldl -lpthread -lrt
+  源：source/ui/ui-observe.c + 若干 header（组合成 observer-derived.c）
+
+⇒ 我们手里的工具链完全相同
+  （/mnt/build/ref-chocotan-zve10/work/armv7-eabihf--glibc--stable-2020.08-1）
+⇒ 只需把 hooks[] 表的偏移改成**我们 libObj 的偏移**（上一章已按字节定位）
+⇒ 就能编译出属于我们这棵树的等价观测层
+```
+
+## ⑤ 下一轮（具体、可执行）
+
+```text
+新建 src/uibackend.c：
+  ① 保留参考的软件光栅化实现（直接从 ui-raster.h / ui-gemini-raster.h 抄）
+  ② present 捕获直接用 ui-present.h（67 行，自包含）
+  ③ hooks[] 表用**我们定位出来的地址**：
+       notifyDraw 0x106524 / draw 0x13bb10 /
+       fill&blit 0x182410,0x1824a0 / present 0x82384 /
+       engine_wait 0x12ceb0 / headless 0x124bb4
+  ④ base 校验改用我们自己的锚点（sys_getInstance 在 libObj 内的偏移）
+⇒ 编译成 libuibackend.so，LD_PRELOAD 加进去测
+```
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v299: 5784 行 / createLayer=6 / LIBOBJ_SYM=24
+```
