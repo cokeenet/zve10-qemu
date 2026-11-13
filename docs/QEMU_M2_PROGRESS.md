@@ -57052,3 +57052,51 @@ FRAMEDUMP phys=0x22d52000 bytes=614400 **nonzero16=0**
 QEMU 实例   0
 基线        v315: 5634 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百八十五章（R6521–R6590）：**响应"是不是要过首设"这一提问：换 clean 配置后行为完全不变**
+
+## ① 用户提出的关键假设
+
+```text
+a6400 上两天内跑出 A7C2 新菜单（Gen5 固件跑老模型）
+⇒ 很可能他们**走了"开机初始化向导（首设）"**，而首设会真正绘制 LCD
+⇒ 我们的固件里确实有 `PRIVACY_NOTICE_ACCEPTED_DURING_INITIAL_SETUP` 这个字符串
+```
+
+## ② 我做了一次针对性实验
+
+```text
+发现：我们的 setting/Backup.bin = 93205336…（运行时被改过或来自另一来源）
+      参考树的 Backup.bin/B.bak  = 96519cd0…（干净的）
+⇒ 用参考的 clean 备份替换我们的 Backup.bin（意图：触发"无配置 → 首设"分支）
+结果（v316）：
+  行数 5656 / createLayer=6 / LIBOBJ_SYM=24     ← 基线合格
+  GPE 包 19（仍只有启动 fence）
+  FRAMEDUMP nonzero16=0
+  **行为与替换前完全一致**
+```
+
+**⇒ 结论：换配置**没有**让固件进入首设绘制路径。**
+
+## ③ 因此"是否漏了首设"这个问题，目前的答案是
+
+```text
+· 换 clean 配置不足以触发首设（行为不变）
+· 首设的进入判据在 a7c2 那边是 `process_power_on` 里读
+  (model date status, force status) 后选入口 `0x347`
+· 我们的日志里**没有** process_power_on / boot_start_seq 的任何记录
+⇒ 说明那条链路在我们的运行里根本没被走到（或没有探针）
+```
+
+## ④ 已恢复原配置
+
+```text
+Backup.bin 已还原为 93205336…（避免留下改动）
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v316: 5656 行 / createLayer=6 / LIBOBJ_SYM=24
+```
