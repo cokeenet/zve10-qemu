@@ -54648,3 +54648,66 @@ QEMU 实例   0
 QEMU 实例   0
 基线        v299: 5784 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百四十三章（R3561–R3620）：**参考实现的 hook 偏移是 appFw 的，我的目标库分工不同**
+
+## ① 参考实现（sonyfw-zve10-qemu）的 UI 层结构
+
+```text
+ui-observe.c（698 行，主入口）：
+  · 用 _ZN2ux6wgtsys12WidgetSystem15sys_getInstanceEv 作为锚点
+    校验偏移 **0x616fe4**（在 **appFw.so** 里）
+  · 安装 hooks（偏移 + 前 8 字节校验）：
+      0x775260  executor     → observe_rm_execute
+      0x776ad0  scheduler    → observe_rm_step
+      0x572008  text_draw    → observe_text_draw（字体光栅）
+  · 然后**把 Gemini 的 4 个几何函数直接替换为软件实现**：
+      gemini_original_solid = software_gemini_solid
+      gemini_original_rect  = software_gemini_rect
+      gemini_original_quad  = software_gemini_quad
+      gemini_original_line  = software_gemini_line
+      original_lz_decode    = software_lz_decode
+      original_slow_clear   = software_slow_clear
+```
+
+## ② 而我们的库分工与参考不同（本轮核对）
+
+```text
+参考把 WidgetSystem / ResourceManager / 字体都放在 appFw.so 里
+我们的：
+  libObj.so  有 WidgetSystem::notifyDraw（0x106524）、createLayer、updateFrame
+             （**WidgetSystem 在 libObj**）
+  appFw.so   只有对 WidgetSystem/ResourceManager 的**未定义引用**（U）
+⇒ 所以参考的偏移（0x616fe4 / 0x775260 / 0x776ad0 / 0x572008）
+  **不能直接搬到我们树上**
+⇒ 但**方法**可以照搬：找到我们对应的函数，用同样方式替换为软件实现
+```
+
+## ③ 我们要移植的实质（本轮结论）
+
+```text
+不是"抄偏移"，而是抄这套结构：
+  ① 把 Gemini 的 solid/rect/quad/line 换成 CPU 光栅化
+     （参考的 software_gemini_* 在 ui-gemini-raster.h + ui-raster.h）
+  ② 把 present 的参数校验与 tile 重排搬进来（ui-present.h，67 行，可直搬）
+  ③ 把字体光栅（text_draw）也换成软件实现（ui-font-probe.h）
+
+其中 **ui-present.h 是自包含的（67 行，只依赖 string.h）** —
+可以直接搬进 argtrace.c 用来把画布搬成线性帧。
+```
+
+## ④ 下一步（具体）
+
+```text
+先搬 ui-present.h（最小、自包含、验证判据 2 的格式），
+确认它能正确识别参考的 present 参数布局
+{0,4,0,0x4401,640,480,640,480,0,0,640,480}；
+再搬 ui-gemini-raster.h 的软件光栅化。
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v299: 5784 行 / createLayer=6 / LIBOBJ_SYM=24
+```
