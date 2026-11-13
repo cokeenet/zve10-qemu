@@ -57617,3 +57617,68 @@ WLIST2 同上（连续两次采样）
 QEMU 实例   0
 基线        v320: 5534 行 / createLayer=6 / LIBOBJ_SYM=24（DRIVE_NOTIFY=1，非纯观测）
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百九十三章（R7301–R7400）：**接受 teammate 纠正 + 解出 updateFrame 的绘制判据**
+
+## ① 接受两处纠正（第 6 次同类陷阱警告，全部成立）
+
+```text
+纠正 A："widget 链表为空 ⇒ 0 个 widget" **不成立**
+  WLIST 统计的是 inner+0x4b4 处链表（head=0x4d6fe4，自环 count=0）
+  而 updateFrame 遍历的 5 个 layer 对象的 +12/+16 恰好也是 0x4d6fe4
+  ⇒ 那是**根/哨兵**，不是 widget 容器
+  ⇒ 只能说"这条链表为空"，不能说"没有 widget"
+
+纠正 B：WNODE=0 / WIDGET_CTOR=0 **没有阳性对照，不能当证据**
+  teammate 解码了 libObj 全部 83,933 个 Thumb BL/BLX：
+  WidgetC1 **0 个直接调用点、0 个 RELATIVE 重定位**
+  ⇒ 这两个 interpose 可能压根没接上
+```
+
+## ② 但本轮解出了一个**更关键的事实**：updateFrame 的绘制判据
+
+```text
+updateFrame(0x106572) 的遍历循环：
+  0x1065c2  ldr  r3, [r4]      ← 取 layer 对象的 vtable
+  0x1065c6  ldr  r3, [r3]      ← **slot 0**
+  0x1065c8  blx  r3            ← 调用（"要不要画这一层"）
+  0x1065ca  cbz  r0, 0x1065da   ← **返回 0 ⇒ 跳过这一层**
+  0x1065d0  bl   0x105f98      ← 真正的绘制入口（我们 hook 的那个）
+```
+
+**⇒ 即：页面是否绘制，由**每个 layer 对象的 vtable slot 0 返回值**决定。**
+
+## ③ 而 v320 的实测给出了一个强约束
+
+```text
+v320 里 UPDATEWATCH 105f98_panel **命中 5 次**
+⇒ 5 个 layer 的 slot 0 **全部返回了非 0**
+⇒ **固件确实决定"要画"，并进入了 5 次绘制入口**
+```
+
+**但：**
+```text
+CANVASX n=1..5 全部 nz_words_512=0
+FRAMEDUMP nonzero16=0
+GPE 包仍 19（驱动后 0 个新包）
+```
+
+## ④ 因此缺口被精确定位到最后一步
+
+```text
+**105f98（绘制入口）被进入 5 次，但它内部只做 3 次 blx 虚函数派发
+  （0x105fc6 / 0x105fdc / 0x106016 / 0x10602c —— 共 4 处 blx r3），
+  它自身不写像素。**
+⇒ 那些被派发的虚函数**才是真正写 bitmap 的**，
+⇒ 而它们显然什么都没写（画布全零、无 GPE 包）
+
+⇒ **下一步唯一该做的：给 105f98 内部 4 处 blx r3 装探针，
+   看它们各自调了谁、返回什么。**
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v320: 5534 行 / createLayer=6 / LIBOBJ_SYM=24
+```
