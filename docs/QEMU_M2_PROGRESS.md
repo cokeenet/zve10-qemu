@@ -54319,3 +54319,62 @@ init 里加了 dma330.ko → liro.ko 能加载 → 它启动 MUSASHI 固件
 QEMU 实例   0
 基线        v297: 5756 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百三十八章（R3281–R3310）：**MUSASHI 是 uITRON 任务：liro.ko 自带完整 RTOS**
+
+## ① 本轮查 liro.ko 的符号，发现了它的真实身份
+
+```text
+liro.ko 导入：
+  kernel_thread / kthread_create_on_node / kthread_bind   ← Linux 内核线程
+  osal_create_thread / osal_create_waitable_thread        ← OSAL 线程
+  hwtimer_schedule_timeout                                ← 硬件定时器
+
+liro.ko 导出（**uITRON 风格的 RTOS API**）：
+  acre_tsk（创建任务）  act_tsk（激活任务）  acre_sem  acre_mbx
+  acre_mbf  acre_mpl  acre_mpf  acre_flg  acre_alm  acre_cyc
+```
+
+**⇒ liro.ko 不只是一个"固件加载器"，它是一整套 **uITRON RTOS**
+**（任务/信号量/邮箱/内存池/固定内存池/标志/闹钟/周期处理）。**
+
+## ② 因此 MUSASHI 固件是"RTOS 任务"，不是"直接函数调用"
+
+```text
+正常路径应为：
+  liro 加载 av-cam.bin → acre_tsk 创建任务 → act_tsk 激活
+  → RTOS 调度器在**独立内核线程**里跑它
+  → 与 A9 主流程**并发**，不抢占
+```
+
+**而 v298 的实测是：**
+
+```text
+固件确实执行了（737 个唯一 PC 样本）
+但客机时间停在 t=115，createLayer 从未出现
+⇒ 固件**在主线里就地执行**，把主流程挤停了
+```
+
+## ③ 于是"缺什么"非常具体
+
+```text
+缺的是 **RTOS 的线程调度**：acre_tsk/act_tsk 没能把它放进独立的内核线程。
+可能原因：
+  A. liro 的 RTOS 初始化依赖某个硬件定时器（hwtimer_schedule_timeout），
+     而我们的 sony_hwtimer 模型没提供
+  B. 内核线程创建成功，但 RTOS 上下文切换依赖中断，而中断没来
+```
+
+## ④ 下一轮
+
+```text
+检查 liro 启动时 hwtimer_schedule_timeout 是否被调用并成功；
+以及 v298 里是否有内核线程被创建（用 /proc 的 TS 记录看线程数变化）。
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v297: 5756 行 / createLayer=6 / LIBOBJ_SYM=24
+```
