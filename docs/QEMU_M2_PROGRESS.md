@@ -58305,3 +58305,64 @@ QEMU 实例   0
 QEMU 实例   0
 基线        v325: 5789 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第七百零四章（R8401–R8500）：**闭环：stage1 正常返回，返回到 RENDERENTRY 的 continuation**
+
+## ① 本轮把 stage1 的"出口"找到了
+
+```text
+stage1（0x54ef74）的结尾：
+  0x54eff8  **pop {r4,r5,r6,r7,pc}**   ⇒ **它正常返回，不是卡住**
+```
+
+**而它唯一的调用点在：**
+
+```text
+0x54f674  bl 0x54ef74        ← RENDERENTRY 的 continuation
+  0x54f672  mov r4, r0
+  0x54f674  bl  0x54ef74
+  0x54f678  ldr r3,[pc,#896]        ← 返回后继续执行
+  0x54f67c  add.w r0, r7, #2016
+  ...
+```
+
+## ② 因此本会话的定位链条最终闭合为
+
+```text
+Application_Start
+  → uxengine_init2 ✓（返回）
+  → initializeArena / setDatabase / setFontName ✓（都返回）
+  → **RENDERENTRY（进入）**
+      → **stage1 0x54ef74 ✓（进入并正常返回）**
+      → 回到 continuation 0x54f67c
+      → 继续执行 0x54f68a 处的一次 bl（0x54833c）
+      → ... 此后不再观测到主循环 0x54ed12
+```
+
+**⇒ 结果：stage1 是**正常返回的**，所以卡点不在 stage1 里，
+而是在 **continuation 0x54f67c 之后** 的某处。**
+
+## ③ 这条链的每一环都有地址证据
+
+```text
+0x54ef74  进入 ✓（STAGE1TEL 命中）
+0x54eff8  返回（pop pc）✓（代码存在）
+0x54f674  调用点 ✓（唯一）
+0x54f67c  返回后继续
+0x54f68a  bl 0x54833c  ← **下一个未知点**
+```
+
+## ④ 这是本会话能做到的最后一个精确定位
+
+```text
+**下一个待查点：0x54833c（continuation 里的下一次调用）**
+⇒ 若再往下走一层，就可能是"为什么主循环没被到达"的答案
+⇒ 但每加一层观测都要面对"8 字节窗口 + 不可替换禁区"两条约束
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v325: 5789 行 / createLayer=6 / LIBOBJ_SYM=24
+```
