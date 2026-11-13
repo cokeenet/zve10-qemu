@@ -58660,3 +58660,70 @@ QEMU 实例   0
 QEMU 实例   0
 基线        v327: 5750 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第七百一十章（R9001–R9100）：**找到了唯一调用真光栅的地方：libObj+0x1127f8**
+
+## ① 全库扫描结果：光栅入口**没有直接 BL**，只有一条 PLT 路径
+
+```text
+· 对 0x117b4c / 0x117c86 的直接 BL 扫描（全 83,933 个 Thumb BL/BLX）：
+  **0 个调用点**
+· 但 .rel.plt 里有两个 JUMP_SLOT：
+    0x354b3c → GRM_gpermRectblit
+    0x354d84 → GRM_gpermFillrect
+· PLT stub 定位：**0x3b0ac = GRM_gpermFillrect@plt**
+```
+
+## ② 而全库只有**一处**调用这个 PLT stub
+
+```text
+112878:  blx  3b0ac <GRM_gpermFillrect@plt>
+```
+
+**⇒ 这是本会话找到的"唯一能让真光栅运行的入口"。**
+
+## ③ 它所在函数：**libObj+0x1127f8**
+
+```text
+0x1127f8:  stmdb sp!, {r4,r5,r6,r7,r8,r9,lr}   ← prologue（可重定位！）
+0x1127fc:  sub   sp, #44
+0x1127fe:  mov   r6, r3
+0x112800:  add   r7, sp, #8
+0x112802:  ldr   r4, [pc,#132]
+0x112804:  ldrsh.w r3, [r2,#4]                  ← 取矩形的 y 或 h
+0x112808:  mov   r5, r1
+0x11280a:  add   r4, pc
+0x11280c:  ldrb.w r9, [r7,#64]                  ← **读一个"标志字节"**（第 7 个参数）
+0x112810:  cmp   r3, #0
+…
+0x112834:  blx  memcpy@plt                      ← 拷贝 4 字节颜色
+0x11283a:  movs r2, #255                        ← alpha = 255
+0x11283c:  cmp.w r9, #0                         ← **检查那个标志**
+0x112840:  bne  0x112848                        ← 非 0 ⇒ 强制 alpha=255
+0x112842:  ldrb  r3, [r5,#3]                    ← 否则用颜色自带的 alpha
+0x112844:  cmp   r3, r2
+0x112846:  bne  0x11284e
+0x112848:  strb  r2, [r7,#24]                   ← 写入 alpha
+0x112878:  **blx  GRM_gpermFillrect@plt**       ← 提交填充
+0x112882:  ldmia.w sp!, {r4,r5,r6,r7,r8,r9,pc}  ← 返回
+```
+
+## ④ 这条发现的实际意义
+
+```text
+✓ 存在一个**完整的、可运行的**"填充矩形"调用链：
+  libObj+0x1127f8 → GRM_gpermFillrect@plt → GRM_gpermFillrect（真实现，
+  tbb 格式分发）→ 0x115968 → 0x115364 → 内部提交
+
+✓ 而它的入口 **0x1127f8 前 4 字节 `stmdb` 完全可重定位**
+  ⇒ **可以用 8 字节 trampoline 安全 hook**（不像之前那些 PC 相对的）
+
+⇒ 这是本会话第一次找到一个"**既能调用真光栅、又能被安全插桩**"的点。
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v327: 5750 行 / createLayer=6 / LIBOBJ_SYM=24
+```
