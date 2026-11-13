@@ -56431,3 +56431,63 @@ grep 'FRAMEAPI isFrameDelay' out/v303/serial0.log → **0 条**
 QEMU 实例   0
 基线        v303: 5668 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百七十二章（R5591–R5660）：**找到了主循环的完整结构，且 `updateCurrentTime` 从未执行**
+
+## ① 主循环函数的完整结构（appFw @0x54ed12 起）
+
+```text
+0x54ed12  stmdb sp!, {r4,r5,r6,r7,r8,lr}     ← 函数入口
+0x54ed16  mov  r4, r0
+0x54ed1a  add.w r4, r4, #1704
+0x54ed1e  blx  UXEngine::wgtsys()
+0x54ed22  blx  WidgetSystem::**updateCurrentTime()**    ← ★ 更新时间基准
+0x54ed26  mov  r0, r4
+0x54ed28  movw r1, #1014
+0x54ed2c  blx  (0x9245a8)
+0x54ed32  blx  UXEngine::wgtsys()
+0x54ed36  blx  WidgetSystem::**processEvent()**
+0x54ed3a  mov  r5, r0
+0x54ed3e  bne  0x54ed32                              ← 事件循环
+0x54ed40  blx  UXEngine::resmgr()
+0x54ed46  blx  ResourceManager::processCommands()
+0x54ed4a  adds r5, #10
+0x54ed4c  blx  UXEngine::wgtsys()
+0x54ed50  blx  WidgetSystem::isFrameDelay()
+0x54ed54  cbz  r0, 0x54ed90                           ← 门
+0x54ed5a  blx  WidgetSystem::updateFrame()            ← 画
+```
+
+## ② 而实测：`updateCurrentTime` **一次都没执行**
+
+```text
+grep updateCurrentTime out/v303/serial0.log → **0 条**
+⇒ **主循环函数（0x54ed12）从未被进入**
+⇒ 所以 isFrameDelay 没被调、updateFrame 没被调、没有任何绘制
+⇒ 与"updateFrame PLT 槽 never-called"、"isFrameDelay 探针 0 命中"三条证据完全一致
+```
+
+## ③ 因此阻断点定位到"进入主循环之前的那个调用者"
+
+```text
+现在的链条非常清楚：
+  createLayer ×6 ✓ → uxengine_init2 ✓ → setDatabase ✓ → STAGE1 ✓
+  → **本应进入主循环 0x54ed12（但它没被进入）**
+⇒ 缺的是"启动这个主循环"的那一步
+```
+
+## ④ 这解释了 updateCurrentTime 为什么重要
+
+```text
+0x54ed22 的 updateCurrentTime 是**时间基准的维护者**
+⇒ 如果主循环从未启动，时间基准就永远不更新
+⇒ 即使后来有人调 isFrameDelay，它比较的也是陈旧时间
+⇒ 这形成了"不启动循环 ⇒ 时间不更新 ⇒ 门永不开"的自洽死锁
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v303: 5668 行 / createLayer=6 / LIBOBJ_SYM=24
+```
