@@ -58538,3 +58538,72 @@ render container 内 0x54f9e8  blx 0x925674  (r0=r4+0x6a8, r1=r7+0x140, r2=0)
 QEMU 实例   0
 基线        v327: 5750 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第七百零八章（R8801–R8900）：**解出那个"最后调用"的真实目标：0x167c4c4**
+
+## ① 我先确认 0x925674 是 **ARM veneer**（Thumb→ARM interworking stub）
+
+```text
+原始字节 @0x925674：**04 c0 9f e5  0c c0 8f e0**
+  = ARM 编码 `ldr r12,[pc,#4]` ; `add r12,pc,r12`
+```
+
+**解算：**
+```text
+ldr r12,[0x925680] = 0x00d56e45
+add r12,(pc=0x925678+8),r12 ⇒ 目标 = **0x167c4c5**
+⇒ 去掉 Thumb 位 ⇒ 真实入口 **0x167c4c4**
+```
+
+## ② 而 0x167c4c4 是一个**完整的 Thumb 函数**
+
+```text
+167c4c4: ldr  r3,[pc,#64]
+167c4c6: stmdb sp!, {r4,r5,r6,r7,r8,lr}     ← prologue
+167c4ca: mov  r6, r2
+167c4cc: ldr  r2,[pc,#60]
+167c4ce: add  r3, pc
+167c4d0: mov  r4, r1
+167c4d2: ldr  r1,[r1,#20]
+167c4d4: add  r7, sp, #0
+167c4d6: mov  r5, r0
+167c4d8: ldr  r3,[r3,r2]
+167c4da: ldr  r3,[r3,#0]
+167c4dc: cmp  r3, r1                       ← **比较两个 token**
+167c4de: beq  167c4e6
+167c4e0: bl   165df6c                      ← 不等则查表
+167c4e4: cbz  r0, 167c4f6
+167c4e6: mov  r0,r5 ; mov r1,r4 ; mov r2,r6 ; movs r3,#0
+167c4ee: ldmia.w sp!,{r4,r5,r6,r7,r8,lr}
+167c4f2: b.w  167c2c4                      ← 尾跳
+```
+
+**⇒ 它的形状是典型的"**带 token 校验的分发/查询**"：
+   比较 `[r1+20]` 与一个全局 token，不等就去 `0x165df6c` 查表，
+   查到就尾跳 `0x167c2c4`，查不到就走 `0x167c4f6` 的错误路径。**
+
+## ③ 因此"门之前最后一个外部调用"的真实身份是
+
+```text
+render container 的 0x54f9e8  blx veneer(0x925674)
+  ⇒ 实际调用 **appFw+0x167c4c4**
+  ⇒ 一个 **token 校验 + 查表分发**函数
+  ⇒ 参数：(r0 = r4+0x6a8, r1 = r7+0x140, r2 = 0)
+```
+
+**⇒ 若它不返回，最可能是在 `0x165df6c`（查表）或 `0x167c2c4`（尾跳目标）里等待。**
+
+## ④ 这是本会话能做到的最深一层解析
+
+```text
+从"不知道为什么不画" → 到"render container 内 0x54f9e8 的调用不返回"
+→ 到"该调用实为 appFw+0x167c4c4 的 token 校验分发"
+⇒ 再往下就是 0x165df6c / 0x167c2c4 两个函数
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v327: 5750 行 / createLayer=6 / LIBOBJ_SYM=24
+```
