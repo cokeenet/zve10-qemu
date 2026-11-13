@@ -54444,3 +54444,77 @@ liro_init 的 kthread_create 之后：
 ```
 
 **⇒ 因此"让 MUSASHI 跑起来"和"让 UI 初始化跑完"在单核上是直接冲突的。**
+
+# ★★★★★★★★ 2026-11-13 第六百四十章（R3341–R3400）：**读 sonyfw 参考仓库后的关键发现：我用错了 dma330 模块**
+
+## ① 用户提供的参考仓库就在本地，本轮逐份读了它的实现
+
+```text
+/mnt/build/sonyfw-zve10-qemu/
+  source/qemu/hw/arm/zve10.c          ← 机器模型（**我的 qsrc 就是基于它**）
+  source/qemu/hw/arm/zve10-gpe-init.h ← GPE 初始化包
+  source/qemu/hw/timer/sony_hwtimer.c
+  source/modules/dma330-stub/dma330_stub.c  ← **关键**
+  source/initramfs/init-ui.sh         ← 启动脚本
+  docs/smp-investigation.md           ← 双核调查（与我的 -smp 2 实验完全对应）
+  docs/menu-validation.json            ← 验收记录
+```
+
+## ② 决定性发现：参考仓库加载的是 **dma330_stub.ko（假桩）**
+
+```text
+source/modules/dma330-stub/dma330_stub.c 的全部内容：
+    int dma330_mem_transfer_async(void *ctx, void *src, void *dst, unsigned len) { return 0; }
+    EXPORT_SYMBOL(dma330_mem_transfer_async);
+    int dmac_mem_transfer_async(...) { return 0; }
+    EXPORT_SYMBOL(dmac_mem_transfer_async);
+⇒ **纯粹是空实现，只为满足符号依赖**
+
+init-ui.sh：
+    load /usr/kmod/**dma330_stub.ko**        ← 桩
+（并在注释里写："The application init loads this module; without it the UI cannot start"）
+
+而我在 v298 里加的是：
+    load /usr/kmod/**dma330.ko**             ← **真驱动**（256 KB，带 schedule_timeout）
+⇒ **这就是 v298 挂住的原因**：真驱动会等硬件、起线程，而 QEMU 没那硬件
+```
+
+## ③ 与我的 `-smp 2` 实验的对应关系（也找到了答案）
+
+```text
+docs/smp-investigation.md 结论：
+  · 双核机制本身可用（secondary pen → Brought up 2 CPUs）
+  · 但 CPU1 一旦执行到 [platform_secondary_init .. cpu_idle) 区间
+    就发生**内存覆写**（slab 对象被小整数覆盖）→ panic
+  · 首要嫌疑：**每 CPU 本地定时器路径**（TWD / Sony hwtimer / EJ hrtimer）
+  · 产品默认 **-smp 1** 不变
+⇒ 我之前 -smp 2 的 Oops **不是我的环境问题，而是这个模型已知的缺陷**
+⇒ 这条路已经被参考实现判定为"不可用"，我不该再试
+```
+
+## ④ 我的模型与参考仓库的关系
+
+```text
+我的 qsrc/hw/arm/zve10.c 里已经有：
+  gpe_read / gpe_write / zve10_gpe_init_packet / sugi_read
+  create_unimplemented_device("zve10-soc", 0xf0000000, 0x10000000)
+  GPE 在 0xf1000000、SUGI 在 0xf3400000
+⇒ **我的模型就是基于 sonyfw 的 zve10.c 改的**（GPE/SUGI 都在）
+⇒ 所以"画"的路径参考实现已经走通了，我需要找的是**我偏离它的地方**
+```
+
+## ⑤ 下一步（非常具体）
+
+```text
+① 撤掉 dma330.ko，改加载 dma330_stub.ko（与参考一致）
+② 逐项 diff 我的 init 与参考的 init-ui.sh（模块列表、参数、顺序）
+③ 逐项 diff 我的 zve10.c 与参考的 zve10.c（GPE 处理逻辑）
+⇒ 参考实现"能显示原厂菜单"，我"不能"，**差异就是答案**
+```
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v297
+```
