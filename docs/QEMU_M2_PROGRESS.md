@@ -53205,3 +53205,67 @@ im.elf:   .rodata=0x922   .data=0x29c  .bss=0x14
 QEMU 实例   0
 基线        v286: 5755 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百一十七章（R2601–R2630）：**找到接收方候选：dmm.ko，含 18 处 0x61003c 且已加载**
+
+## ① 换角度查内核模块，一眼命中
+
+```text
+在所有 .ko 里搜 0x61003c（4 字节字面量）：
+  dmm.ko                **18 处**   ← 最多
+  usbg_stillimage.ko    5 处
+  其余（backup/codec/dmm/grm_ma/osal_ulogio/usbg_*）各 2 处
+```
+
+**而 dmm.ko 的导出符号里有：**
+
+```text
+T dmm_CallbackHandler       ← 消息回调（接收方的标志）
+T dmm_ctrl_Init             ← 控制初始化
+T dmm_ctrl_CmdEnqueue / CmdDequeue / GetCmdQueueNum
+```
+
+## ② dmm_ctrl_Init 的代码直接写着 0x61 与 0x0b
+
+```text
+0x6958  mov r3, #1
+0x695c  bl osal_valloc_msg_wait     ← 申请消息
+0x6970  mov r3, #11
+0x697c  mov r3, #97 (0x61)          ← **0x61 = 队列段（与 0x61003c 同段！）**
+0x6980  strh r3, [r4, #2]           ← 写消息头 +2
+```
+
+**⇒ `0x61003c` 正是 **dmm 模块的队列**（段 0x61 + 号 0x3c）。**
+**⇒ 也就是说：接收方就是 **dmm.ko**，不是缺库，而是 **dmm 没有完成注册/初始化**。**
+
+## ③ 而 dmm.ko **已经成功加载**（status=0）
+
+```text
+MODULE_BEGIN /usr/kmod/dmm.ko
+MODULE_END   /usr/kmod/dmm.ko status=0
+```
+
+**⇒ 问题不在"模块没加载"，而在 **dmm 的初始化没有把队列注册上**
+**（REG 表里没有 0x61003c 就是证据）。**
+
+## ④ 这修正了前几轮的判断
+
+```text
+✗ "接收方在未加载的 Infra 库里"   ← 上一轮的结论
+✓ "接收方是 dmm.ko，它已加载但未注册"
+⇒ 缺口是 **内核模块的初始化步骤**，比"补库"容易得多
+```
+
+## ⑤ 下一轮
+
+```text
+查 dmm.ko 的 init_module 是否调用了 dmm_ctrl_Init；
+若没有或被条件跳过，就找到了确切的初始化缺口。
+```
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v286: 5755 行 / createLayer=6 / LIBOBJ_SYM=24
+```
