@@ -55819,3 +55819,63 @@ appFw.so @0x2bc41c2 附近的字面量：
    B. 默认值分支之后确实停住
 ⇒ 需要更多探针才能分辨，不能仅凭"最后一条日志"下结论
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百六十一章（R4821–R4890）：**主线程 tid=195 的完整 19 条记录：它在 STAGE1 之后停住，而不是崩溃**
+
+## ① 本轮把 UI 主线程（tid=195 = Application_Start）的全部记录列出来了
+
+```text
+ 1 MAINPROBE enter n=1 a0=0x40673dc
+ 2 INIT2PROBE enter  real=0x40607f8
+ 3 INIT2PROBE return r=0x4cc0c0
+ 4 MAINTRACE initializeArena
+ 5 MAINTRACE setCurrentDirectory /usr/share/app/
+ 6 MAINTRACE setDatabase global.xdb
+ 7 MAINTRACE setFontNameWithNamespace ns=51
+ 8 PSMPROBE call=1 self=0x4cc0c0 ret=0x1 nonzero=1
+ 9 MY_TID Application_Start
+10 GENIDPROBE AAA -> 0x8001653f
+11 GENIDPROBE BBB -> 0x80016abe
+12 GENIDPROBE CCC -> 0x8001703d
+13 GENIDPROBE DDD -> 0x800175bc
+14 RENDERENTRY enter=1 a0=0x364523e0
+15 RENDERENTRY forward to real container tramp
+16 STAGEMAP stage=1 call=1
+17 STAGE1TEL forward to real stage1 f=0xc2e0001
+18 LOCKRET n=6 ret=0 caller=libosal_utm.so+0x9be
+19 **BACKUP_nread key=0x2cf1844 ret=-1**   ← 最后一条
+```
+
+## ② 而系统其余部分**依然活跃**
+
+```text
+其他 tid 的记录数：115 → 402 条，134 → 145 条，133 → 124 条，132 → 105 条 …
+⇒ **只有 tid=195 停在最后一条**
+⇒ 说明：这不是全局崩溃，是**主线程自己不再前进**
+```
+
+## ③ 且 LOCKRET 显示它拿到了一把锁并返回 0
+
+```text
+LOCKRET n=6 ret=0 caller=libosal_utm.so+0x9be
+⇒ 这是 osal 的信号量/临界区，ret=0 表示**成功**
+⇒ 所以它不是卡在锁上
+```
+
+## ④ 因此准确的表述（这次不再过度解读）
+
+```text
+**UI 主线程执行到 STAGE1（render container 的 stage 1）之后，
+  再只做了一次 backup 读取（返回 -1 走默认值），然后不再产生任何可观测动作。**
+可能：
+  A. 它进入了我们**没有探针**的代码（观测盲区）
+  B. 它阻塞在一个我们**没 hook 的等待**上
+（上次的"配置读取失败即阻断点"假设已降级，因为那段代码是默认值回退）
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v303: 5668 行 / createLayer=6 / LIBOBJ_SYM=24
+```
