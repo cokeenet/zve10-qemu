@@ -58428,3 +58428,62 @@ v314: [self+0x870] = 0x64697567  （>2 ⇒ 跳过）
 QEMU 实例   0
 基线        v325: 5789 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第七百零六章（R8601–R8700）：**GATEWATCH 装上但 0 命中 ⇒ 门函数从未被调用；且 RENDERENTRY 从未返回**
+
+## ① 先说一个报废轮次（按铁律记录）
+
+```text
+v326：349 行 / createLayer 缺失 / LIBOBJ_SYM=0 ⇒ **报废**
+原因：GATEWATCH 的 naked stub 引用了 `static` 的 g_gate_orig，
+      static 符号不导出 ⇒ 加载时报 `undefined symbol: g_gate_orig`
+      ⇒ bootin 退出码 127
+修复：把 g_gate_orig 改为 **非 static**（并在 nm 里验证已导出 B 符号）
+⇒ v327 基线恢复（5750 行 / createLayer=6 / LIBOBJ_SYM=24）
+```
+
+## ② v327 的决定性读数
+
+```text
+GATEWATCH installed at 0x2e2db2ca wrote=10     ✓ 钩子确实装上了
+GATEWATCH n=...                                ⇒ **0 命中**
+⇒ 也就是说：**0x54f2ca（门函数）在整个运行里从未被调用**
+```
+
+## ③ 并且发现 RENDERENTRY 从未返回
+
+```text
+RENDERENTRY enter = 1     ← 进入
+STAGE1TEL forward = 1     ← 进入 stage1
+RENDERENTRY leave = **0** ← **从未返回**
+```
+
+## ④ 三者合起来给出最终的精确结论
+
+```text
+· 固件进入 render container（0x54f664）
+· 进入 stage1（0x54ef74），且 stage1 内部会正常 pop 返回
+· **但 render container 本身从未返回（leave=0）**
+· 而**门函数 0x54f2ca 从未被调用**
+⇒ 门在主循环调用点之前，所以"门从未调用"与"主循环未运行"是一致的
+
+⇒ **卡点位置定死在：stage1 返回之后、render container 返回之前的这一段。**
+```
+
+## ⑤ 这是本会话最终能给出的最精确坐标
+
+```text
+已知在 0x54ef74（stage1）内部正常返回
+已知 0x54f674 是 stage1 的唯一调用点（在 render container 内）
+已知 render container (0x54f664) 从未返回
+⇒ **卡点在 0x54f678 之后到 0x54f664 的返回指令之间**
+   该段的第一个调用是 `0x54f68a  bl 0x54833c`
+```
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v327: 5750 行 / createLayer=6 / LIBOBJ_SYM=24
+v326 报废（undefined symbol）
+```
