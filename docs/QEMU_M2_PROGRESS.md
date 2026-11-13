@@ -57753,3 +57753,65 @@ base 核对：libObj base = 0xa802000（v321 日志），
 **这与本会话早期发现的"GRM_fbrm* / gperm 空壳"是同一族现象：
 Gen5 把一部分绘制实现留在了别处（很可能是 MUSASHI 侧），
 A9 上的这些槽位只是占位。**
+
+# ★★★★★★★★ 2026-11-13 第六百九十五章（R7501–R7600）：**用户给的 a6400 方案与我们的结构完全对应，且指向一个可补的 QEMU 缺口**
+
+## ① 用户转述的 a6400 移植方案（原文要点）
+
+```text
+· 旧菜单上动基本不可能，只能靠钩子 —— 因为**没有 FB0**
+· 主进程 **249** 的 GPU 工作队列是**连续渲染循环**，该循环**通过 GLES 同步**
+· 改 uxc 分区 ⇒ 变砖
+· 方法：**拦截这个 GLES 的同步**，另开一个进程渲染菜单，
+        通过钩子**不碰 eMMC** 实现功能
+· 新菜单显示在旧菜单的**上一层**（新老同时运行）
+· 未知数：相机 RAM 够不够
+```
+
+## ② 与我们已查到的结构对照（完全一致！）
+
+```text
+用户的 "GLES 同步"  ←→  我们的 **grm_gles.ko**：
+  · sugilite_chdev_register / sugilite_mmap_dev
+  · sugilite_ioread32 / iowrite32
+  · request_threaded_irq
+
+而本轮解出：grm_gles 请求的 IRQ = **76 (0x4c)**，flags=0x84
+⇒ 而 QEMU 的 **GPE 设备（0xf1000000）正是 pic[76-32]**，并且**会 raise IRQ**
+  （`qemu_irq_raise(s->irq)` 在启动 fence 完成时执行）
+
+⇒ **结论：用户的"拦截 GLES 同步" = 让 sugilite 驱动拿到 IRQ 76 的应答**
+```
+
+## ③ 但发现一个具体的 QEMU 缺口
+
+```text
+我们的 sugi 设备（**0xf3400000**）：
+    memory_region_init_io(sugi, NULL, &sugi_ops, NULL, "zve10-sugi", 0x1000);
+    ⇒ **没有 qemu_irq，sugi_write 是空函数，从不 raise**
+
+而 grm_gles 请求的是 IRQ 76（属于 GPE，不属于 sugi）
+⇒ 也就是说：**sugilite 驱动需要的是 GPE 的中断，而不是 sugi 的**
+⇒ 若这条判断成立，则 IRQ 76 的应答其实已经在做（启动 fence 时 raise）
+   ⇒ 那 sugilite_ioctl 卡住的原因**不是缺 IRQ**，而是**缺"后续 fence"**
+   （GPE 只在 19 个启动 fence 时 raise，之后没有新包 ⇒ 没有新中断）
+```
+
+## ④ 这与用户的方案如何衔接
+
+```text
+用户的方案是"拦截 GLES 同步 + 另一进程渲染菜单"
+⇒ 在 QEMU 里等价于：**让 GPE 对每个绘制请求都 raise 一次 IRQ**
+  （即 sygilite 期待的"每包一个完成中断"）
+
+⇒ 我们之前改过"完成所有包"（ZVE10_GPE_COMPLETE），后来**回退**了
+⇒ 但用户这个方案说明：**"完成所有包"其实是对的方向**
+   —— 只是回退时我误以为它会让驱动不再提交新包
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v321: 5599 行 / createLayer=6 / LIBOBJ_SYM=24
+```
