@@ -54091,3 +54091,67 @@ a7c2 的画布搬运走 eDMA；Gen5 对应的是 dma330
 QEMU 实例   0
 基线        v297: 5756 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百三十四章（R3141–R3180）：**重大发现：liro.ko 是 MUSASHI 协处理器固件加载器，加载 av-cam.bin 后启动失败**
+
+## ① 在 init 里加入 dma330.ko 之后，两个模块都加载成功了
+
+```text
+v298：
+MODULE_BEGIN /usr/kmod/dma330.ko
+MODULE_END   /usr/kmod/dma330.ko status=0     ← 成功
+DEVOPEN      /usr/kmod/liro.ko ret=4
+**LIRO (liro) rev:4-MUSASHI**                  ← 成功加载！
+Param: adrs=035c6000, debug=1, delay=0
+entry point: 635c6000
+Load firmware **/system/av-cam.bin** to 635c6000
+0 -> 635c6000 : 0 106609c loaded (OK)
+API support list: OSAL / Backup 2
+Warning 130 is NULL!   ← ★ 从这里开始出问题
+Warning 131 is NULL!
+```
+
+## ② 但基线崩了
+
+```text
+行数 1307 / createLayer 缺失 / LIBOBJ_SYM=1  ⇒ 报废
+```
+
+## ③ 这条发现本身的含义非常重大
+
+```text
+**liro = MUSASHI 协处理器的固件加载器**
+  · 它把 /system/av-cam.bin（17,195,164 B）加载到 **0x635c6000**
+  · 然后启动该协处理器的任务（tsk_entry / tsk_entry - 48）
+  · 并注册 API（OSAL / Backup 2）
+⇒ **Gen5 的"画"很可能是在 MUSASHI 上完成的，不是 A9 上**
+⇒ 这与 a7c2 的 CP 架构是**同类**，只是 Gen5 的协处理器叫 MUSASHI
+```
+
+**而 av-cam.bin 在我们树里**存在**（与真机镜像同大小 17,195,164 B）。**
+
+## ④ 因此"为什么画布全零"可能有了根本解释
+
+```text
+A9 上的 GRM_bitmapCreate 是空壳路径（上一章已证）
+⇒ 真正画像素的是 **MUSASHI 协处理器**
+⇒ 它需要：liro 加载固件 → 启动 → API 可用
+⇒ 而 liro 启动后报 "Warning 130/131 is NULL" ⇒ **API 注册不全**
+⇒ 所以即使 A9 侧调用，也没有真实的绘制后端
+```
+
+## ⑤ 下一轮
+
+```text
+查 "Warning 130 is NULL" 指的是哪个 API/回调，
+以及 106609c（约 1MB）被加载后为什么没跑起来。
+这是**从"缺什么"变成"补一次协处理器启动"**的方向。
+```
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v297（v298 已报废）
+liro 与 dma330 已加入 init 加载列表（改动保留，用于后续对照）
+```
