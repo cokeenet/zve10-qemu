@@ -57512,3 +57512,39 @@ QEMU 实例   0
 基线        v318: 5747 行 / createLayer=6 / LIBOBJ_SYM=24
 Backup = CX64801_ALLLANG.bin（真 ZV-1M2 模板，03917a09…）
 ```
+
+## ⑥ 同轮追加：日志末尾的精确判读（比"差 4 行"更可靠）
+
+```text
+v318 日志末尾（最后 12 行）：
+  ENTRY_UNLOCK n=40
+  GOTWATCH psm / drawfb
+  ULOG_DRAIN n=1 / 2 / 3  (queue full; supplying throwaway buffer)
+  BACKUP_nread n=19 key=0x2cf1844 **ret=1** tid=195     ← 主线程最后一条
+  [AS]RCVC n=92 qid=0x1cf60ba ... tid=200
+  [AS]RCVC n=93 qid=0x1cf60bb ... tid=201
+  [AS]RCVC n=94 qid=0x2a0116   ... tid=202
+  INITSEQ resolve InfraBluetoothLowEnergy_init          ← 最后一行
+```
+
+**⇒ 精确判读：**
+```text
+· 主线程 tid=195 的最后一条是**读取成功**（ret=1），共 19 条记录
+· 其后是**其他线程**（AS 线程 200/201/202）在等 OSAL 消息
+· 也就是说：**主线程在成功读取之后，窗口内没有更多记录**
+当然这仍是窗口边界问题，但**这次读取成功了，不是失败** ——
+  之前"读取失败导致停止"的假设已经不成立。
+```
+
+**⇒ 结论收敛为：**
+```text
+**固件的主线程在完成（成功的）设置读取之后就不再产生可观测动作，
+  且它从未进入绘制循环（updateCurrentTime/isFrameDelay/updateFrame 三条 0 命中）。**
+```
+
+## ⑦ 约束（同轮补充）
+
+```text
+QEMU 实例   0
+基线        v318: 5747 行 / createLayer=6 / LIBOBJ_SYM=24
+```
