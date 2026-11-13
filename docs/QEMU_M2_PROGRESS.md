@@ -57341,3 +57341,67 @@ summer   0x010d00bf          : 1 处
 QEMU 实例   0
 基线        v314/v316 合格
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百八十九章（R6901–R7000）：**P0 实验成功：换成 ZV-1M2 自己的备份后，那次关键的读取从 -1 变成 +1**
+
+## ① 关键发现：数据代不匹配
+
+```text
+ZV-1M2 固件自带 0110_backup/SYSASTRA-DSC/YT/ 下的 10 份模板
+  CX64700_UC2.bin / CX64700_ALLLANG.bin … 每份 **1,129,548 B**
+MainDest.txt → SYSASTRA-DSC / YT / CX64700_UC2.bin
+
+而我们部署的 Backup.bin = **1,235,836 B**（ZV-E10 的模板，属 Gen4 数据）
+⇒ **固件是 Gen5，数据是 Gen4 ⇒ 键空间不同**
+```
+
+## ② P0 实验（v317）：换成 ZV-1M2 自己的模板
+
+```text
+Backup.bin / Backup.bak ← CX64700_UC2.bin（1,129,548 B，sha 7f03d16a…）
+单变量运行 700s（客机 t=1130）
+基线：5665 行 / createLayer=6 / LIBOBJ_SYM=24   ✓
+```
+
+**判据结果：**
+
+```text
+✓ MODULE_END /usr/kmod/backup.ko **status=0**
+✓ **BACKUP_nread key=0x2cf1844  ret = +1**   ← ★ 从 -1 变成 +1！
+  （v316：ret=-1；v317：ret=+1）
+```
+
+**⇒ 这是本会话第一次让这次关键读取**成功**。数据代对齐确实改变了固件行为。**
+
+## ③ 但绘制仍然没有发生
+
+```text
+updateCurrentTime=0 / isFrameDelay=0 / FBRMPROBE=0
+GPE=19（仍只有启动 fence）
+FRAMEDUMP nonzero16=0
+```
+
+## ④ 并且必须做严格自查（避免第 662 章的老陷阱）
+
+```text
+读取成功那行在第 5651 行，全文 5665 行 **只差 14 行**
+⇒ **不能断言"读成功后主线程停住"**
+（v303 与 v317 的主线程记录数都是 19 条，位置相似）
+⇒ 需要更长窗口或 QEMU 侧采样才能判断
+```
+
+## ⑤ 但这次实验的价值是确定的
+
+```text
+**"数据代对齐" 是真实有效的**（读取从失败变成功）
+⇒ 后续应当把这条作为基线保留（而非回退到 Gen4 模板）
+⇒ 下一步：用更长窗口（或 TS 采样判据）看读成功后主线程走到哪
+```
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v317: 5665 行 / createLayer=6 / LIBOBJ_SYM=24
+Backup 已换为 ZV-1M2 自己的模板（7f03d16a…）
+```
