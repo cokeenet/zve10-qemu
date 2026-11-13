@@ -58951,3 +58951,76 @@ render container 循环体内，门的**两个入口路径**：
 QEMU 实例   0
 基线        v328（未重跑）
 ```
+
+# ★★★★★★★★ 2026-11-13 第七百一十四章（R9401–R9500）：**精确解出循环结构：头在 0x54fb3e，体在 0x54f700**
+
+## ① 本轮完全静态分析，把循环结构彻底解开
+
+```text
+render container（0x54f664）里的循环：
+
+  【初始化段】0x54f664 .. 0x54f6fe
+      0x54f674  bl   stage1（0x54ef74）           ✓ 实证进入
+      0x54f68a  bl   0x54833c                     （有 pop，会返回）
+      0x54f694  blx  0x925fb0 → appFw+0x1c7e698    （内部大实现）
+      0x54f6a6  blx  0x9256a8 → appFw+0x1c7eb74
+      0x54f6b0  blx  0x9246b8 → appFw+0x1c7e6a8
+      0x54f6be  blx  0x52a60c → （非标准 veneer）
+      0x54f6ce  blx  0x9240f8 → appFw+0x1c1b792
+      0x54f6e2  bl   0x54e8f0
+      0x54f6fe  **b.n 0x54fb3e**                  ← 跳到循环"头"
+
+  【循环头】0x54fb38 .. 0x54fb4c
+      0x54fb38  mov  r5, r0
+      0x54fb3a  mov.w r8, #0
+      0x54fb3e  blx  UXEngine::gfxeng()
+      0x54fb42  blx  GraphicsEngine::processSystemMessage()
+      0x54fb46  cmp  r0, #0
+      0x54fb48  **bne.w 0x54f700**                 ← 非 0 ⇒ 进循环体
+      0x54fb4c  ...                                ← 返回 0 ⇒ 落到出口区
+
+  【循环体】0x54f700 .. 0x54fa3a ..
+      0x54f700  memset(r7+1720, 0, 272)
+      …
+      0x54f81a  beq.w 0x54fa38  /  0x54f8b4 b.n 0x54fa3a   ← **两条路都到门**
+      0x54fa3a  bl 0x54f2ca（门）
+      0x54faae  bl 0x54ed12（主循环 —— 唯一调用点）
+      …
+      0x54fb3e  （回到循环头，构成闭环）
+
+  【出口】0x54fb5e  ldmia.w sp!,{...,pc}          ← 唯一的返回
+```
+
+## ② 这与实证数据**完全自洽**
+
+```text
+✓ STAGE1TEL=1              ⇒ 初始化段的 stage1 被执行了
+✗ GATEWATCH（0x54f2ca）=0  ⇒ 循环体从未执行（因为门在循环体内）
+✗ FILLWATCH（0x1127f8）=0  ⇒ 真光栅从未被调用（因为主循环从未运行）
+✓ RENDERENTRY leave=0       ⇒ 窗口内没返回（因为它停在初始化段或循环头）
+
+⇒ **结论：固件停在初始化段（0x54f664..0x54f6fe）里的某一步，
+   从未到达 0x54fb3e（循环头），因此循环体一次都没跑。**
+```
+
+## ③ 卡点范围最终缩小到**初始化段的 6 个调用**
+
+```text
+0x54f674  bl  0x54ef74        ✓ 已证进入（STAGE1TEL）
+0x54f68a  bl  0x54833c        （有 pop，20 条指令，会返回）
+0x54f694  blx 0x1c7e698       ?
+0x54f6a6  blx 0x1c7eb74       ?
+0x54f6b0  blx 0x1c7e6a8       ?
+0x54f6be  blx 0x52a60c        ?
+0x54f6ce  blx 0x1c1b792       ?
+0x54f6e2  bl  0x54e8f0        ?
+⇒ **6 个候选，其中 4 个是 appFw 内部大函数（0x1c7exxx / 0x1c1bxxx）**
+```
+
+## ④ 约束
+
+```text
+QEMU 实例   0
+基线        v328: 5501 行 / createLayer=6 / LIBOBJ_SYM=24
+（本轮未运行 QEMU）
+```
