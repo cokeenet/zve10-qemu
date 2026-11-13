@@ -57213,3 +57213,73 @@ A7M5 的成功路径（原文归纳）：
 ```
 
 **⇒ 这正是我们该走的路，它已被同代机型验证过。**
+
+# ★★★★★★★★ 2026-11-13 第六百八十七章（R6701–R6800）：**扒出了 a7m5-qemu 的完整启动范式（这是同代机型的成功实现）**
+
+## ① a7m5-qemu 的 QEMU 启动命令（决定性对比）
+
+```bash
+-M virt,secure=off,gic-version=2   # ★ 标准 virt 机器
+-cpu cortex-a35 -smp 1 -m 24576     # 24 GB 内存！
+-device loader,file=virt.dtb,addr=0x400002000
+-device loader,file=kernel.img,addr=0x400080000,force-raw=on
+-device loader,file=initrd.img,addr=0x440000000,force-raw=on
+-device loader,addr=0x400080000,cpu-num=0
+```
+
+**⇒ 他们是**自己构造 DTB + 自己加载内核/initrd**，用标准 virt 机器。
+**⇒ 不是用厂商定制机器模型（我们用的是 `-M zve10`）。**
+
+## ② 他们的关键组件（source/bootstrap/）
+
+```text
+ui-install.c      在 **原 grm_init 之前** 安装软件后端（"not an AP entry replacement"）
+ui-setup.c/.h     首设/使用向导功能模型：
+                    - 语言表（38 个 locale，英文 index 0）
+                    - 目的地 36 项（0x010d008f..0x010d00b1 + 0x010d0189）
+                    - clock/locale/media 三个 profile gate
+boot-observe.c    启动观测
+queue-observe.c   队列观测
+osal-trace.c      OSAL 追踪
+```
+
+**⇒ **他们把"首设向导"做成了显式功能模型**（不是让固件自己走），
+这才是"首次使用引导 ENTER → 拍摄主页 → MENU"能跑通的关键。**
+
+## ③ 他们的 UI 后端能力边界（原文）
+
+```text
+v40: 原拍摄 HUD 显示（软件 GPE）
+v41: 原 MENU 显示（含 mode2 BitBlit 软件实现）
+v42: 完整主页返回像素一致
+真机 LCD / 物理 ASIC / CMOS / 拍照录像：**全部 false（明确未通过）**
+```
+
+**⇒ 他们的目标与我们相同：**让原 AP 的绘制出来，不是模拟整机**。**
+
+## ④ 我们与他们的差距（已定位）
+
+| 项 | a7m5-qemu | 我们 |
+|---|---|---|
+| 机器模型 | `-M virt` + 自建 DTB | `-M zve10`（厂商定制） |
+| 首设向导 | **显式功能模型**（ui-setup.c） | 让固件自己走（走不到） |
+| LIRO/MUSASHI | **不启用**，自建软件队列消费者 | 尝试启用（饿死主流程） |
+| 软件 GPE | 完整实现（raster+sprite+queue） | 无 |
+| 队列观测 | queue-observe.c / osal-trace.c | argtrace 部分覆盖 |
+
+## ⑤ 下一步（明确）
+
+```text
+1. 读 a7m5-qemu 的 source/bootstrap/ui-setup.c 全文，理解"首设功能模型"如何喂给固件
+2. 对照 ZV-1M2 的流程：我们的固件也需要一个"首设完成"的输入
+   （可能是通过 OSAL 消息/设置键，而不是配置文件）
+3. 若要移植，最小路径是：**先实现"首设完成"的功能模型**，
+   让固件跳过等待，进入拍摄主页 → 再谈菜单
+```
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v314/v316 合格
+```
