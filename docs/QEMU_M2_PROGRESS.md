@@ -54518,3 +54518,71 @@ docs/smp-investigation.md 结论：
 QEMU 实例   0
 基线        v297
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百四十一章（R3401–R3480）：**读完参考仓库的实现细节：它靠"软件渲染后端 + present 捕获"，这才是能出帧的真正原因**
+
+## ① 参考仓库的三层结构与我的差异（逐项对照）
+
+```text
+参考 sonyfw-zve10-qemu 的显示实现由三块组成：
+
+① **GPU 包应答极简**：只完成那一个捕获到的启动 fence，
+   注释明写 "shortcut: only this captured startup fence completes;
+   other GPU packets need a verified decoder"
+   ⇒ 其余包**不应答**（让驱动继续提交下一个）
+
+② **软件渲染后端**（source/ui/ui-gemini-backend.h）：
+   · 把 Gemini 的 solid/rect/quad/line 几何调用**重定向到软件光栅化器**
+     （gemini_original_solid=software_gemini_solid …）
+   · 通过 trampoline 替换，探针只记录后转发
+   · 严格校验表面：surface+0x14=480、+0x18=640、+0x1c=3 …
+   ⇒ **几何绘制在 CPU 上完成，不依赖 GPU 硬件**
+
+③ **present 捕获与重排**（source/ui/ui-present.h）：
+   · UI_PRESENT_BYTES = 640*480*2 = 614400
+   · ui_present_span() 校验参数：[0]/[1] 在 0x20000000..0x28000000 窗口，
+     且尾部 12 个 u32 == {0,4,0,0x4401,640,480,640,480,0,0,640,480}
+   · ui_present_copy() 做 **tile 重排**：源是 8×8 瓦片布局，
+     z = (x&1)|((sy&1)<<1)|((x&2)<<1)|((sy&2)<<2)|((x&4)<<2)|((sy&4)<<3)
+     逐像素搬到线性帧 —— 这就是"原生帧"落地的方式
+```
+
+## ② 这解释了我为什么"画布全零"
+
+```text
+我的模型：只有 ①（且曾改过"完成所有包"，已回退）
+          **没有 ②**（没有软件渲染后端，几何调用走真实 GPU → 空壳/无应答）
+          **没有 ③**（没有 present 捕获与 tile 重排）
+
+⇒ 所以：
+  · Gen5 的绘制调用发出去了（draw_entry / GRM_bitmapCreate 24 次）
+  · 但没有软件后端接住这些几何 → 没有像素
+  · 即使有像素，也没有 present 捕获把它搬到帧缓冲
+```
+
+## ③ 与判据的对应（重要）
+
+```text
+判据 1 要求"出帧必须来自 Gen5 固件自身的绘制路径，不得是自绘替代品"。
+参考仓库的软件后端**正是把固件自己的几何调用接住并光栅化**，
+所以它产出的帧仍然来自固件路径（不是 menu_shell 那种自绘）。
+⇒ 这条路**满足判据 1**，而且已经被参考实现验证过（menu.png / shooting-main.png）。
+```
+
+## ④ 下一步（明确、可执行）
+
+```text
+把参考的两个头文件接进我的观测层：
+  source/ui/ui-gemini-backend.h   （软件光栅化后端）
+  source/ui/ui-present.h          （present 捕获与 tile 重排）
+它们是**自包含的 header**，依赖 ui-raster.h / ui-gemini-raster.h /
+ui-draw-probe.h / record() / object_base 等——我的 argtrace.c 已有类似的
+hook 基础设施（GBMINVT 就做过 vtable 替换），可以移植。
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v299: 5784 行 / createLayer=6 / LIBOBJ_SYM=24
+```
