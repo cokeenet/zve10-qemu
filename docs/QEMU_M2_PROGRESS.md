@@ -57405,3 +57405,58 @@ QEMU 实例   0
 基线        v317: 5665 行 / createLayer=6 / LIBOBJ_SYM=24
 Backup 已换为 ZV-1M2 自己的模板（7f03d16a…）
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百九十章（R7001–R7100）：**严格核查后确认：A7M5/A7C2 的两条解法对 ZV-1M2 都不适用**
+
+## ① 我先查了 teammate 报告的 a7c2 解法（答 Dataflow pin Get，GRM SID 0x9080003b）
+
+```text
+字节搜索：appFw.so 中 0x9080003b "命中 1 处"（虚拟地址 0x2c22616）
+但**严格反汇编核查**：
+  0x2c22616: 003b  movs r3, r7      ← 这是指令字节
+  0x2c22618: 9080  str  r0, [sp,#512]
+⇒ **该"命中"是我字节搜索的误报**（0x9080003b 跨了两条 Thumb 指令）
+⇒ **ZV-1M2 的固件里没有 0x9080003b 这个 Dataflow pin**
+⇒ a7c2 那套"答 pin Get"的方案对 ZV-1M2 **不适用**
+```
+
+## ② 然后查了 A7M5 的解法（替换 libgpe 的 5 个 PLT 槽为软件光栅）
+
+```text
+A7M5 的关键前提是 libgpe.so（它把 GpermFillRect/SendDraw 等的 PLT 槽换成软件实现）
+
+我们的树：work/initramfs-ui/usr/lib/ **没有 libgpe.so**
+（GPE 相关能力只有 libObj 里的 GRM_gpermFillrect / GRM_gpermRectblit 两个导出符号，
+ 而且前面已证它们在加载集里**没有任何调用者**）
+⇒ A7M5 那套"替换 libgpe PLT 槽"的方案**也无法照搬**
+```
+
+## ③ 这是一个重要的负面结论（两条外部经验都被排除）
+
+```text
+· a7c2（Gen5 同代，a6400）：解法 = 答 Dataflow pin 9080003b
+  ⇒ ZV-1M2 无此 pin ⇒ 不适用
+· a7m5（Gen5 同代）：解法 = 替换 libgpe 的 PLT
+  ⇒ ZV-1M2 无 libgpe ⇒ 不适用
+
+⇒ **两个"同代成功案例"的技术路径都依赖 ZV-1M2 没有的组件。**
+⇒ 说明 ZV-1M2 的绘制架构与前两者不同（虽然共用首设 ID 命名空间）。
+```
+
+## ④ ZV-1M2 的绘制提交接口（实测清单）
+
+```text
+appFw 导入：
+  GRM_bitmapCreateFromPhys / bitmapRelease
+  GRM_fbrmCheckUpdateFinished / RegisterTriggerFrameworkCb / SetScreenPreference
+  osal_snd_msg / osal_snd_sync_direct / osal_snd_sync_msg / osal_valloc_msg_wait
+⇒ 这 5 个 GRM + 4 个 OSAL 就是它全部的外部绘制接口
+⇒ 而我们在干净基线里测得这 5 个 GRM **全部 0 命中**
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v317: 5665 行 / createLayer=6 / LIBOBJ_SYM=24
+```
