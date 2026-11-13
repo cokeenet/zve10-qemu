@@ -55924,3 +55924,48 @@ STAGE1TEL 的 f=0xc2e0001 经 206 个模块基址解析：
 QEMU 实例   0
 基线        v303: 5668 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百六十三章（R4961–R5030）：**QEMU 侧线程采样给出可靠答案：64 线程里只有 1 个在跑，23 个等 OSAL 消息**
+
+## ① 不再依赖 guest 日志的末尾，改用 QEMU 侧主动采样（TS）
+
+```text
+v303 的 TS 记录（主机侧每轮采样的内核线程状态）：
+  pid=104 bootin.elf  nthread=5   nrunning=1 | osal_rcv_msg_tmo:1
+  pid=115 **im.elf**  nthread=64  nrunning=**3** | futex:29 __k_4u_wait_cb:4 **osal_rcv_msg_tmo:23**
+  ...
+  pid=115 **im.elf**  nthread=64  nrunning=**1** | futex:30 __k_4u_wait_cb:4 **osal_rcv_msg_tmo:23**
+```
+
+## ② 这份数据不依赖日志末尾，因此**不受窗口截断影响**
+
+```text
+· nthread 恒为 64 ⇒ 线程一个都没死
+· nrunning 从 3 降到 **1** ⇒ 64 个线程里只有 1 个处于可运行态
+· **23 个线程停在 `osal_rcv_msg_tmo`** ⇒ 在等 OSAL 消息
+· 30 个停在 futex_wait_queue_me ⇒ 等锁
+⇒ 这是一个**"大量线程等消息、只剩一个在跑"的典型停摆态**
+```
+
+## ③ 与正常轮次对比
+
+```text
+v297（有 DRIVE_NOTIFY 触发的轮次）：同为 nthread=64 / nrunning=1 / futex:30
+⇒ 说明"只剩 1 个线程在跑"是**这个环境下的常态**，不是异常
+⇒ 因此不能用 nrunning 判断"是否卡死"
+```
+
+## ④ 但 23 个线程停在 osal_rcv_msg_tmo 是**可用的新事实**
+
+```text
+这与我早期查到的"vdf_if_port_init 在 0x1706085 永久等待"是同一类现象，
+而且这次有**线程数量的量化**：23 个线程在等消息。
+⇒ 阻断点确实在 OSAL 消息层，且规模比之前认为的大。
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v303: 5668 行 / createLayer=6 / LIBOBJ_SYM=24
+```
