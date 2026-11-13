@@ -55054,3 +55054,60 @@ QEMU 实例   0
 QEMU 实例   0
 基线        v299: 5784 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百四十九章（R3981–R4050）：**试了参考的 stub 做法：同样崩，问题在 liro/MUSASHI 本身**
+
+## ① 本轮做了对照实验（用 stub 而非真驱动）
+
+```text
+v300：init 改为 load /usr/kmod/**dma330_stub.ko**（与参考完全一致）
+结果：行数 **1307** / createLayer 缺失 / LIBOBJ_SYM=1  ⇒ 与 v298 完全相同
+liro 确实加载了（LIRO (liro) rev:4-MUSASHI）然后系统停住
+```
+
+**⇒ 结论：**
+
+```text
+✗ "dma330 真驱动导致挂住"（上一章的推断）
+✓ **无论真驱动还是空桩，只要 liro 能加载，系统就停在 t≈115**
+⇒ 问题在 **liro/MUSASHI 自身启动**，与 dma330 实现无关
+```
+
+## ② 这与上一章的重大发现连起来看
+
+```text
+参考树根本没有 appFw.so、用的是 ZV-E10 原版 libObj（Gen4）
+⇒ 参考那棵树里 liro 的行为也许与 Gen5 不同
+⇒ 但对我们的树：**liro 启动会占用主流程**，这是 Gen5 固件与 Gen4 模型的适配问题
+```
+
+## ③ 已回退
+
+```text
+init 已恢复（无 dma330 任何形式）
+基线 v299 有效
+```
+
+## ④ 剩余 51 轮的诚实判断
+
+```text
+已确认的事实链（全部有实测支撑）：
+  ✓ QEMU 版本一致（两边都是 11.1.2）
+  ✓ 机器模型 GPE 逻辑实质一致
+  ✓ 启动链、createLayer、draw_entry、GRM_bitmapCreate 全部跑通
+  ✓ 画布已映射（614400 B）、但 6/6 次读数为零
+  ✓ BMP_Create 因 state≠16 返回 -9999（4 个 helper 是真机原版也有的空壳）
+  ✓ liro/MUSASHI 能跑（737 唯一 PC 样本）但会饿死主流程
+  ✗ Gen5 的绘制后端与 Gen4 不同 ⇒ 参考那套后端不能直接复用
+
+**⇒ 核心障碍是"Gen5 固件需要自己的后端"，而不是"缺一个参数/寄存器"。**
+   这需要为 Gen5 重新推导整套绘制链，工作量超出剩余轮次。
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v299: 5784 行 / createLayer=6 / LIBOBJ_SYM=24
+init 已恢复原状
+```
