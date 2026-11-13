@@ -53546,3 +53546,55 @@ QEMU 实例   0（v288 已自然退出）
 v289: 5801 行 / createLayer=6 / LIBOBJ_SYM=24  ✓
 ⇒ -smp 1 已恢复，SMP 实验完整收尾
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百二十四章（R2801–R2830）：**CP 假设从根上关闭：Gen5 没有 CP 负载，SMP 初始化在单核下正常完成**
+
+## ① 真机镜像里没有 CP 固件负载
+
+```text
+/usr/bin/*.elf：bootin / NsBkSet / adjstctl / app_monio / bk / btRFTest / gpioctrl …
+                 （全是 AP 侧工具）
+/usr/sabin/*.bin：sa_apollo / sa_aaclcenc / dcv_psf_table_* …
+                 （**视频编码器固件**，跑在编码协处理器上，与 UI 无关）
+⇒ **没有任何"CP 应用固件"**（对比 A7C2 有明确的 CP SHA f5a47758…）
+```
+
+## ② 而单核下内核的 SMP 初始化是**正常完成**的
+
+```text
+v289 内核序列：
+  smp_prepare_cpus → do_pre_smp_initcalls → do_pre_smp_initcalls: done → smp_init
+⇒ 完整走完，没有报错
+⇒ 说明"单核"对内核来说是合法配置，不是异常状态
+```
+
+## ③ 因此 SMP/CP 假设从根上关闭
+
+```text
+✗ "Gen5 需要第二个核来跑某个服务"
+✓ Gen5 是**单核 AP 架构**（CXD90045 只有一个 A9 核）
+⇒ 之前 -smp 2 的 Oops 是"我们给了一个它不期待的核"，而不是"缺少第二个核"
+⇒ 这条线彻底关闭，不再尝试
+```
+
+## ④ 本会话至此关闭的架构级假设（全部有证据）
+
+```text
+✗ 缺 /dev 设备
+✗ mmap 失败
+✗ 参数不对（108 组）
+✗ 注入污染（关注入后不变）
+✗ dmm.ko 是接收方
+✗ 硬件寄存器轮询
+✗ 缺未加载的 Infra 库
+✗ 需要第二个 CPU 核           ← 本章关闭
+```
+
+**剩下的唯一未验证方向是：**`0x61003c` 的注册代码路径为什么从未执行**。**
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v289: 5801 行 / createLayer=6 / LIBOBJ_SYM=24
+```
