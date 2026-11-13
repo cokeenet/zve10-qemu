@@ -56255,3 +56255,60 @@ v303 的 CREATELAYER 记录（6 个，全部 ret 非 0 = 成功）：
 QEMU 实例   0
 基线        v303: 5668 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百六十九章（R5381–R5450）：**决定性证据：updateFrame 的 PLT 槽标注为 `PLT0(never-called)`**
+
+## ① 本轮在干净基线里查 updateFrame 的调用情况，找到一条早就存在的记录
+
+```text
+v303 日志（唯一一条 updateFrame 相关）：
+  GOTS updateFrame  slot=0x30ddc480 value=0x2db899d0 rel=0x5289d0 **PLT0(never-called)**
+```
+
+**⇒ 这是我自己早期加的 GOT 观测探针，它明确写着：**
+**这个 PLT 槽**从未被调用过**。
+
+## ② 并且 updateFrame 确实被 interpose 过（不是钩子失效）
+
+```text
+argtrace.so 里有 `_ZN2ux6wgtsys12WidgetSystem11updateFrameEv`（0x12a68）
+⇒ 符号级 interpose 在位
+⇒ 所以"没有记录"是真的没调用，而不是没装钩子
+```
+
+## ③ 因此得到一个**可靠的**结论（这次有两条独立证据）
+
+```text
+✓ createLayer 被调用 6 次且全部成功（符号 interpose 记录）
+✓ updateFrame 的 PLT 槽 `never-called`（GOT 观测）
+✓ draw_entry 命中 0、notifyDraw 命中 0（符号 interpose / 探针）
+✓ GPE 包 19 个全是启动 fence，无任何绘制包（QEMU 侧）
+
+⇒ **Gen5 固件把 UI 树建好了，但**从未调用 updateFrame/drawFramebuffer**，
+  因此**从未发起绘制**。**
+```
+
+## ④ 这解释了为什么"画布全零"是必然的
+
+```text
+没有 updateFrame ⇒ 没有 drawFramebuffer ⇒ 没有像素写入
+⇒ 画布（0x22d52000，614400 B）当然全零
+⇒ 这与"渲染后端缺失"无关 —— **连绘制请求都没发出**
+```
+
+## ⑤ 剩余 37 轮的方向（唯一可行的）
+
+```text
+问题变成：**什么条件下固件会调用 updateFrame？**
+已知：
+  · createLayer 之后有 WDGATE / SCREENSTATE 等状态机
+  · 参考 Gen4 是靠"事件"驱动；Gen5 大概也是
+  · 我们需要找到 Gen5 的"触发 updateFrame"的入口
+```
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v303: 5668 行 / createLayer=6 / LIBOBJ_SYM=24
+```
