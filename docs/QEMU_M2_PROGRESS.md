@@ -58250,3 +58250,58 @@ QEMU 实例   0
 QEMU 实例   0
 基线        v325: 5789 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第七百零三章（R8301–R8400）：**精确定位：固件进了 stage1，但从不回到主循环**
+
+## ① 把"纯观测"与"主动驱动"分开后，得到一个关键结构事实
+
+```text
+纯观测（v323，无任何自驱动）：
+  RENDERENTRY enter = 1        ⇒ 进入 render container（0x54ef74 的调用点）
+  STAGE1TEL forward = 1        ⇒ 进入 **stage1（0x54ef74）**
+  UPDATEWATCH 105f98_panel = **0**
+  ⇒ **主循环 0x54ed12 从未执行**
+
+（对比 v320，我主动调 notifyDraw 时 UPDATEWATCH 才命中 5 次）
+```
+
+## ② 而 stage1 与主循环是两个不同函数，且 stage1 不调用主循环
+
+```text
+0x54ed12  push {r4,r5,r6,r7,r8,lr}    ← 主循环（updateFrame 的调用者）
+0x54ef74  push {r4,r5,r6,r7,lr}       ← **stage1，独立函数入口**
+
+在 0x54ef74 的整个函数体内：
+  **没有任何 bl 到 0x54ed12，也没有 bl 到 0x54faae（唯一主循环调用点）**
+⇒ stage1 **不会**把我带回主循环
+```
+
+## ③ 这给出了最终的精确图景
+
+```text
+固件的执行顺序：
+  Application_Start
+    → uxengine_init2（返回）
+    → initializeArena / setDatabase / setFontName（都返回）
+    → RENDERENTRY → **进入 stage1（0x54ef74）**
+    → stage1 内部：约 8 个 blx（0x925fb0 / 0x923900 / 0x9246b8 /
+                   0x9240d4 / 0x723aac / 0x925b48 / 0x924b48 / 0x924b04）
+    → **此后不再回到主循环**
+
+⇒ 也就是说：**主循环（真正会 updateFrame 的地方）在这个流程里没有被走到。**
+```
+
+## ④ 这是本会话最后一个可给出的精确定位
+
+```text
+✓ 已定位：stage1（0x54ef74）是 UI 渲染容器的入口，它被进入
+✗ 未走到：主循环 0x54ed12（唯一能触发 updateFrame 的地方）
+⇒ 缺口在 **stage1 之后、主循环之前** 的那段控制流
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v325: 5789 行 / createLayer=6 / LIBOBJ_SYM=24
+```
