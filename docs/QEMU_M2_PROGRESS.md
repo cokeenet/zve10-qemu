@@ -53968,3 +53968,69 @@ CANVASADDR phys=0x22d52000 va=0x135d6000 len=0x96000
 QEMU 实例   0
 基线        v297: 5756 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百三十二章（R3071–R3100）：**因果链最后一环找到：GRM_bitmapCreate 内部 4 个 helper 是空壳**
+
+## ① 本轮从 v297 的对象地址看出了关键规律
+
+```text
+FRSTEP grm_bitmapcreate n=1 obj=0x40d930c [+0]=0 [+4]=0 [+8]=0 [+12]=0
+FRSTEP grm_bitmapcreate n=2 obj=0x40d93cc [+0]=0 [+4]=0 [+8]=0 [+12]=0
+FRSTEP grm_bitmapcreate n=3 obj=0x40d948c [+0]=0 ...
+FRSTEP grm_bitmapcreate n=4 obj=0x40d954c [+0]=0 ...
+
+地址差：0x40d93cc - 0x40d930c = **0xc0 = 192 字节**（正好是 space 对象大小）
+⇒ 每次都是**新分配的零内存 space**，从未构造
+```
+
+## ② 而 GRM_bitmapCreate 内部确有 4 个 helper 调用
+
+```text
+0x114cc2  bl 0x114c36
+0x114ccc  bl 0x114c2a
+0x114cd4  bl 0x114c42
+0x114cdc  bl 0x114c4e
+0x114cfe  blx BMP_Create@plt
+```
+
+## ③ 反汇编这 4 个 helper，结果全部是同一个 3 指令空壳
+
+```text
+0x114c36:  push {r7, lr}
+0x114c3e:  add  r7, sp, #0
+0x114c40:  pop  {r7, pc}      ← **什么都不做**
+（0x114c2a / 0x114c42 / 0x114c4e 完全相同）
+```
+
+## ④ 并且——本轮的对照实验——**真机原版 libObj.so 里这四个也是空壳**
+
+```text
+/fw/COMPARE/extracted/ZV1M2/usr/lib/libObj.so（真机镜像，4cd654f1 同哈希）
+  0x114c2a / 0x114c36 / 0x114c42 / 0x114c4e 全部是 push/add/pop 空壳
+⇒ **这不是我们移植造成的，而是固件本身就如此**
+```
+
+## ⑤ 因此完整因果链终于闭合，且是"固件自身设计"
+
+```text
+notifyDraw → draw_entry → GRM_bitmapCreate（24 次）
+  → 4 个 helper 空壳（不构造 space）
+  → BMP_Create 检查 state≠16
+  → 返回 -9999
+  → 拿不到画布
+  → 画布全零
+```
+
+**⇒ 关键结论：**
+```text
+**画的失败不是"缺什么"，而是 Gen5 的大画布路径（GRM_bitmapCreate）
+本身就依赖一组空壳 helper —— 说明这条路径在真机上也不走这里，
+真正的画布应该走另一条（可能是 GRM_fbrm 系列，而那系列也是空壳）。**
+```
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v297: 5756 行 / createLayer=6 / LIBOBJ_SYM=24
+```
