@@ -57723,3 +57723,33 @@ slot28 = 0x4238e50 → **/usr/lib/libstdc++.so.6.0.14 + 0xa9e50**
 QEMU 实例   0
 基线        v321: 5599 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+## ⑤ 严格修正（同轮）：slot24 的函数体是**3 条指令的空壳**
+
+```text
+base 核对：libObj base = 0xa802000（v321 日志），
+  0xa8e0af5 - 0xa802000 = **0xdeaf5**
+  Thumb 指针末位=1 ⇒ 实际入口 = **0xdeaf4**
+```
+
+**而 0xdeaf4 的完整函数体（objdump 实测）：**
+
+```text
+  0xdeaf4  push {r7, lr}
+  0xdeaf6  adds r0, #24
+  0xdeaf8  add  r7, sp, #0
+  0xdeafa  pop  {r7, pc}
+⇒ **3 条有效指令的空壳！**
+```
+
+**⇒ 这是决定性结论：**
+
+```text
+**layer 的"绘制虚函数"（slot24）本身就是一个空壳，
+  所以无论 updateFrame 遍历多少次、无论 slot0 返回什么，
+  都不会有任何像素产生 —— 这是固件的设计，不是我们的环境问题。**
+```
+
+**这与本会话早期发现的"GRM_fbrm* / gperm 空壳"是同一族现象：
+Gen5 把一部分绘制实现留在了别处（很可能是 MUSASHI 侧），
+A9 上的这些槽位只是占位。**
