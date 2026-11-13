@@ -54910,3 +54910,73 @@ QEMU 实例   0
 QEMU 实例   0
 基线        v299: 5784 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百四十七章（R3821–R3900）：**决定性发现：本机就有一整套"能出帧"的完整运行环境，且资产全部齐全**
+
+## ① 本轮在 /mnt/build 下发现了那个出过帧的完整树
+
+```text
+/mnt/build/ref-chocotan-zve10/
+  work/qemu-src/build-zve10/qemu-system-arm      101,500,080 B   ← **QEMU 11.1.2**
+  work/kbuild-ui/arch/arm/boot/Image             ✓
+  work/ui.cpio                                   239,664,640 B  ✓
+  work/armv7-eabihf--glibc--stable-2020.08-1/    ✓（含 arm-linux-gcc）
+  source/ui/ui-observe.c                          ✓
+  start-zve10-ui.sh                               ← **出帧的启动脚本**
+```
+
+**五项依赖全部存在，可以立刻运行。**
+
+## ② 出帧的确切命令（已完整读出）
+
+```bash
+qemu  = work/qemu-src/build-zve10/qemu-system-arm     # **QEMU 11.1.2**（不是旧版！）
+image = work/kbuild-ui/arch/arm/boot/Image
+initrd= work/ui.cpio
+args  = -M zve10 -cpu cortex-a9 -smp 1 -m 1024
+        -append 'console=ttyAM0,115200n8 cfg.uart=1 mem=1G@0
+                 memrsv=0x1A5E000@0x02E68000 memrsv=128M@0x20000000:uc
+                 rdinit=/init loglevel=8'
+        -display none -serial stdio -monitor none -no-reboot
+
+启动前它**现场编译**观测层：
+  arm-linux-gcc -shared -fPIC -O2 -Wall -Wextra -Werror \
+    -o work/initramfs-ui/usr/lib/libuiobserve.so source/ui/ui-observe.c -ldl
+```
+
+## ③ 这解释了本会话一个长期困惑：**为什么我用旧版 QEMU 一直不行**
+
+```text
+我的 m2qemu 用的是**旧版 QEMU**（qemu-build / qemu-gtk-build 自建）
+参考出帧用的是 **QEMU 11.1.2 + 自己的 zve10 机器模型**（在 qemu-11.1.2 树内）
+⇒ 这不是同一套模型！偏移、GPE 行为、SMP stub 都可能不同
+⇒ 我一直"对照参考文档 + 用旧版模型"，必然对不上
+```
+
+## ④ 正确的下一步（且完全合规）
+
+```text
+铁律禁止写 /mnt/build/ref-chocotan-zve10
+⇒ 做法：把**运行所需的最小集合复制到我的工作区** /mnt/build/m2qemu/refrun/
+     · qemu-system-arm（或复制 QEMU 11.1.2 源并构建）
+     · Image、ui.cpio、toolchain（可符号链接到只读源）
+     · source/ui/（用于编译 libuiobserve.so）
+⇒ 在 refrun/ 内按 start-zve10-ui.sh 的同样参数运行，**先复现出帧**，
+  确认"参考配置在本机能出帧"，再谈移植到 Gen5。
+```
+
+## ⑤ 这一章的意义
+
+```text
+之前所有"移植参考实现"的计划，都建立在一个未验证的前提上：
+**"参考的配置在我们的环境里能出帧"**。
+本章发现：它不只是能出帧，**它的完整运行环境就在本机，可以原样复现**。
+⇒ 先把"能出帧"这件事在本机**复现出来**，是剩下 54 轮里最有价值的第一步。
+```
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v299: 5784 行 / createLayer=6 / LIBOBJ_SYM=24
+```
