@@ -55586,3 +55586,55 @@ INITSEQ 第 62 项是 InfraBluetoothLowEnergy_init —— 之后没有第 63 项
 QEMU 实例   0
 基线        v303: 5668 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百五十七章（R4541–R4610）：**自我纠正：INITSEQ 只是 dlsym 解析，不是执行 —— 上一章的定位又错了**
+
+## ① 读自己写的探针代码，发现一个根本误读
+
+```text
+argtrace.c 第 3153 行注释（我自己几年前写的）：
+  "INITSEQ only logged dlsym resolution, which is a static walk of the module
+   table -- it cannot show execution. So 'the init sequence stopped at
+   InfraBluetoothLowEnergy_init' was an over-reading of that list."
+```
+
+**⇒ 我的探针代码里早就写明了这个陷阱，而我上一章又踩了一次。**
+
+## ② 因此必须撤回上一章的结论
+
+```text
+✗ "INITSEQ 走到第 62 项（BluetoothLE）后停住 ⇒ 阻断点在 INITSEQ 中途"
+✓ **INITSEQ 只是 dlsym 名称解析（静态遍历），与执行无关**
+  "解析到 62 个名字" ≠ "执行到第 62 个"
+⇒ 阻断点无法用 INITSEQ 定位
+```
+
+## ③ 那么能说什么、不能说什么
+
+```text
+能说（纯观测、无污染）：
+  ✓ createLayer = 6（这是真调用，有返回值记录）
+  ✓ GPE 包 19 个、全部是同一个启动 fence、无任何后续绘制包
+  ✓ notifyDraw / draw_entry 命中 0
+  ⇒ **固件确实没有发起绘制**
+
+不能说：
+  ✗ 阻断点在 INITSEQ 中途（名称解析 ≠ 执行）
+  ✗ "62 项之后停" （清单本身可能就 62 项）
+```
+
+## ④ 真正能定位"卡在哪"的唯一手段
+
+```text
+既然 GPE 包能观测，且 createLayer 能观测，那就用**同样可靠的方式**：
+  · createLayer 之后、GPE 启动 fence 之间的**关键函数**逐个装探针（纯计数，不发起调用）
+  · 优先：uxengine_init / uxengine_init2 / UIDG_init 的真实执行计数
+    （这三个名字被解析过，但**是否被调用**从未测过）
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v303: 5668 行 / createLayer=6 / LIBOBJ_SYM=24
+```
