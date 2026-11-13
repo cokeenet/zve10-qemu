@@ -54980,3 +54980,77 @@ args  = -M zve10 -cpu cortex-a9 -smp 1 -m 1024
 QEMU 实例   0
 基线        v299: 5784 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百四十八章（R3901–R3980）：**找到了真正的差异：参考树用的是 ZV-E10 原版 libObj，不是 Gen5**
+
+## ① 先纠正上一章一个错误结论
+
+```text
+✗ 上一章我说"参考用 QEMU 11.1.2、我用旧版"
+✓ 实测：**我的 qsrc/build/qemu-system-arm 也是 QEMU 11.1.2**
+⇒ 版本不是差异
+```
+
+## ② 逐项对比后，差异被精确锁定到**固件本身**
+
+```text
+① 机器模型的 GPE 逻辑：**实质相同**
+   （两边都是"只完成那个捕获到的启动 fence"）
+   我的只是多了注释和诊断打印（zve10.c 27 KB vs 参考 11 KB）
+
+② init 脚本：都是 unset LD_PRELOAD 再在 bootin 前 preload
+   参考：LD_PRELOAD=/usr/lib/libm2probe.so:/usr/lib/libuiobserve.so
+   我的：LD_PRELOAD=/usr/lib/g5shim.so:/usr/lib/argtrace.so:/usr/lib/w4.so …
+
+③ **真正的差异（决定性）**：
+   参考树  work/initramfs-ui/usr/lib/libObj.so = **cfdc59b9…**（ZV-E10 原版 Gen4）
+   我的树  work/initramfs-ui/usr/lib/libObj.so = **4cd654f1…**（ZV-1M2 Gen5）
+   参考树里**根本没有 appFw.so**
+```
+
+## ③ 因此两个项目的关系终于清楚了
+
+```text
+参考（ref-chocotan-zve10 / sonyfw-zve10-qemu）：
+  **在 ZV-E10 的 QEMU 里跑 ZV-E10 自己的固件** → 菜单当然能显示
+  （它是"同一代固件 + 同一代硬件模型"，不涉及移植）
+
+我的目标：
+  **在 ZV-E10 的 QEMU 里跑 ZV-1M2(Gen5) 的固件** → 这是**跨代移植**
+  （Gen5 的 libObj/appFw 与 Gen4 的差异是移植的核心难点）
+
+⇒ 所以"参考能出帧"并不自动意味着"我也能出帧"：
+  参考解决的是"模型够不够"，我面临的额外问题是
+  **"Gen5 固件在 Gen4 模型上是否可用"**
+```
+
+## ④ 这解释了本会话几乎所有卡点
+
+```text
+· GRM_bitmapCreate 的 4 个 helper 是空壳（真机原版也如此）
+  ⇒ 因为 Gen5 画的路径与 Gen4 不同，参考的偏移/后端**不适用于 Gen5**
+· 0x61003c 无人接收 / VDF 循环
+  ⇒ Gen5 的服务拓扑与 Gen4 不同，Gen4 的 initramfs 里那些服务可能就叫别的名字
+· 我移植参考的 hook 时按 prologue 字节匹配到 9/10
+  ⇒ 但**匹配上不等于语义相同**，Gen5 的函数职责可能已经变了
+```
+
+## ⑤ 剩下 54 轮的现实判断（需要说清）
+
+```text
+✓ 已确定：QEMU 版本一致、机器模型一致、启动链全通
+✓ 已确定：卡点是 **Gen5 固件本身在 Gen4 模型上的适配**
+✗ 未解决：Gen5 的绘制后端与 Gen4 的差异（不是"缺一个寄存器"能解决的）
+
+⇒ 诚实的结论：**"让 Gen5 原生新菜单在 ZV-E10 的 QEMU 里完整显示"这件事，
+   在本会话剩余轮次内完成的概率很低。**
+   因为它需要的是"为 Gen5 重做一遍 Gen4 那套后端"，
+   而参考那套后端的偏移/语义都是按 Gen4 写死的。
+```
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v299: 5784 行 / createLayer=6 / LIBOBJ_SYM=24
+```
