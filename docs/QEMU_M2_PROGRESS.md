@@ -54770,3 +54770,71 @@ QEMU 实例   0
 QEMU 实例   0
 基线        v299: 5784 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百四十五章（R3701–R3760）：**按 prologue 字节机械匹配：参考的 12 个 hook 有 9 个能在我们 libObj 里定位**
+
+## ① 本轮做了一件此前没做的事：**按字节匹配**而不是按偏移猜测
+
+```text
+把参考 ui-observe.c 的 hooks[] 表逐项取出（偏移 + 前 8 字节 prologue），
+在我们 libObj.so 的 .text 里做字节搜索：
+  · 不假设偏移可移植（参考的偏移属于它自己的 appFw/libObj 布局）
+  · 只用 prologue 的 8 个字节做定位
+
+结果：**9 / 10 种 prologue 命中**（其中若干是共用 prologue 的多候选）
+```
+
+## ② 命中清单与唯一候选
+
+```text
+参考名                   本地地址        说明
+observe_notify           0x106524        ← **正是我们的 notifyDraw**（6 处同 prologue）
+observe_draw             0x13bb10        ← 唯一：InfraMediaConfig_Resume+0x7ca0
+observe_application      MISS            （我们的 appFw 结构不同）
+software_init/exit       0x133ed0 / 0x1823d0 / 0x1823f0  （3 处）
+software_fill/blit       0x182410 / 0x1824a0 / 0x1825e0 / 0x1826b0 （4 处）
+software_present         0x82384         ← 9 处候选之一
+software_engine_wait     0x12ceb0        ← **唯一：rm_reg_init+0x840**
+software_headless        0x124bb4        ← **唯一：rsrc_port_init+0x2828**
+observe_lz_decode        0xa8564 …       （7 处）
+observe_font_register    0x3f3ac …       （46 处）
+```
+
+## ③ 三个"唯一匹配"最有价值，因为它们就是软件后端的挂载点
+
+```text
+software_engine_wait  → 0x12ceb0  (rm_reg_init+0x840)
+software_headless     → 0x124bb4  (rsrc_port_init+0x2828)
+observe_draw          → 0x13bb10  (InfraMediaConfig_Resume+0x7ca0)
+
+⇒ 参考把这三个换成软件实现；它们在我们库里**各自唯一**，
+  ⇒ **可以无歧义地照搬同样的替换**
+```
+
+## ④ 更要紧的一条（与前面第 644 章呼应）
+
+```text
+observe_notify 的 prologue `90 b5 87 b0 00 af 04 46` 命中 **0x106524** —
+就是我一直 hook 的 **WidgetSystem::notifyDraw**。
+⇒ **参考和我 hook 的是同一个函数**
+⇒ 说明参考的"软件渲染"正是从这里进入的（不是别处）
+⇒ 我的 hook 点是对的，缺的是**后续那三步的替换**
+```
+
+## ⑤ 下一步
+
+```text
+按参考的顺序移植：
+  ① software_fill / software_blit → 我们 0x182410 / 0x1824a0（4 个候选需按调用频率/上下文定）
+  ② software_present → 0x82384
+  ③ software_engine_wait → 0x12ceb0（唯一，可直接换）
+  ④ software_headless → 0x124bb4（唯一）
+每步都保留"记录后转发"的探针语义，确保不是替代固件意图而是替代硬件。
+```
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v299: 5784 行 / createLayer=6 / LIBOBJ_SYM=24
+```
