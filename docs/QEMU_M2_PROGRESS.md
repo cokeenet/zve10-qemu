@@ -54378,3 +54378,55 @@ liro.ko 导出（**uITRON 风格的 RTOS API**）：
 QEMU 实例   0
 基线        v297: 5756 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百三十九章（R3311–R3340）：**MUSASHI 与内核模块代码交替执行，且线程确实创建了**
+
+## ① 本轮澄清了两件事
+
+```text
+① liro 的 init_module 确实调用 **kthread_create_on_node 两次**
+   ⇒ 内核线程创建了，不是"没线程"
+
+② PC 样本的交替模式（前 40 个）：
+   FW FW MOD FW MOD MOD MOD FW MOD FW MOD MOD MOD FW FW MOD MOD FW FW MOD
+   MOD MOD MOD MOD FW MOD MOD MOD MOD MOD FW MOD MOD FW MOD FW MOD MOD FW MOD
+   （FW=737 个 / MOD=1079 个）
+⇒ **固件与内核模块代码**交替**被采样到**
+⇒ 说明两者都在执行，不是"固件独占 CPU"
+```
+
+## ② 因此"饿死主流程"的机制需要修正
+
+```text
+✗ "固件单线程死循环，独占单核"
+✓ "固件与 RTOS 调度器（内核模块）交替执行，但**用户态主流程没拿到时间片**"
+
+⇒ 更可能是：
+  · 两个内核线程（REAL-TIME 优先级）持续抢占
+  · 而用户态进程（bootin/im）优先级更低
+  · 单核下用户态得不到调度 ⇒ 客机时间停在 t=115
+```
+
+## ③ 这解释了所有观测
+
+```text
+✓ 固件在跑（737 个唯一 PC 样本）
+✓ RTOS 模块在跑（1079 个样本）
+✓ 用户态停滞（createLayer 从未出现，t 停在 115）
+✓ 无 Oops（不是崩溃，是调度饥饿）
+```
+
+## ④ 下一轮
+
+```text
+查这两个 kthread 的优先级（liro 里 kthread_create 后的参数），
+以及是否可以用 sched_setscheduler 把它们降级，
+或者让它们"让出 CPU"（若固件本身有 wait 点而没生效）。
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v297: 5756 行 / createLayer=6 / LIBOBJ_SYM=24
+```
