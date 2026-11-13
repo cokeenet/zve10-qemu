@@ -53857,3 +53857,52 @@ CANVASX n=1 nz_words_512=**0** changed=0 bad=0
 QEMU 实例   0
 基线        v294: 5677 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百三十章（R3011–R3040）：**已确证：绘制路径反复执行，画布 6 次读数全部为零**
+
+## ① 本轮加了 notifyDraw 处的画布采样（解决 draw_entry 波动问题）
+
+```text
+v295 暴露的问题：draw_entry 命中在同样配置下 0~10 次波动
+⇒ 只在 draw_entry 读画布，某些轮次完全测不到
+修法：在 **notifyDraw 入口** 也读（CANVASY），它几乎每次都能命中
+```
+
+## ② v296（基线合格）拿到完整读数
+
+```text
+行数 5737 / createLayer=6 / LIBOBJ_SYM=24
+notifyDraw 命中 = 1        draw_entry 命中 = **10**
+
+CANVASADDR phys=0x22d52000 va=**0x12df4000** len=0x96000
+CANVASY notifydraw n=1 nz_words_512=**0** bad=0
+CANVASX n=1..5          nz_words_512=**0** 全部 changed=0 bad=0
+```
+
+## ③ 结论（这次样本充分）
+
+```text
+· 同一轮里画布被读了 **6 次**（1 次 notifyDraw + 5 次 draw_entry）
+· 每次读前 512 字（2 KB）
+· **6/6 全为零**
+· 且本轮 draw_entry 命中 10 次（历史正常水平），不是"运行太短"
+⇒ **真正确证：Gen5 的绘制路径反复执行，但没有往 present 缓冲写任何像素**
+```
+
+## ④ 这条结论为什么重要
+
+```text
+它把"为什么没出帧"从推测变成了**实测事实**：
+  ✓ 画布存在（0x22d52000，614400 B，每轮 VA 不同，已运行时跟踪）
+  ✓ 绘制入口被进入（10 次 draw_entry）
+  ✓ 画布 6/6 次读数为零
+
+⇒ 缺口就在"draw_entry 之后到写像素之间"，范围已经很小。
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v296: 5737 行 / createLayer=6 / LIBOBJ_SYM=24
+```
