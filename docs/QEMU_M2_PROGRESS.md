@@ -56955,3 +56955,50 @@ QEMU 实例   0
 QEMU 实例   0
 基线        v314: 5586 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百八十三章（R6381–R6450）：**关键交叉验证：固件导入的 5 个 framebuffer 接口全部 0 命中**
+
+## ① appFw 只导入 5 个 GRM（framebuffer manager）符号
+
+```text
+U GRM_bitmapCreateFromPhys
+U GRM_bitmapRelease
+U GRM_fbrmCheckUpdateFinished
+U GRM_fbrmRegisterTriggerFrameworkCb
+U GRM_fbrmSetScreenPreference
+⇒ **这 5 个就是"UI 这一代与 framebuffer manager 的全部接口"**
+```
+
+## ② 而在干净基线 v314 里，这 5 个接口的探针**全部 0 命中**
+
+```text
+FBRMPROBE（setScreenPreference / checkUpdateFinished / registerTrigger） = 0
+FromPhys 探针 = 0
+（早期记录的 bitmapRelease 亦为 0）
+
+⇒ **固件从未触碰 framebuffer manager 的任何接口**
+```
+
+## ③ 这条证据的价值：它与"从未进入绘制循环"完全一致，且独立于我的探针设计
+
+```text
+✓ 主循环未进入（updateCurrentTime / isFrameDelay / updateFrame 三条独立证据）
+✓ framebuffer 接口从未被调用（5 个导入符号全部 0）
+⇒ 两者指向同一件事：**固件在 UI 初始化阶段就停下了，还没到绘制环节**
+```
+
+## ④ 同时纠正一条早期误读（我自己写的注释里就有）
+
+```text
+早期：GRM_gpermFillrect / GRM_gpermRectblit 探针为 0 → 被读作"固件不画"
+纠正（已在 argtrace 注释里）：这两个函数**在全加载集里没有任何调用者**，
+  它们的地址只出现在 libObj 自己的 .dynsym 里 ⇒ **它们的 0 不能证明任何事**
+⇒ 真正该看的是上面那 5 个"被导入"的符号 —— 而它们也是 0，这才是有效证据
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v314: 5586 行 / createLayer=6 / LIBOBJ_SYM=24
+```
