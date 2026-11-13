@@ -242,6 +242,66 @@ movle r0, #0               ← <=2 ⇒ 返回 0  ⇒ 主循环运行
 
 ---
 
+## 七之三、render container 的真实结构（第 713~715 章的静态解析）
+
+**此前我把"容器不返回"当成"卡在某个调用里"，这是不完整的理解。**
+**静态解析表明它是一个"初始化段 + 常驻循环"的结构：**
+
+```
+render container（0x54f664）
+
+【初始化段】0x54f664 .. 0x54f6fe
+    0x54f674  bl   stage1（0x54ef74）        ✓ 实证进入（STAGE1TEL=1）
+    0x54f68a  bl   0x54833c                  ✓ 有 pop，会返回
+    0x54f694  blx  0x925fb0 → appFw+0x1c7e698…   （实函数，非空壳）
+    0x54f6a6  blx  0x9256a8 → appFw+0x1c7eb74     （字面量比较循环，r8=6/9）
+    0x54f6b0  blx  0x9246b8 → appFw+0x1c7e6a8     （3 指令空壳 ⇒ 会返回）
+    0x54f6be  blx  0x52a60c → memset              ✓ 会返回
+    0x54f6ce  blx  0x9240f8 → appFw+0x1c1b792     （另一区段）
+    0x54f6e2  bl   0x54e8f0
+    0x54f6fe  b.n  0x54fb3e                  ← 跳到循环头
+
+【循环头】0x54fb38 .. 0x54fb4c
+    0x54fb3e  blx  UXEngine::gfxeng()
+    0x54fb42  blx  GraphicsEngine::processSystemMessage()
+    0x54fb46  cmp  r0, #0
+    0x54fb48  bne.w 0x54f700                  ← 非 0 ⇒ 进循环体
+    0x54fb4c  ...                             ← 返回 0 ⇒ 出口方向
+
+【循环体】0x54f700 .. 0x54fb3e
+    0x54f700  memset(r7+1720, 0, 272)
+    …
+    0x54f81a / 0x54f8b4  → **两条路都到达门 0x54fa3a**
+    0x54faae  bl 0x54ed12（主循环唯一调用点）
+
+【出口】0x54fb5e  ldmia.w sp!,{...,pc}          ← 唯一返回
+```
+
+**⇒ 与所有实证自洽：**
+
+```text
+✓ STAGE1TEL=1            ⇒ 初始化段的 stage1 执行了
+✗ GATEWATCH = 0          ⇒ 循环体从未执行（门只在循环体内，且静态上必经）
+✗ FILLWATCH = 0          ⇒ 真光栅从未被调用
+✓ RENDERENTRY leave=0     ⇒ 窗口内没返回
+
+⇒ **结论：固件停在初始化段（0x54f664..0x54f6fe）里的某一步，
+   从未到达循环头 0x54fb3e，因此循环体一次都没跑、主循环一次都没跑。**
+```
+
+**⇒ 卡点范围：初始化段的 6 个调用。其中 2 个已静态排除（必然返回）：**
+
+```text
+0x54f6be → memset          （必返回）
+0x54f6b0 → 0x1c7e6a8       （3 指令空壳，必返回）
+⇒ 剩余 4 个候选：0x1c7e698 / 0x1c7eb74 / 0x1c1b792 / 0x54e8f0
+```
+
+**⚠ 必须标注的不确定**：ARM veneer 的 `add r12,pc,r12` 中 pc 的定义使我的解算
+存在 **±4 偏移不确定**，因此"目标函数是哪一个"只能作为线索，不能作为定论。
+
+---
+
 ## 八、结论：在什么条件下这个目标可以实现
 
 ```
