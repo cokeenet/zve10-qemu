@@ -53906,3 +53906,65 @@ CANVASX n=1..5          nz_words_512=**0** 全部 changed=0 bad=0
 QEMU 实例   0
 基线        v296: 5737 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百三十一章（R3041–R3070）：**两条线索汇合：绘制路径确实调用了画布创建 24 次**
+
+## ① 本轮把两个探针从"已查清"的位置移到"未知"的位置
+
+```text
+移走：0x129aa0（statedrive）、0x12a238（alloc_gate）—— 已确证从未被调用，无需再采
+移入：0x114c98（GRM_bitmapCreate）、0x1191c0（BMP_Create）
+      两者前 8 字节均为 4 条 2-byte 位置无关指令，窗口安全
+```
+
+## ② v297（基线合格）得到决定性的命中数
+
+```text
+行数 5756 / createLayer=6 / LIBOBJ_SYM=24
+
+FRSTEP grm_bitmapcreate 命中 = **24**
+FRSTEP bmp_create       命中 = **24**
+FRSTEP draw_entry       命中 = 0（本轮波动，正常）
+CANVASADDR phys=0x22d52000 va=0x135d6000 len=0x96000
+```
+
+**⇒ 绘制路径**确实**在反复调用画布创建（24 次），而不是"从未尝试"。
+
+## ③ 于是本会话两条线索在这里汇合
+
+```text
+线索一（第 626 章）：画布全零，6/6 次读数
+线索二（第 588~593 章）：BMP_Create 返回 -9999，因为 state 停在 1，0x129aa0 未被调用
+
+本轮证明：**这两条是同一条因果链**
+  notifyDraw → draw_entry → **GRM_bitmapCreate / BMP_Create（24 次）**
+    → BMP_Create 内部检查 state≠16 → 返回 -9999
+    → 拿不到画布 → 无法写像素 → 画布保持全零
+```
+
+## ④ 这是本会话第一次把整条链完整打通
+
+```text
+从"绘制入口被调用"到"画布全零"，中间的每一环都有了实测数字：
+  draw_entry 10 次（v296）
+  GRM_bitmapCreate / BMP_Create 24 次（v297）
+  返回 -9999（108 组合实测）
+  失败点 state≠16（字面量实测）
+  推进函数 0x129aa0 命中 0 次
+  画布 6/6 次读数为零（v296）
+```
+
+## ⑤ 下一轮的抓手（唯一剩下的问题）
+
+```text
+为什么 state 停在 1？即 **0x129aa0 为什么没有被调用**。
+已知：它只被 rsrc_port_init 内部调用（0x12ab98 / 0x12ac3a）
+⇒ 查那两个调用点是否在 BMP_Create 之前被执行。
+```
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v297: 5756 行 / createLayer=6 / LIBOBJ_SYM=24
+```
