@@ -59126,3 +59126,76 @@ QEMU 实例   0
 QEMU 实例   0
 基线        v328: 5501 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第七百一十七章（R9701–R9800）：**第 300 轮收尾：目标未达成，边界已确定**
+
+## ① 最终环境状态（本轮实测）
+
+```text
+1) QEMU 实例             **0**
+2) systemd zve10 单元     **0**
+3) 部署一致性             deploy ok（embedded initramfs == stage-current/ui.cpio）
+4) 基线哨兵               5501 行 / createLayer=6 / LIBOBJ_SYM=24   ✓
+5) 画布最终读数           FRAMEDUMP phys=0x22d52000 bytes=614400 **nonzero16=0**
+```
+
+## ② 目标判定（诚实结论）
+
+```text
+**目标未达成。菜单没有被画出来，画布 614400 字节全为零。**
+
+五条判据的逐条核对：
+  ① 出帧来自 Gen5 自身绘制路径    ✗ 没有出帧
+  ② 640×480 / 614400 / 非零>1000  ✗ 尺寸对，但非零字节 = 0
+  ③ 可重复 ≥2 次同哈希            ✗ 无哈希可言（全零帧 fnv=ff56637e… 恒定但是空帧）
+  ④ 键注入后可见状态变化          ✗ 未验证（前提未达到）
+  ⑤ 若干菜单功能真实业务行为      ✗ 未验证（前提未达到）
+```
+
+## ③ 本会话的净产出（716 章实测的收敛）
+
+```text
+【已做通（可复用）】
+  ✓ 启动链全通（bootin → appFwBoot → im.elf → appFw，2730 构造函数）
+  ✓ 14 个内核模块全部 status=0
+  ✓ createLayer ×6 全部成功
+  ✓ WidgetSystem 4 个绘制 API 可调用并返回非 0
+  ✓ 输入注入 API 齐备
+  ✓ 数据代对齐（ZV-1M2 自己的备份模板，关键读取 -1→+1）
+  ✓ 14 个 GRM_bitmap* / 光栅接口是真实现（tbb 八路格式分发）
+
+【已定位（有地址、有实证）】
+  ✓ render container = 初始化段 + 常驻循环 + 单一出口
+  ✓ 卡点 = 初始化段（0x54f664..0x54f6fe）的 6 个调用之一
+  ✓ 其中 2 个已静态排除（memset / 0x1c7e6a8 空壳）
+  ✓ 三个强证据的 0 命中（GATEWATCH / UPDATEWATCH / FILLWATCH）
+
+【已排除（19 个假设）】
+  ✗ 缺设备 / mmap 失败 / 参数不对 / 注入污染 / 硬件轮询
+  ✗ 双核需求 / dma330 / MUSASHI（单变量对照）
+  ✗ GLES 阻塞（303 次 ioctl 全 ret=0）
+  ✗ GPE 包完成（完成所有包仍无变化）
+  ✗ 首设未过 / 数据代不符
+  ✗ a7c2 的 pin 方案 / a7m5 的 libgpe 方案
+  ✗ layer 绘制虚槽（真机原版也是空壳，逐字节对照）
+
+【未能确定】
+  ? 初始化段 6 个调用里具体哪一个不返回（受 veneer ±4 偏移不确定影响）
+```
+
+## ④ 这份边界描述就是本会话的交付
+
+```text
+/root/fw/oss/docs/QEMU_FRAME_VERDICT_2026-11-13.md   **364 行 / 12 章**
+/root/fw/oss/docs/A7C2_ROUTE_LESSONS_2026-11-13.md  **347 行 / 6 章**
+/root/fw/oss/docs/QEMU_M2_PROGRESS.md                **717 章**
+
+⇒ 后续接手者可从"初始化段 4 个候选"继续，不需要重走 716 章。
+```
+
+## ⑤ 约束（最终）
+
+```text
+QEMU 实例   0
+基线        v328: 5501 行 / createLayer=6 / LIBOBJ_SYM=24
+```
