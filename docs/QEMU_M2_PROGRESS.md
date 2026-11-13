@@ -55742,3 +55742,53 @@ QEMU 实例   0
 基线        v303: 5668 行 / createLayer=6 / LIBOBJ_SYM=24
 （本轮改动：新增 UXINIT wrapper，但 v303 数据来自改动前，仍有效）
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百六十章（R4751–R4820）：**精确到最后一步：固件在 `BACKUP_nread key=0x2cf1844 len=1 ret=-1` 处停住**
+
+## ① 本轮在纯观测基线上把主线（tid=195）追到了最后一刻
+
+```text
+tid=195 的末尾序列：
+  MAINTRACE setDatabase path=global.xdb
+  MAINTRACE setFontNameWithNamespace ns=51
+  PSMPROBE / MY_TID / GENIDPROBE AAA..DDD
+  RENDERENTRY enter=1 a0=0x364523e0
+  RENDERENTRY forward to real container tramp
+  STAGEMAP stage=1 call=1
+  STAGE1TEL forward to real stage1
+  LOCKRET n=6 ret=0
+  **BACKUP_nread n=14 key=0x2cf1844 len=1 ret=-1 tid=195**   ← 最后一条（第 5662/5668 行）
+```
+
+## ② 而全部 14 次 BACKUP 读取里，**只有这一次失败**
+
+```text
+n=1..13：全部 ret == len（成功）—— 调用者来自 libOnDemandLoader / libUsbControl / libObj
+n=14：key=0x2cf1844 len=1 **ret=-1**     ← 唯一的失败
+       caller = /usr/lib/appFw.so + 0x2bc41c2
+```
+
+**⇒ 也就是说：主线在**读取一个配置键失败后**再无动作。**
+
+## ③ 这给出了一个可验证的假设
+
+```text
+假设：固件需要 backup 里的 key=0x2cf1844（1 字节）才能继续初始化；
+      我们的 backup 镜像里没有这个键 ⇒ 读到 -1 ⇒ 初始化路径中断
+方法：检查 setting/Backup.bin 里是否存在 0x2cf1844 这个键
+      若没有 ⇒ 可以**补一个**（1 字节，风险极低）
+```
+
+## ④ 这一章的价值
+
+```text
+本会话第一次把"卡在哪"精确到**一次具体的、失败的配置读取**，
+而且是纯观测（没有我的任何调用参与）。
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v303: 5668 行 / createLayer=6 / LIBOBJ_SYM=24
+```
