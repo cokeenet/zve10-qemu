@@ -55394,3 +55394,82 @@ v297 日志：FRSTEP grm_bitmapcreate n=1..24 全部 **tid=195**
 QEMU 实例   0
 基线        v302: 5769 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百四十七章（R3821–R3900）：**读 sonyfw/a7c2-qemu-backup 的 161 份研究报告：拿到的是方法论而非 Gen5 答案**
+
+## ① sonyfw 目录里是什么
+
+```text
+/mnt/build/sonyfw/a7c2-qemu-backup/
+  report/  **161 个研究报告目录**（这是最有价值的部分）
+  source/  runtime/  tools/  validation/  docs/
+```
+
+**按时间倒序的头部全是虚拟硬件研究：**
+
+```text
+virtual-video-engine / virtual-pcidma / virtual-optics / virtual-dma330 /
+virtual-cp / virtual-jpeg-* / virtual-atu / sa-isa-contract /
+rc-pixel-layout-contract / yc-cpu-consumer-boundary …
+```
+
+## ② 与我卡点最相关的三份（本轮逐一读了）
+
+### A. `report/virtual-dma330/`（正是我误加真驱动的那个模块）
+
+```text
+它做的是**两种 PL330 的完整虚拟化**：
+  · qemu-dma330.patch：opt-in 双 PL330、8 个 non-secure 事件、
+    真实 MemTx 错误处理、DMAEND 等待实际队列后 flush 本 tag
+  · sony-pl330-mmio / sony-pl330-client：原 UDIF 映射 API 建两项 4KB 映射
+  · 已验证：原驱动提交 1 项 256B 请求 → 原编译器生成微码 → PL330 实际搬运
+    → 原 IRQ 和 callback 完成
+⇒ **这是"把 DMA 控制器真正实现出来"的完整方法论**，不是桩
+⇒ 但它针对 A7C2（ARM64）+ QEMU 11.1.2 的 dma330
+```
+
+### B. `report/virtual-cp/` 的 **ROUTE-B（最小路线）** —— 这条对我们最有启发
+
+```text
+架构发现（原文）：
+  AP→CP 队列消息**经 osal_snd_msg 的远端路径路由**：
+    queue ID 若 **bit31 置位** 且**子系统位（0x70000000）非零** → 调用**远端发送器**
+    该发送器由 osal_reg_public(fn) 注册，真实属主是 pcie-if.ko
+    发送器为 NULL 时内核打 "No snd_msg registered. Skip snd to 0x%x"
+    **menu 运行里 0x747 即此黑洞**
+⇒ 路线 B：自定义模块调 osal_reg_public(自研 sender) 接管 CP 队列，
+  合法 insmod（不 force vermagic），把黑洞变成可捕获的真实协议
+```
+
+**⇒ 这解释了我们那个 `0x61003c` 无人注册的困境的**同类机制**：
+   远端队列需要一个注册的发送器，没有就是黑洞。**
+
+### C. `report/virtual-cp/GRM-WAIT.md` —— 与我卡住的「GRM 等待」完全同类
+
+```text
+原文结论：
+  TID441 在 GraphicsEngine::drawFramebuffer() 路径等待 GRM 信号量 **0x02886043**
+  "不能通过额外 osal_sig_sem、空 ACK 或跳过绘制来解锁"
+⇒ 与我查到的 0x1706085 / 0x61003c 死结是同一类问题
+⇒ 而且参考团队明确记录：**用空 ACK 强解是错的**
+```
+
+## ③ 我必须说清的边界
+
+```text
+这份备份是 **A7C2（ILCE-7CM2，ARM64，x29/x30 帧链）** 的成果，
+不是 Gen5（ZV-1M2，Cortex-A9/Thumb）的。
+⇒ 它给的是**方法论与协议理解**，不是可以直接套用的偏移或寄存器值。
+
+但有三条可直接借用：
+  ① 远端队列需要 osal_reg_public 注册发送器（否则黑洞）—— 我们 0x61003c 正是如此
+  ② GRM 等待不能强解（空 ACK 不可取）—— 避免我在 QEMU 侧做错事
+  ③ PL330 必须真实现（不是桩）—— 我上一轮加真驱动方向对，但放错位置
+```
+
+## ④ 约束
+
+```text
+QEMU 实例   0
+基线        v299: 5784 行 / createLayer=6 / LIBOBJ_SYM=24
+```
