@@ -56375,3 +56375,59 @@ GOT 观测：updateFrame 的 PLT 槽 **从未被调用**
 QEMU 实例   0
 基线        v303: 5668 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百七十一章（R5521–R5590）：**isFrameDelay 探针已存在但从未命中，且该处不可 hook**
+
+## ① 好消息：`isFrameDelay` 的 interpose **早就在 argtrace 里**
+
+```text
+argtrace.c 第 7917 行：
+  int _ZNK2ux6wgtsys12WidgetSystem12isFrameDelayEv(void *self)
+      → 调 real，然后记录 ret 与 caller（appFw 偏移）
+⇒ 探针已就位（符号级 interpose，覆盖 PLT 调用）
+```
+
+## ② 坏消息：v303 里它**一次都没命中**
+
+```text
+grep 'FRAMEAPI isFrameDelay' out/v303/serial0.log → **0 条**
+⇒ 也就是说：**绘制循环 0x54ed4c..0x54ed62 从未执行**
+⇒ 不只是"isFrameDelay 返回 0"，而是**根本没走到那个循环**
+```
+
+## ③ 关于在该处装 inline hook：**不可行**
+
+```text
+0x54ed50  blx isFrameDelay (4 字节)
+0x54ed54  cbz r0, ...      (2 字节)
+0x54ed56  blx wgtsys       (4 字节)
+⇒ 0x54ed50..0x54ed58 = 4+2+4 = **10 字节**
+⇒ 8 字节 trampoline 会切断 0x54ed56 的 blx ⇒ **不可 hook**（与第 630 章同类教训）
+```
+
+## ④ 因此阻断点在**更上游**：那个循环根本没被进入
+
+```text
+已知：
+  ✓ createLayer ×6 全部成功
+  ✓ uxengine_init2 执行并返回
+  ✓ 主线走到 setDatabase / setFontName / STAGE1 / BACKUP_nread
+  ✗ 绘制循环（0x54ed4c）从未执行
+  ✗ updateFrame 的 PLT 槽 never-called（与此一致）
+
+⇒ 缺的是"进入绘制循环"的那个上游条件
+```
+
+## ⑤ 下一步
+
+```text
+在 appFw 里找**跳转到 0x54ed4c 的那个地方**（谁 contain 这个循环），
+以及它的前置条件。注意：0x54ed4c 是循环体，进入点应在它之前若干指令。
+```
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v303: 5668 行 / createLayer=6 / LIBOBJ_SYM=24
+```
