@@ -56134,3 +56134,68 @@ v306（无固件）：基线合格，但 notifyDraw=0 / draw_entry=0
 QEMU 实例   0
 基线        v303 / v306 均合格（5668 / 5645 行，createLayer=6，LIBOBJ_SYM=24）
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百六十七章（R5241–R5310）：**读了参考的"触发绘制"手法：它不是等固件画，而是合成一个视图切换事件**
+
+## ① 参考文档与源码里的关键发现
+
+```text
+source/menu/original.inc（参考的"原始入口"实现）：
+  uint32_t id = ((uint32_t(*)(uint32_t,uint32_t,uint32_t))
+                 (object_base + **0x117789**))(0x13000000u, **0xc3u**, function);
+  ...
+  ((void(*)(void*,uint32_t,unsigned,unsigned))(object_base + **0x8a01e9**))(event, id, 4, 1);   ← 组 Event
+  ((int(*)(void*,void*,int))(object_base + **0x8a1795**))((void*)events, event, 1);            ← 入队
+```
+
+**⇒ 它的做法是：**
+
+```text
+**先用 0x117789 生成一个视图 id（0xc3 = ViewStlrec），
+   再用 0x8a01e9 组成一个 Event 对象，
+   最后用 0x8a1795 把事件投进原厂事件队列。**
+⇒ 固件自己的 EventManager 消费该事件 ⇒ 请求切换到 0xc3 视图 ⇒ **触发绘制**
+```
+
+**并且文档明写：**
+```text
+docs/shoot-main-plan.md
+  `0xc3 = ViewStlrec`（原静态拍摄页）
+  `0xa0/0xa3/0xa1 = ViewRoot / ViewRootSelector / ViewRootPowerSw`
+```
+
+## ② 这解释了一个我一直困惑的问题
+
+```text
+我一直以为"固件应该自己会画"，所以反复找它为什么不画。
+参考的做法是：**固件不会主动画，必须有人给它一个视图请求。**
+⇒ 参考正是通过"合成事件"来做这件事。
+⇒ 这与判据 1 并不冲突：事件走的是**固件自己的 EventManager / UI 线程**，
+   绘制仍然由固件自身完成（不是自绘替代品）。
+```
+
+## ③ 因此这一步是**可以照搬的**
+
+```text
+参考用的三个偏移（0x117789 / 0x8a01e9 / 0x8a1795）是**它自己 appFw 的偏移**，
+我们的是不同构建 ⇒ 不能直接用。
+⇒ 但可以用**符号 + 字节模式**在我们 appFw 里定位对应函数
+   （本会话已用同样手法成功匹配过参考的 hooks）
+```
+
+## ④ 下一步
+
+```text
+在我们的 appFw 里找：
+  ① 生成 view id 的函数（参考 0x117789，形如 (u32,u32,fn)）
+  ② 组成 Event 的函数（参考 0x8a01e9，形如 (Event*, id, 4, 1)）
+  ③ 事件入队函数（参考 0x8a1795，形如 (queue, event, 1)）
+⇒ 找到后合成一次 ViewRootSelector 请求，看是否触发 notifyDraw
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v303/v306 均合格
+```
