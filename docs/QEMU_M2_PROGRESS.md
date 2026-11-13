@@ -57951,3 +57951,60 @@ GLES 通过 ioctl + mmap 独立工作，一直在正常跑（303 次全成功）
 QEMU 实例   0
 基线        v323: 5805 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百九十八章（R7801–R7900）：**决定性对照：真机原版的绘制虚槽也是同一个空壳 ⇒ 确认是设计**
+
+## ① 本轮做了本会话最关键的一次对照
+
+```text
+我们部署的 libObj 与真机原版 libObj（/mnt/build/fw/COMPARE/extracted/ZV1M2/）
+在 0xdeaf4（layer 的绘制虚槽）处**逐字节相同**：
+
+  deaf4: push {r7, lr}
+  deaf6: adds r0, #24
+  deaf8: add  r7, sp, #0
+  deafa: pop  {r7, pc}       ← 3 条有效指令，什么都不做
+```
+
+**⇒ 决定性结论：**
+```text
+**这不是我们移植造成的缺陷，而是 Gen5 固件的设计。**
+A9 侧的 layer 绘制虚槽是**占位空壳**，
+真正的绘制在别处（MUSASHI / GLES 侧）。
+```
+
+## ② 但这轮同时发现了一个**真实现的正规像素写入接口**
+
+```text
+真机 libObj 导出：
+  GRM_bitmapCreate / CreateFromPhys / CreateComposite
+  GRM_bitmapGetPhysicalAddress / GetRowPixelCount / GetSubRectangle
+  GRM_bitmapWriteLockBits   ← **真实现**（`bl BMP_WriteLockBits`）
+  GRM_bitmapWriteUnlockBits
+  BMP_WriteLockBits @0x11973c ← 它内部 `ldr r3,[r0] ; ldr r3,[r3,#0x50] ; blx r3`（虚调用）
+```
+
+**⇒ 也就是说：**取可写像素缓冲**的正规接口是存在的（WriteLockBits / UnlockBits），
+而它们**不是空壳**。**
+
+## ③ 这对我们的意义
+
+```text
+之前的判断："A9 上绘制路径是空壳 ⇒ 无法出帧"
+现在更准确的说法：
+  · layer 的绘制**虚槽**是空壳（设计如此）
+  · 但 **bitmap 的写锁接口是真的**（WriteLockBits → BMP_WriteLockBits → 虚调用）
+
+⇒ 若我们能拿到一个 bitmap 对象并调用它的 WriteLockBits，
+  就能**真正写入像素**（不是自绘，是用固件的 bitmap API）
+```
+
+**⇒ 这与判据 1 的兼容性：**用固件的 bitmap API 写像素，像素来源是我们的填充，
+但如果**几何/颜色都来自固件的绘制意图**，就仍属于固件路径。**
+
+## ④ 约束
+
+```text
+QEMU 实例   0
+基线        v323: 5805 行 / createLayer=6 / LIBOBJ_SYM=24
+```
