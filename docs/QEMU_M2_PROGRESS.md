@@ -57548,3 +57548,72 @@ v318 日志末尾（最后 12 行）：
 QEMU 实例   0
 基线        v318: 5747 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百九十二章（R7201–R7300）：**回答"能否主动让它绘制/进开机设置界面"——可以驱动，但没有可画的东西**
+
+## ① 用户的问题
+
+```text
+"我们能不能主动让他绘制/进入，开机设置界面？"
+```
+
+## ② 我做的第一件事：确认"主动驱动"在技术上可行
+
+**关键发现：libObj 导出了完整的 WidgetSystem 接口**
+
+```text
+_ZN2ux6wgtsys12WidgetSystem15sys_getInstanceEv
+_ZN2ux6wgtsys12WidgetSystem10notifyDrawEv
+_ZN2ux6wgtsys12WidgetSystem11updateFrameEv
+_ZN2ux6wgtsys12WidgetSystem17updateCurrentTimeEv
+_ZN2ux6wgtsys12WidgetSystem12processEventEv
+_ZN2ux6wgtsys12WidgetSystem13postMouseMoveEhssNS_4core8MsecTimeE
+_ZN2ux6wgtsys12WidgetSystem14postMousePressEhhNS_4core8MsecTimeE
+_ZN2ux6wgtsys12WidgetSystem16postMouseReleaseEhhNS_4core8MsecTimeE
+```
+
+**⇒ 这些都是**固件自己的导出函数**，调用它们 = 让固件自己画，不违反判据 1。**
+
+## ③ v320：按固件自己的顺序驱动整条链
+
+```text
+DRIVE_ORDER updateCurrentTime call      ✓
+DRIVE_ORDER processEvent call           ✓
+DRIVE_ORDER updateFrame call            ✓
+DRIVE_AT_SEND notifyDraw CALLING wg=0x4d6b30
+DRIVE_AT_SEND notifyDraw returned **912335812**（非 0）   ✓
+```
+
+**⇒ 四个 API 全部可调用、全部返回，**固件的绘制入口完全可用**。**
+
+## ④ 但画布仍然全零 —— 原因找到了
+
+```text
+WLIST head=0x4d6fe4 fwd=0x4d6fe4 back=0 **count=0**
+WLIST2 同上（连续两次采样）
+⇒ **widget 链表是空的：0 个 widget**
+⇒ 没有 widget 可画 ⇒ notifyDraw 遍历空链表 ⇒ 不产生任何像素
+```
+
+**⇒ 这正是 teammate 独立发现的同一件事（widget 构造 0 命中）。**
+
+## ⑤ "进入开机设置界面"的可行性评估
+
+```text
+我们有的：
+  ✓ 完整的 WidgetSystem 绘制 API（4 个）
+  ✓ 完整的输入注入 API（postMousePress/Release/Move）
+  ✗ widget 链表为空（0 个 widget）
+  ✗ appFw 只导出 1 个符号（Application_Start），没有"切屏"API
+
+⇒ 可以"驱动绘制"，但**没有内容可驱动**
+⇒ 要"进入开机设置界面"，必须先让固件**构造出那个界面的 widget**
+   而那一步在我们的环境里从未发生（wtsys 的 widget 构造 0 命中）
+```
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v320: 5534 行 / createLayer=6 / LIBOBJ_SYM=24（DRIVE_NOTIFY=1，非纯观测）
+```
