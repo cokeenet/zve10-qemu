@@ -53539,3 +53539,10 @@ run-wlist.sh 已恢复 -smp 1
 QEMU 实例   0（v288 已自然退出）
 基线        待 v289 确认
 ```
+
+## ⑥ 基线恢复确认（v289）
+
+```text
+v289: 5801 行 / createLayer=6 / LIBOBJ_SYM=24  ✓
+⇒ -smp 1 已恢复，SMP 实验完整收尾
+```
