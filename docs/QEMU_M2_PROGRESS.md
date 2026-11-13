@@ -56625,3 +56625,49 @@ appFw 0x54fa38..0x54fa46（在唯一那个主循环调用点之前）：
 QEMU 实例   0
 基线        v303: 5668 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百七十六章（R5871–R5950）：**自我纠错：第 254 章加的 wrapper 引入了 ABI 不匹配，破坏了 UI 初始化**
+
+## ① 本轮本想读 [self+0x870]，结果连续两轮基线崩（v307 / v308）
+
+```text
+v307 / v308：4932~4934 行 / **createLayer 缺失** / INIT2PROBE return **0**
+对照 v303：  5668 行 / createLayer=6 / INIT2PROBE return **0x4cc0c0**
+⇒ 差异不在新探针，而在 **第 254 章加的 INITWRAP wrapper**
+```
+
+## ② 根因：wrapper 的 ABI 与真实函数不匹配
+
+```text
+第 254 章我为了计数，在 dlsym 里返回了
+    my_uxengine_init2(unsigned long a,b,c,d)
+而真实函数是 `unsigned long uxengine_init2(void)`（无参数）
+⇒ 调用方按无参调用，wrapper 却读四个参数 → 行为异常 → **返回 0**
+⇒ uxengine_init2 失败 ⇒ 后续 createLayer 等全部不走
+```
+
+**而 argtrace 里**早就有**正确的符号级 interpose（`unsigned long uxengine_init2(void)`）——
+**我第 254 章加的那层 wrapper 是多余且有害的。**
+
+## ③ 处置与验证
+
+```text
+移除 INITWRAP wrapper 与两个 my_uxengine_init* 函数
+重建后 sha=24b43531…（与 v302 时完全相同）
+v310：**5613 行 / createLayer=6 / LIBOBJ_SYM=24 / INIT2PROBE return 0x4c3f10** ⇒ 基线恢复
+```
+
+## ④ 教训（这是本会话第 50 次左右纠错，但性质重要）
+
+```text
+**"为了观测而加一层 wrapper" 必须严格匹配真实 ABI**，
+否则观测手段本身会改变被测行为 —— 这与第 251 章"测量污染"是同一族错误，
+只是这次污染的是**调用约定**而不是数据。
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v310: 5613 行 / createLayer=6 / LIBOBJ_SYM=24
+```
