@@ -95,6 +95,45 @@ slot24 实测 = libObj + 0xdeaf4
 
 ---
 
+## 四之二、三个"强证据的 0 命中"（第 705~711 章的最终测量）
+
+**这三个计数器的命中都会立即打印，因此"0"不受日志窗口边界影响。**
+
+| 探针 | 目标 | 语义 | 实测 |
+|---|---|---|---|
+| `GATEWATCH` | appFw+0x54f2ca | 主循环的唯一判据函数 | **0**（钩子 installed wrote=10） |
+| `UPDATEWATCH` | libObj+0x105f98 | layer 绘制入口（纯观测基线） | **0** |
+| `FILLWATCH` | libObj+0x1127f8 | **全库唯一**调用 `GRM_gpermFillrect@plt` 的函数 | **0**（钩子 installed wrote=8） |
+
+**三者合并的结论：**
+
+```text
+从"主循环门"到"真光栅入口"，整条链上每一个可插桩的点都是 0。
+⇒ 固件从未走到绘制 —— 不是某一个环节坏了，而是**根本没有开始**。
+```
+
+**因果链自洽：**
+
+```text
+0x54f2ca 从未调用 ⇒ 主循环 0x54ed12 从未运行
+  ⇒ updateFrame 从未执行 ⇒ 0x105f98 从未执行
+  ⇒ 真光栅入口 0x1127f8 从未执行（它也只有一个 PLT 路径，无直接 BL 调用者）
+```
+
+**而光栅实现本身是真的：**
+
+```text
+GRM_gpermFillrect（0x117b4c）有 300+ 字节：
+  · 参数解析、矩形裁剪（bl GRM_bitmapGetSubRectangle）
+  · **tbb [pc,r3] 格式跳转表（bitmap 格式 1..8 八路分发）**
+  · 提交调用链 0x115968 → 0x115364
+⇒ 它**不是空壳**；真正是空壳的只有 layer 的绘制虚槽（libObj+0xdeaf4，真机原版亦然）
+
+⇒ 因此问题是"**调用链在早期就断了**"，不是"没有绘制实现"。
+```
+
+---
+
 ## 五、已排除的假设（每条都有测量依据）
 
 | 假设 | 如何排除 |
@@ -151,6 +190,58 @@ liro.ko = uITRON RTOS + MUSASHI 固件加载器
 
 ---
 
+## 七之二、卡点的最终精确坐标（本章为第 700~707 章的收敛结果）
+
+**整条链每一环都有地址证据，只有最后一环受观测窗口限制。**
+
+```
+Application_Start（appFw 0x54d580，唯一导出符号）
+  ├─ uxengine_init2             ✓ 返回非 0
+  ├─ initializeArena / setDatabase / setFontName   ✓ 都返回
+  └─ render container（0x54f664）
+       ├─ RENDERENTRY enter=1                      ✓ 进入
+       ├─ 0x54f674  bl stage1（0x54ef74）
+       │    └─ STAGE1TEL=1                          ✓ 进入
+       │    └─ 0x54eff8  pop {r4,r5,r6,r7,pc}       ✓ 有返回指令（代码存在）
+       ├─ 0x54f68a  bl 0x54833c                     （约 20 条指令的函数，有 pop）
+       ├─ ...（约 20 个 bl/blx）
+       ├─ 0x54f9e8  blx 0x925674   ← **门之前最后一个外部调用**
+       ├─ 0x54f9ee  b 0x54fa3a
+       │    └─ 0x54fa3c  bl 0x54f2ca（门函数）
+       │         └─ **GATEWATCH 实测：整个运行 0 次命中**
+       │              （钩子 installed wrote=10，命中会立即打印，不受窗口边界影响）
+       ├─ 0x54fa40  cmp r0,#2 ; 0x54fa44 beq 0x54faf0   ← 返回 2 则跳过主循环
+       ├─ 0x54faa4  cmp.w r8,#0 ; 0x54faa8 bne 0x54facc ← 返回 0 则不跳
+       └─ 0x54faae  bl 0x54ed12（**全 appFw 唯一的主循环调用点**）
+            └─ updateCurrentTime → processEvent → isFrameDelay → updateFrame
+                 └─ 0x106572 updateFrame：逐 layer 取 vtable slot0
+                      └─ 非 0 则 0x105f98（进入绘制）
+                           └─ vtable+0x24 → **libObj+0xdeaf4（3 指令空壳，真机亦然）**
+```
+
+**门的判据（0x54f2ca 内部 0x54f2fa）：**
+
+```
+ldr.w r0, [r5, #0x870]     ← self+0x870
+cmp   r0, #2
+movgt r0, #2               ← >2  ⇒ 返回 2  ⇒ 跳过主循环
+movle r0, #0               ← <=2 ⇒ 返回 0  ⇒ 主循环运行
+```
+
+**结论：**
+```text
+✓ 强证据：门函数 0x54f2ca 从未被调用（GATEWATCH 0 命中，钩子确实装上）
+✓ 反汇编：门之前最后一个外部调用是 0x54f9e8 的 blx 0x925674
+? 未证：0x925674 是否返回（主线程末条记录距日志末尾仅 7 行，
+        与第 662/676 章同一窗口陷阱，不能断言"从未返回"）
+
+⇒ 最可能的阻塞点：**0x925674（appFw 内部的一个 veneer/抽象调用）**
+⇒ 若它不返回，则门从不被调用，主循环从不运行，updateFrame 从不执行，
+  此后即使 updateFrame 执行，libObj+0xdeaf4 也是空壳 ⇒ **两个独立原因都在**
+```
+
+---
+
 ## 八、结论：在什么条件下这个目标可以实现
 
 ```
@@ -196,9 +287,9 @@ liro.ko = uITRON RTOS + MUSASHI 固件加载器
 
 ```
 QEMU 实例   0
-最新基线    v325: 5789 行 / createLayer=6 / LIBOBJ_SYM=24
-可用基线    v303 / v310 / v312 / v314 / v318 / v322 / v323 / v325
-账本        /root/fw/oss/docs/QEMU_M2_PROGRESS.md（701 章）
+最新基线    v328: 5501 行 / createLayer=6 / LIBOBJ_SYM=24
+可用基线    v303 / v310 / v312 / v314 / v318 / v322 / v323 / v325 / v327 / v328
+账本        /root/fw/oss/docs/QEMU_M2_PROGRESS.md（711 章）
 ```
 
 复现干净基线：
@@ -209,5 +300,5 @@ cd /mnt/build/m2qemu
 WINDOW=600 ./run-wlist.sh
 ```
 
-**本会话未达成目标（一个像素都没画出来）。但 701 章的实测把"为什么"从
+**本会话未达成目标（一个像素都没画出来）。但 711 章的实测把"为什么"从
 "不知道"推进到了"两侧都静止"，并逐条排除了 20 个假设。这份边界描述即本文。**
