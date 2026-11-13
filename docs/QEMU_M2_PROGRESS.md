@@ -57460,3 +57460,55 @@ appFw 导入：
 QEMU 实例   0
 基线        v317: 5665 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百九十一章（R7101–R7200）：**自我纠错：上一轮 P0 用错了模板族（ZV-1F 而非 ZV-1M2）**
+
+## ① 本轮发现上一轮 P0 的严重错误
+
+```text
+两个解包树的 MainDest.txt：
+  zv1f  → SYSASTRA-DSC / YT / **CX64700_UC2.bin**  （1,129,548 B）← ZV-1F
+  zv1m2 → SYSASTRA-DSC / YS / **CX64800_UC2.bin**  （1,305,736 B）← **ZV-1M2**
+
+上一轮（v317）我用的是 **CX64700_UC2.bin（ZV-1F 的）**
+⇒ **不是 ZV-1M2 的数据**，数据代仍然不匹配
+⇒ 所以 v317 的"读取变成功"虽然是真的，但**不是我想要的那个对齐**
+```
+
+## ② 修正后的 P0（v318）：用真正的 ZV-1M2 模板
+
+```text
+Backup.bin/.bak ← **CX64801_ALLLANG.bin**（1,305,736 B，sha 03917a09…）
+（该文件来自 unpacked_zv1m2/.../SYSASTRA-DSC/YS/）
+
+运行结果（700s，基线合格）：
+  行数 **5747** / createLayer=**6** / LIBOBJ_SYM=24   ✓
+  MODULE_END backup.ko **status=0**                    ✓
+  BACKUP_nread key=0x2cf1844 **ret=+1**                ✓（与 v317 相同）
+  GPE=19 / FRAMEDUMP nonzero16=0                       ✗ 仍无绘制
+  updateCurrentTime=0 / FBRMPROBE=0                    ✗
+```
+
+## ③ 严格自查（避免窗口陷阱）
+
+```text
+读取成功那行在第 5743 行，全文 5747 行 ⇒ **只差 4 行**
+⇒ 依然**不能**断言"读成功后主线程停住"
+⇒ 但可以断言：**换成同代模板后仍然没有绘制**
+```
+
+## ④ 结论
+
+```text
+✓ 数据代对齐（用真 ZV-1M2 模板）**确实让那次读取成功**
+✗ 但它**不足以让固件进入绘制**
+⇒ "换备份" 这条线的收益到此为止（已是干净的负面结果）
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v318: 5747 行 / createLayer=6 / LIBOBJ_SYM=24
+Backup = CX64801_ALLLANG.bin（真 ZV-1M2 模板，03917a09…）
+```
