@@ -1,183 +1,212 @@
-# QEMU 出帧路线的完整结论（goal round 227）
+# QEMU 出帧路线的完整结论（最终版，goal round 275）
 
 > 本文只记录 QEMU 侧（`-M zve10` 机器模型）的实测结论。
 > 真机路线见 `MASTER_HANDOVER_NEWMENU.md`，两者不要混淆。
-> 所有数字都来自 `/mnt/build/m2qemu/out/v*/` 下的真实运行日志，不是推断。
+> 所有数字都来自 `/mnt/build/m2qemu/out/v*/` 下的真实运行日志。
+> **本文已剔除早期被"测量污染"的结论**（见第九节），只保留经多次交叉验证的事实。
 
 ---
 
 ## 一、一句话结论
 
-**启动链在 QEMU 里完整跑通，绘制函数被真正调用过，但一个像素都没画出来。**
-**卡点不在"缺硬件模型"，而在"Gen5 固件的 UI 初始化在一个事件循环里出不来"。**
+**Gen5 固件在 QEMU 里的启动链完整跑通、UI 的 layer 树完整建立，
+但它**从未进入自己的绘制循环**，因此一个像素都没有产生。**
+
+**"为什么不进入绘制循环"这一点，在本会话内未能确定** ——
+原因是那道判据函数（`appFw+0x54f2ca`）既不是导出符号，
+其指令窗口（4+2+4=10 字节）也无法安全 inline hook。**观测路线已到尽头。**
 
 ---
 
-## 二、做通了什么（全部有日志证据）
+## 二、已确证的事实（每条都有证据来源）
 
-| 阶段 | 证据 | 结果 |
-|---|---|---|
-| bootin → appFwBoot → im.elf → appFw | 全链 sha256 与 Gen5 一致 | ✓ |
-| appFw dlopen + 2730 个构造函数 | `Application_Start` 进入 | ✓ |
-| `createLayer` | `CREATELAYER n=6` | ✓ |
-| `updateFrame` | 5 个 panel 走完 | ✓ |
-| `drawFramebuffer` | 执行并返回 | ✓ |
-| `notifyDraw`（widget 系统自身入口） | 被真正调用（v243） | ✓ |
-| widget 链表遍历 | 循环体命中 6 次（v244） | ✓ |
-| `draw_entry`（`0x105f98`，Gen5 绘制函数） | 命中 **10 次**，每次收到合法节点指针（v251） | ✓ |
-| `GetAllocatedRectangle`（`0x114e78`） | 命中 | ✓ |
-| 我们自己 vtable 的槽 6 | 被 Gen5 真实调用（`GBMINVT n=1`） | ✓ |
+| # | 事实 | 证据 | 交叉验证 |
+|---|---|---|---|
+| 1 | 启动链全通：bootin → appFwBoot → im.elf → appFw | 四层 sha256 匹配、2730 个构造函数执行 | 多轮 |
+| 2 | `createLayer` 调用 **6 次，全部返回非 NULL** | `CREATELAYER n=1..6` + 返回值 | v303/v310/v312/v314 |
+| 3 | layer 3 使用固件自己生成的 ID（`0x8001653f` = GENIDPROBE AAA） | `CREATELAYER n=3 id=0x313b6e00 w=0x8001653f` | v303 |
+| 4 | `uxengine_init2` 执行并**返回非 0** | `INIT2PROBE enter/return r=0x4cc0c0` | v303/v310/v314 |
+| 5 | `uxengine_init2` 第一行就设置 640×480 | `0xe281a mov.w r1,#640` / `0xe2822 mov.w r2,#480` | 反汇编 |
+| 6 | `GFXENG` 被进入并返回 | `GFXENG enter n=5 → leave n=5 ret=0x4cc0c0` | v303 |
+| 7 | 画布已映射，大小恰好 614400 字节 | `MMAPOBS off=0x22d52000 len=0x96000` | 多次 |
+| 8 | **画布读数恒为零**（前 2 KB，6 次采样） | `CANVASX/CANVASY nz_words_512=0`（运行时跟踪真实 VA） | v296 |
+| 9 | `updateFrame` 的 PLT 槽 **never-called** | `GOTS updateFrame ... PLT0(never-called)` | v303 |
+| 10 | `isFrameDelay` 探针 **0 命中** | 无污染基线，interpose ABI 正确 | v303/v311 |
+| 11 | `updateCurrentTime`（主循环入口必经）**0 命中** | 无污染基线 | v303 |
+| 12 | GPE 只有 **19 个启动 fence，无任何绘制包** | `ZVE10_GPE_PACKET` ×19 内容相同；`ZVE10_GPE_OTHER=0` | v303/v314 |
+| 13 | `av-cam.bin`（MUSASHI 17 MB）存在时主流程停在 **t=120** | `COUNTERS-DONE` | v305 |
+| 14 | 同一配置下移除 `av-cam.bin` 后主流程健康到 **t=1125**、`createLayer=6` | `COUNTERS-DONE` + 基线哨兵 | v306 |
 
-**基线哨兵**：`createLayer=6`、`LIBOBJ_SYM=24`、行数 5700–6100。
-
----
-
-## 三、没做到什么
-
-```text
-✗ 判据 2：640×480 / 614400 字节 / 非零 >1000 —— 显示窗口 128 MiB 全扫 best_nonzero16 = 0
-✗ 判据 3：无可复现哈希（没有帧）
-✗ 判据 4：键注入入队但从未被消费（no RCVC_RET with bytes=ab01）
-✗ 判据 5：无业务行为可验证
-```
-
-**并且**不是没找过：`0x22d52000` 那块 present 目标缓冲、以及 128 MiB 整个显示窗口，
-**在整轮运行中始终为全零**（由 QEMU 定时器每 3 秒采样，不依赖 atexit）。
+**⇒ 第 13/14 条是单变量对照实验：唯一变量就是 `av-cam.bin` 是否存在。**
 
 ---
 
-## 四、卡点的精确描述
-
-### 4.1 UI 初始化线程陷入循环
+## 三、绘制链的结构（反汇编证据）
 
 ```
-0x1706085 上 tmo=-1 永久等待 → 收到 type=0xe1700（不是它等的 0x61003c）
-→ 丢弃 → 再发请求到 0x61003c → 再等 → 再收 0xe1700 → 循环
+appFw 0x54ed12  主循环函数入口
+  0x54ed22  blx  WidgetSystem::updateCurrentTime()
+  0x54ed36  blx  WidgetSystem::processEvent()
+  0x54ed50  blx  WidgetSystem::isFrameDelay()
+  0x54ed54  cbz  r0, 0x54ed90          ← 为 0 就跳出（不画）
+  0x54ed5a  blx  WidgetSystem::updateFrame()   ← 画
 ```
 
-实测数字（v280 / v287）：
+**而进入该循环的唯一调用点：**
 
 ```
-发送目标队列 = 0x61003c     （SNDTYPE 打印，4 次一致）
-等待的队列   = 0x1706085    （由 osal_dynamic_id(42, 0x170, &out) 产生）
-期望消息类型 = 0x61003c
-实收消息类型 = 0xe1700     （f4 递增 0x405→0x10406→0x20407→0x30408）
+appFw 0x54faae  bl 0x54ed12           ← 全 appFw 仅此一处
 ```
 
-### 4.2 三条独立证据表明 0x61003c 没有接收方
+**其前方有两道判断，其中真正会导致跳过的是：**
 
 ```
-SND_DRIVE id=0x61003c = 4 次（发出去了）
-RCVC qid=0x61003c     = 0 次（没人在收）
-REG  qid=0x61003c     = 0 次（从未注册）
+0x54fa3c  bl  0x54f2ca
+0x54fa40  cmp r0, #2
+0x54fa44  beq 0x54faf0                ← 返回 2 就跳过主循环
 ```
 
-### 4.3 已排除的解释（每条都有测量）
+**而 `0x54f2ca` 内部：**
+
+```
+0x54f2fa  ldr.w r0, [r5, #0x870]
+0x54f2fe  cmp   r0, #2
+0x54f302  movgt r0, #2                ← >2 返回 2
+0x54f304  movle r0, #0
+```
+
+---
+
+## 四、为什么这条链无法继续观测（重要）
+
+**`0x54f2ca` 不是导出符号** —— 它落在 `Application_Start`（0x54d580）内部，
+最近的导出符号就是 `Application_Start` 本身。因此：
+
+```
+✗ 符号级 interpose：不可能（符号不存在）
+✗ inline hook：不可能（0x54ed50..0x54ed58 = 4+2+4 = 10 字节，
+                        8 字节 trampoline 会切断 0x54ed56 的 blx）
+```
+
+**⇒ "读那道门"这条路在观测层面已经走到尽头。**
+
+---
+
+## 五、已排除的假设（每条都有测量依据）
 
 | 假设 | 如何排除 |
 |---|---|
-| 缺 `/dev` 设备 | `/dev/mem` 打开成功（10 条 DEVOPEN ret≥0） |
+| 缺 `/dev` 设备 | `/dev/mem` 打开成功（DEVOPEN ret≥0） |
 | mmap 失败 | 29 次 mmap **0 次失败** |
-| 参数不对 | 108 组 fmt×yuv×short 组合全返回 -9999，但失败码来源已查清 |
-| 我们注入造成污染 | 关掉全部注入（`INJECT_*=0`）后 `0xe1700` 仍出现 4 次 |
-| 是 dmm.ko 的队列 | dmm 用的字面量是 **0x8f013a**，不是 0x61003c |
-| 是"硬件状态轮询" | 映射者是 dmp 分配器（`0x120ae2`），是普通内存分配 |
-| 缺未加载的 Infra 库 | 引用 0x61003c 的库都在部署树里，但进程只加载了 3 个 |
+| 参数不对（108 组组合） | 全返回 -9999，但该失败码所属路径固件根本不走 |
+| 我们注入造成污染 | 关注入后 `0xe1700` 仍出现 4 次 |
+| dmm.ko 是队列接收方 | dmm 用的字面量是 **0x8f013a** |
+| 是"硬件状态轮询" | 映射者是 dmp 分配器（普通内存分配） |
+| 缺未加载的 Infra 库 | 引用库都在部署树里，但进程只加载 3 个 |
+| 需要第二个 CPU 核 | Gen5 无双核负载；`-smp 2` 已知必 panic（参考文档亦证） |
+| 缺 `dma330_stub` | 加载后 liro 确实能起来（见第六节） |
+| dma330 真驱动导致挂起 | 用 stub 同样挂起（v305） |
+| `[self+0x870]` 是忙计数 | **两次运行该值不同且是可打印 ASCII 残留 ⇒ 证伪** |
+| 缺软件渲染后端 | 固件连绘制请求都没发出，谈后端为时过早 |
 
 ---
 
-## 五、`-9999` 的完整来源链（这一条已经查到底）
+## 六、`av-cam.bin` 与 MUSASHI 的关键发现
 
 ```
-BMP_Create(0x1191c0)
-  → 0x11ba1c（真实主体）
-    → 0x12aee4（分配 helper）
-      → 0x12a238
-        → 检查 [self+0x10] == 16，否则返回 **0xffffd8f1 = -9999**
-0x129aa0 才是把 state 从 1 推到 16 的那个函数（构造 0x129a30 设的是 1）
+liro.ko 是 **uITRON RTOS + MUSASHI 固件加载器**：
+  · 加载 /system/av-cam.bin（17,195,164 B）到 0x635c6000
+  · 创建 2 个内核线程（kthread_create_on_node）
+  · 把 RTOS 任务优先级设为 5（os_tsk_setprio）
+  · 固件确实在同一 A9 核上执行（737 个 PC 样本落在 0x635c6000..0x6462c69c，
+    全部为唯一地址 ⇒ 不是死循环，是真在工作）
 ```
 
-**实测**：`statedrive`（0x129aa0）命中 **0 次**、`alloc_gate`（0x12a238）命中 **0 次**。
-**⇒ 这两个函数在正常流程里从未被调用，所以 state 永远停在 1。**
+**但它启动后主流程立刻停住（t=120 vs 移除后的 t=1125）**
+**⇒ 在单核上，MUSASHI 主循环与 UI 主流程互斥。**
 
-**注意**：我们曾试着直接调 `0x129a30`(构造) → `0x129aa0`(推进)：
-构造成功（state=0→1），但推进调用**卡住不返回**（v274），因此直调路线已放弃。
+**补充：参考树 `ref-chocotan-zve10/work/initramfs-ui/system/` 是空目录**
+**⇒ 参考实现根本没有 MUSASHI 固件可加载，所以它的 liro 加载后无事可做、主流程照常。**
+**而参考的帧来自 Gen4 自己的软件渲染路径，与 MUSASHI 无关。**
 
 ---
 
-## 六、两个"不能 preload 覆盖"的符号（重要教训）
+## 七、参考实现的路线（已读透，但对 Gen5 不适用）
+
+`sonyfw-zve10-qemu` 能出帧靠三块：
 
 ```
-✗ osal_reg_sync_msg_queue_cb    ⇒ 覆盖它，启动崩（1779 行）
-✗ IMDB_find_entry               ⇒ 覆盖它，启动崩（538 行，纯透传也崩）
+① GPU 包应答极简：只完成那一个捕获到的启动 fence，其余不应答
+② 软件渲染后端：把 Gemini 的 solid/rect/quad/line 整体替换成 CPU 光栅化
+③ present 捕获 + tile 重排：8×8 瓦片 → 线性帧（640*480*2 = 614400）
 ```
 
-**规律**：启动极早期被解析的符号，一旦被 preload 对象导出，动态链接器的
-解析路径就变了，im.elf 的模块装载直接失败。
-**⇒ 这类符号只能用"只读观测库内部调用点"，不能替换符号本身。**
+**但它是"运行 ZV-E10 自己的 Gen4 固件"（libObj = cfdc59b9…，无 appFw），
+而我跑的是 Gen5（libObj = 4cd654f1… + appFw = f08c9eb7）。**
+
+**⇒ 参考证明的是"模型够用"，不能证明"Gen5 也能在 Gen4 模型上画"。**
+**按 prologue 字节匹配，参考的 12 个 hook 有 9 个能在我们的 libObj 里定位，
+但"能定位"不等于"语义相同"。**
+
+`a7c2-qemu` 走的是全硬件模拟路线（虚拟传感器/镜头/编码器），取景至今仍黑，
+**对"让 Gen5 菜单显示"这个目标不是可复用路径。**
 
 ---
 
-## 七、QEMU 侧要继续需要补什么（如果将来继续）
-
-按可行性排序：
+## 八、结论：在什么条件下这个目标可以实现
 
 ```
-1. 找到 0x61003c 的真实注册者（它不在已部署的库、也不在 dmm.ko）
-   —— 目前 REG 表 49 条里没有它，说明注册代码路径从未执行
-2. 该注册者若在某内核模块（osal_ulogio / usbg_stillimage 等含 0x61003c 的模块），
-   检查它们的 init 是否也像 dmm 那样**忽略初始化返回值**
-3. 让 vdf 的 state 推进（0x129aa0）被执行 —— 它只被 rsrc_port_init 内部调用
+① 多核：让 MUSASHI 任务跑在另一个核上
+   ⇒ 但 -smp 2 已知必 panic（CPU1 执行即内存覆写，参考 docs/smp-investigation.md 同结论）
+   ⇒ 需要先修 QEMU 的 per-CPU 本地定时器路径
+
+② 或让 MUSASHI 固件在等待时主动让出 CPU（它没有这么做）
+
+③ 或走真机验证（不依赖 QEMU）
 ```
 
-**但必须诚实说明**：即便以上都过了，后面还有"画布分配 → 显示提交"两步从未触达。
-**因此我不建议继续在 QEMU 内逐层破译**，除非有新的外部信息。
+**⇒ 在本会话的条件下（单核 QEMU + 未修改的 Gen5 固件），这三条都不可行。**
 
 ---
 
-## 八、真机路线的正确做法（与 QEMU 无关，可独立验证）
+## 九、测量污染的教训（本会话最大的方法收获）
 
-**形态 B：loop + bind（零风险，重启即恢复，不碰 `/usr`）**
+**以下结论曾被得出，后被自己的复查推翻，记录在此防止后来者重蹈：**
 
-```bash
-python3 /root/fw/oss/tools/bindm2/deploy_bindm2.py --image /mnt/build/nflasha15_v9b3b.ext2
+| 曾得出的（错误）结论 | 推翻方式 |
+|---|---|
+| "绘制函数被真正调用过（draw_entry 10 次）" | 那些调用是**我自己 DRIVE_NOTIFY=1 触发的** |
+| "GRM_bitmapCreate 被调用 24 次" | 全在 tid=195，是**我的 GCREATE 探针自调用** |
+| "notifyDraw 从未返回 ⇒ 卡死在 OSAL" | 窗口在主线程停后仅差 6 行到期 ⇒ **窗口伪影** |
+| "INITSEQ 走到第 62 项后停住" | INITSEQ 只是 **dlsym 名称解析**，与执行无关 |
+| "`[self+0x870]` 是 >2 的忙计数" | **两次运行值不同，且是可打印 ASCII 残留** |
+| "stage1 转发到渲染容器" | 该指针解析后落在 **libUsbBusPower.so** |
+
+**由此形成的纪律（建议沿用）：**
 ```
-
-三项 preload（缺一不可）：
-
+· "没有观察到" ≠ "不存在" —— 先证明测量能看到非零
+· 任何"从未/为零"的结论，都要检查窗口边界
+· 任何单次读数，都要重跑一次确认可复现
+· 加观测手段前，先确认它的 ABI/语义与被观测函数完全一致
+· 自己发起的调用必须与固件自身行为严格区分（按 tid / caller 过滤）
 ```
-/usr/tool/libefence.so : /log/libIMDB_m2.so : /log/bindm2.so
-        ↑ 白名单占位      ↑ 顶替 DT_NEEDED      ↑ 构造函数里 loop+bind
-```
-
-主机侧已验证的能力（本轮会话新增）：
-
-```text
-✓ 设备 glibc 2.11.2 的 dlmopen 可用（**必须 RTLD_LOCAL，不能 RTLD_GLOBAL**）
-✓ 两代 libObj 可在同一进程的两个 link namespace 里共存（lmid=1 实测）
-✗ RTLD_NOW 会因 libMWF 的 osal_wait_thread_exit 未定义而失败 ⇒ 只能 RTLD_LAZY
-```
-
-**⇒ 若要做"新老 UI 并存"（形态 A），技术上成立，但需要一层显示仲裁，
-而那一层的依据恰好需要 QEMU 侧先搞清楚 Gen5 怎么画 —— 这就是两条路的分歧点。**
 
 ---
 
-## 九、状态与约束
+## 十、状态与可复现命令
 
 ```text
 QEMU 实例   0
-最新基线    v287: 5760 行 / createLayer=6 / LIBOBJ_SYM=24
-账本        /root/fw/oss/docs/QEMU_M2_PROGRESS.md（第六百二十章，共 620+ 章）
+可用基线    v303 / v306 / v310 / v314（均 createLayer=6 / LIBOBJ_SYM=24）
+最新基线    v314: 5586 行 / createLayer=6 / LIBOBJ_SYM=24
+账本        /root/fw/oss/docs/QEMU_M2_PROGRESS.md（680+ 章，含每步细节与纠错记录）
 ```
 
-**验证过的"测量手段失效"清单（防止后来者重蹈）**：
+复现干净基线（纯观测，无任何自驱动/注入）：
 
-```text
-· atexit 在 SIGTERM 下不执行 ⇒ 用 QEMU 定时器
-· PC 采样只覆盖内核态（30040 个样本全在内核地址）⇒ 不能用来判断用户态
-· tick 标签曾写成 n*5，实际每圈 1 秒 ⇒ 时间换算要按实测
-· 8 字节 inline hook 窗口必须落在指令边界（切到 bl 中间会让循环次数失真）
-· 探针密度会显著降低可达率 ⇒ 探针要少、要一次只改一个变量
-· 探针绝不能在该上下文里调用固件代码（会重入状态机）
+```bash
+cd /mnt/build/m2qemu
+# init 第 44 行为：
+#   FORCE_MENU=0 DRIVE_NOTIFY=0 NO_DRIVE=1 INJECT_INPUT_QUEUES=0 INJECT_CP=0 FORCEDRAW=0
+WINDOW=600 ./run-wlist.sh
 ```
