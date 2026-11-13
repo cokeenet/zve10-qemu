@@ -56671,3 +56671,51 @@ v310：**5613 行 / createLayer=6 / LIBOBJ_SYM=24 / INIT2PROBE return 0x4c3f10**
 QEMU 实例   0
 基线        v310: 5613 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百七十七章（R5951–R6030）：**拿到了读数：`[self+0x870] = 0x5f317475`**
+
+## ① 本轮两次尝试，第一次证实了上一章的判断，第二次拿到了数值
+
+```text
+v311：把读取放进 isFrameDelay 的 interpose（ABI 完全匹配）
+      → 基线健康（5643 行 / createLayer=6），但 **LOOPGATE 一次都没打印**
+      ⇒ **isFrameDelay 确实从未被调用**（与第 671 章一致，再次确认）
+
+v312：把读取放进 createLayer 的 interpose（ABI 也匹配）
+      → 基线健康（5600 行 / createLayer=6 / LIBOBJ_SYM=24）
+      → **LOOPGATE createLayer n=1..6 全部打印**
+        self=0x4d9d38  **[+0x870] = 0x5f317475**
+```
+
+## ② 这个读数的含义（关键判断）
+
+```text
+0x5f317475 不是一个小计数器，而是一个**指针样的大值**。
+若 0x54f2ca 的 `r5` 确实就是同一个 WidgetSystem 对象，那么：
+    cmp [self+0x870], #2  →  0x5f317475 > 2
+    ⇒ movgt r0, #2
+    ⇒ 0x54fa44 **beq 0x54faf0** ⇒ **跳过主循环**
+⇒ **这正好解释了"主循环从未被进入"。**
+```
+
+**但必须标注不确定性：**
+```text
+0x54f2ca 的 r5（= 它的入参 r0）是否等于 createLayer 的 self，尚未验证。
+⇒ 若不等，则这个读数不能直接用于解释主循环问题。
+```
+
+## ③ 本轮净结果
+
+```text
+✓ 基线恢复（两次都合格）
+✓ isFrameDelay 未调用（再次确认）
+✓ [self+0x870] 有具体值（0x5f317475）
+? 该字段与 0x54f2ca 检查的对象是否同一 —— 未验证
+```
+
+## ④ 约束
+
+```text
+QEMU 实例   0
+基线        v312: 5600 行 / createLayer=6 / LIBOBJ_SYM=24
+```
