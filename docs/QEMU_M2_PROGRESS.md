@@ -57283,3 +57283,61 @@ v42: 完整主页返回像素一致
 QEMU 实例   0
 基线        v314/v316 合格
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百八十八章（R6801–R6900）：**重大发现：A7M5 的 38 个首设 ID 在 ZV-1M2 里全部存在**
+
+## ① 我扫描了 A7M5 `ui-setup.h` 里的全部初始化设置 ID
+
+```text
+A7M5 定义的 ID：
+  A7M5_UI_SETUP_DESTINATION_FIRST  0x010d008f
+  A7M5_UI_SETUP_DESTINATION_LAST   0x010d00b1   （36 个连续）
+  A7M5_UI_SETUP_DESTINATION_M5     0x010d0189
+  A7M5_UI_SETUP_LANGUAGE           0x02cf03ff
+  A7M5_UI_SETUP_SUMMER_NAME        0x010d00bf
+```
+
+## ② 在 ZV-1M2 的 appFw.so 里扫描结果：**38 / 38 全部命中**
+
+```text
+dest  0x010d008f..0x010d00b1 : 36 个全部存在（每个 1~2 处）
+dest_m5  0x010d0189          : 1 处
+lang     0x02cf03ff          : **7 处**
+summer   0x010d00bf          : 1 处
+```
+
+**⇒ 这是一个决定性的结论：**
+
+```text
+**A7M5 和 ZV-1M2 属于同一代（Gen5），共用同一套"首设/初始化设置"ID 命名空间。**
+⇒ A7M5 的 `ui-setup.c` 功能模型**极可能可以直接适配给 ZV-1M2**
+⇒ 这正是"a6400 两天跑出 A7C2 新菜单"那类成功案例的技术基础：
+   **同代机型的 ID/ABI 是共享的，功能模型可以复用。**
+```
+
+## ③ 并且这解释了第 686 章那个一直失败的配置读取
+
+```text
+我们的日志里：
+  BACKUP_nread key=**0x2cf1844** len=1 ret=-1   ← 读失败，走默认值
+
+而 0x2cf1844 与 A7M5 的 A7M5_UI_SETUP_LANGUAGE=**0x02cf03ff** 同属 0x02cf 段
+⇒ 说明 **0x02cf 段就是"初始化设置"命名空间**
+⇒ 固件在读首设相关的设置，而我们没有给它正确的值
+```
+
+## ④ 因此下一步极其明确
+
+```text
+① 直接对照 a7m5-qemu 的 ui-setup.c 实现，为 ZV-1M2 建一个同构的"首设功能模型"
+   （ID 表已经验证 38/38 匹配，只需按 ZV-1M2 的差异调整）
+② 把它接在"固件读取这些 ID 的地方"（BACKUP / OSAL / 某个 getter）
+③ 目标：让固件认为"首设已完成"，从而进入拍摄主页 → 再谈菜单
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v314/v316 合格
+```
