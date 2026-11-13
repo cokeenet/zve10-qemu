@@ -53496,3 +53496,46 @@ CONFIG_NR_CPUS=4
 QEMU 实例   0
 基线        v287: 5760 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百二十三章（R2771–R2800）：**SMP 假设实测失败：-smp 2 导致内核 Oops**
+
+## ① 本轮做了那个"改一个启动参数"的实验，结果明确失败
+
+```text
+v288（-smp 2）：
+  行数 **271** / createLayer 缺失 / LIBOBJ_SYM=0  ⇒ 基线崩，按铁律报废
+  内核输出：
+    <1>Unable to handle kernel NULL pointer dereference at virtual address 0000000c
+    <0>Internal error: Oops: 17 [#1] PREEMPT SMP
+```
+
+## ② 但得到了两条确定信息
+
+```text
+✓ 机器模型**本身支持多核**（zve10.c 的 505/520/525-533 都按 machine->smp.cpus 循环）
+✓ 但**内核侧在第二核上崩**（地址 0x0c 空指针，PREEMPT SMP）
+⇒ 这不是"模型不支持"，而是"内核/驱动在第二核上初始化失败"
+⇒ 说明这条路要对齐的东西很多（GIC 分发、per-cpu 初始化、CP 侧固件）
+```
+
+## ③ 因此 SMP 假设**不能靠改启动参数解决**
+
+```text
+✗ "给 2 核就能让第二个核上的服务注册 0x61003c"
+✓ 若真有第二核服务，它需要：正确的多核启动流程 + CP 固件 + GIC 多核分发
+⇒ 成本远高于单核路线的剩余工作
+```
+
+## ④ 处置
+
+```text
+run-wlist.sh 已恢复 -smp 1
+下一轮跑一次确认基线恢复（v289）
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0（v288 已自然退出）
+基线        待 v289 确认
+```
