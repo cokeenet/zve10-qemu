@@ -56199,3 +56199,59 @@ docs/shoot-main-plan.md
 QEMU 实例   0
 基线        v303/v306 均合格
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百六十八章（R5311–R5380）：**Gen5 的视图体系与 Gen4 完全不同：layer 而非 ViewRootSelector**
+
+## ① 本轮试图照搬参考的"合成视图事件"，但发现前提不成立
+
+```text
+参考用 0x117789 生成 view id，0xc3 = ViewStlrec，0xa0/a3/a1 = ViewRoot 系列
+
+我的 appFw：
+  · 导出符号里**没有任何 ViewRoot / ViewStlrec / RootSelector**
+  · 连**字符串**都没有（strings 搜索为空）
+⇒ **Gen5 根本没有 Gen4 那套 ViewRootSelector 视图体系**
+⇒ 参考的三步手法**无法照搬**
+```
+
+## ② 但发现了 Gen5 自己的体系：WidgetSystem 的 **layer**
+
+```text
+Gen5 appFw 的符号：
+  WidgetSystem::createLayer(const ux::core::ID&)
+  Widget::setLayerID(const ux::core::ID&)
+  GraphicsEngine::setScreenRotate(...)
+  GRM_fbrmSetScreenPreference
+常量字符串：SHOOTING_SCREEN_*（拍摄界面开/关、页脚图标触摸）
+
+⇒ Gen5 用"**layer 树 + layer ID**"，不是 Gen4 的"视图选择器"。
+```
+
+## ③ 而实测显示这棵 layer 树**确实建起来了**
+
+```text
+v303 的 CREATELAYER 记录（6 个，全部 ret 非 0 = 成功）：
+  n=1 id=0xaa69098 w=d1391f90 caller=libObj+0x10796e
+  n=2 id=0xaa6906c w=863f5760 caller=libObj+0x107978
+  n=3 id=**0x313b6e00** w=**0x8001653f** caller=**appFw+0x723**（AS 线程）
+  ...
+
+注意 n=3 的 w=0x8001653f —— 正是 GENIDPROBE 里 **AAA** 生成的 id
+⇒ 说明：**固件用自己生成的 ID 建立了带菜单图层的 UI 树**
+```
+
+## ④ 这修正了我对"固件不画"的理解
+
+```text
+不是"UI 树没建起来"，而是：
+  **UI 树建起来了（6 个 layer 全部成功），但没有触发一次绘制。**
+⇒ 缺的是"让它 draw 一次"的触发，而不是树本身。
+⇒ 这与 Gen4 参考的做法一致（需要外部给一个事件），只是 Gen5 的触发接口不同。
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v303: 5668 行 / createLayer=6 / LIBOBJ_SYM=24
+```
