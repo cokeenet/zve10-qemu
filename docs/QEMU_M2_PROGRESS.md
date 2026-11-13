@@ -57869,3 +57869,27 @@ QEMU 实例   0
 基线        v322: 5500 行 / createLayer=6 / LIBOBJ_SYM=24
 qsrc/hw/arm/zve10.c 已改（ZVE10_GPE_COMPLETE 门控，默认不改变参考行为）
 ```
+
+## ⑤ 同轮自我纠错（重要，第 7 次同类）
+
+```text
+我刚才说"sugilite_ioctl 不再卡住"——**错**。
+原因：我用 `cut -c1-120` 查看 TS 行，把末尾的 `sugilite_ioctl:1` 截断了，误以为它消失。
+
+完整字段（v322）： 
+futex_wait_queue_me:30 hrtimer_nanosleep:2 __k_4u_wait_cb:4
+osal_rcv_msg_tmo:23 utimer_res_sleep:1 **sugilite_ioctl:1** poll_schedule_timeout:2
+
+⇒ **sugilite_ioctl 仍然有 1 个线程在等，与 v322 之前完全一样。**
+⇒ 也就是说：**"完成所有包"并没有解开 sugilite 的同步等待。**
+```
+
+**⇒ 这条纠正改变了对 v322 的解读：**
+
+```text
+✗ "完成所有包解开了 sugilite_ioctl，但卡在别处"
+✓ **"完成所有包之后，sugilite_ioctl 仍然卡住"**
+⇒ 更加确定：sugilite 的同步**不是**GPE 包完成中断驱动的
+⇒ 用户转述的"拦截 GLES 同步"若要在我们这里生效，
+  需要拦截的是**另一个东西**（不是 GPE 的 IRQ 76）
+```
