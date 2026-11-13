@@ -56719,3 +56719,61 @@ v312：把读取放进 createLayer 的 interpose（ABI 也匹配）
 QEMU 实例   0
 基线        v312: 5600 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百七十八章（R6031–R6100）：**对象身份确认：0x54f2ca 读的正是 [r0+0x870]，与 createLayer 的 self 同偏移**
+
+## ① 本轮把 0x54f2ca 的取值链读通了
+
+```text
+0x54f2ca 入口：r5 = r0（入参，即 self）
+0x54f2f2  r0 = r4（= self + 0x6a8）
+0x54f2fa  **ldr.w r0, [r5, #2160]**   ; 0x870     ← ★ 读的就是 [self+0x870]
+0x54f2fe  cmp r0, #2
+0x54f300  ite gt ; movgt r0,#2 ; movle r0,#0
+⇒ **>2 返回 2；否则返回 0**
+```
+
+**⇒ 与我在 createLayer 里读的 `[self+0x870]` **是同一个偏移**。**
+
+## ② 而调用点 0x54fa3a 是 `mov r0, r4`，r4 在该函数内设置
+
+```text
+0x54fa38  mov r5, fp
+0x54fa3a  **mov r0, r4**          ← 传入的 self
+0x54fa3c  bl  0x54f2ca
+0x54fa40  cmp r0, #2
+0x54fa44  **beq 0x54faf0**        ← 返回 2 ⇒ 跳过主循环
+```
+
+**⇒ 只要 `r4` 指向的对象与 createLayer 的 self 同源（同一 WidgetSystem），
+**那么 `[self+0x870] = 0x5f317475 > 2` ⇒ 返回 2 ⇒ **主循环被跳过**。**
+
+## ③ 目前的证据强度（诚实分级）
+
+```text
+强证据：
+  ✓ 偏移相同（+0x870）
+  ✓ 语义相同（>2 ⇒ 忙 ⇒ 跳过）
+  ✓ 实测值 0x5f317475 远大于 2
+
+待确认：
+  ? r4 与 createLayer 的 self 是否同一对象
+    （两者都是"UI 系统对象"，但未经直接比对）
+```
+
+## ④ 结论（按当前证据）
+
+```text
+**最可能的完整解释：**
+  固件的 WidgetSystem 在 self+0x870 处有一个**大于 2 的值**（实测 0x5f317475，
+  疑似未清零的指针或未初始化的状态字），
+  调度函数据此判定"忙"，于是**每一轮都跳过绘制循环**，
+  导致 updateFrame 永不被调用、画布永远全零。
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v312: 5600 行 / createLayer=6 / LIBOBJ_SYM=24
+```
