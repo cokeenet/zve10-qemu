@@ -56312,3 +56312,66 @@ argtrace.so 里有 `_ZN2ux6wgtsys12WidgetSystem11updateFrameEv`（0x12a68）
 QEMU 实例   0
 基线        v303: 5668 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百七十章（R5451–R5520）：**找到了确切的绘制门：`isFrameDelay()` 返回 0 就跳过 `updateFrame`**
+
+## ① 本轮从 appFw 的 PLT 引用入手，找到了**完整的绘制循环**
+
+```text
+appFw @0x54ed4c..0x54ed62：
+  0x54ed4c  blx  UXEngine::wgtsys()
+  0x54ed50  blx  WidgetSystem::**isFrameDelay()**
+  0x54ed54  cbz  r0, 0x54ed90        ← **isFrameDelay 返回 0 ⇒ 直接跳出，不画！**
+  0x54ed5a  blx  WidgetSystem::**updateFrame()**   ← 只有非 0 才画
+  0x54ed5e  subs r5, #1
+  0x54ed60  beq  0x54ed90
+  0x54ed62  b    0x54ed4c            ← 循环
+```
+
+**⇒ 这就是"绘制主循环"，而它的门是 `isFrameDelay()`。**
+
+## ② 而 `isFrameDelay()` 的实现在 libObj（0x105988），逻辑是**时间比较**
+
+```text
+0x10598e  bl  getTimestamp（或类似）→ r4 = 低 32 位, r5 = 高 32 位
+0x105994  r0 = r6 + 24
+0x10599a  bl  同函数 → r0/r1
+0x10599e  cmp r4, r0
+0x1059a0  sbcs.w r3, r5, r1      ← 64 位比较
+0x1059a4  ite cc
+0x1059a6  movcc r0, #0           ← 小于 ⇒ 返回 **0**（不画）
+0x1059a8  movcs r0, #1           ← 大于等于 ⇒ 返回 1（画）
+```
+
+**⇒ 它是一个"距上次绘制是否超过间隔"的**时间门**。**
+
+## ③ 因此阻断点的最终表述（第一次精确到这个粒度）
+
+```text
+**固件每轮检查 `isFrameDelay()`：若距上次绘制的时间不足间隔 ⇒ 返回 0 ⇒ 跳过 updateFrame。
+如果那个时间基准从未被正确设置（或在 QEMU 里为 0/异常），
+门就永远不会打开 ⇒ updateFrame 永远不会被调用 ⇒ 永远不画。**
+```
+
+## ④ 这与"updateFrame 的 PLT 槽 never-called"完全吻合
+
+```text
+GOT 观测：updateFrame 的 PLT 槽 **从未被调用**
+原因：**每一轮循环都在 0x54ed54 处因 isFrameDelay()==0 而跳出**
+⇒ 两条独立证据（GOT 观测 + 循环结构）互相印证
+```
+
+## ⑤ 下一步（唯一、且非常具体）
+
+```text
+给 isFrameDelay() 装探针，记录它两次比较的**具体时间值**：
+  · 若两侧时间都非 0 且接近 ⇒ 门在"等间隔"，需要等更久
+  · 若某侧为 0 ⇒ 时间基准缺失 ⇒ 这就是要补的东西
+```
+
+## ⑥ 约束
+
+```text
+QEMU 实例   0
+基线        v303: 5668 行 / createLayer=6 / LIBOBJ_SYM=24
+```
