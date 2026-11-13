@@ -349,7 +349,7 @@ render container（0x54f664）
 QEMU 实例   0
 最新基线    v328: 5501 行 / createLayer=6 / LIBOBJ_SYM=24
 可用基线    v303 / v310 / v312 / v314 / v318 / v322 / v323 / v325 / v327 / v328
-账本        /root/fw/oss/docs/QEMU_M2_PROGRESS.md（711 章）
+账本        /root/fw/oss/docs/QEMU_M2_PROGRESS.md（716 章）
 ```
 
 复现干净基线：
@@ -360,5 +360,5 @@ cd /mnt/build/m2qemu
 WINDOW=600 ./run-wlist.sh
 ```
 
-**本会话未达成目标（一个像素都没画出来）。但 711 章的实测把"为什么"从
+**本会话未达成目标（一个像素都没画出来）。但 716 章的实测把"为什么"从
 "不知道"推进到了"两侧都静止"，并逐条排除了 20 个假设。这份边界描述即本文。**
