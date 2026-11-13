@@ -55539,3 +55539,50 @@ QEMU 实例   0
 基线        v303: 5668 行 / createLayer=6 / LIBOBJ_SYM=24
 init 当前为纯观测配置（无驱动/无注入）
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百五十六章（R4471–R4540）：**干净的坐标：固件走到 INITSEQ 第 62 项，GPU 只发了 19 个启动 fence**
+
+## ① 本轮在纯观测基线上把"固件走到哪"精确画出来了
+
+```text
+v303（无任何驱动/注入）：
+  · createLayer = 6                        ✓
+  · INITSEQ resolve **62 次**，最后停在 `InfraBluetoothLowEnergy_init`
+  · 其中 **uxengine_init / uxengine_init2 / UIDG_init 都被 resolve 了**（但没有后续绘制）
+  · GPE 包共 **19 个**，地址从 2056e270 起每次 +0x20，内容完全相同
+  · ZVE10_GPE_OTHER（非启动包）= **0**
+  ⇒ **GPU 只收到了那 19 个启动 fence，之后再没有任何绘制包**
+```
+
+## ② 因此"固件卡在哪"有了精确定位
+
+```text
+它不是"画失败"，而是**根本没有发起绘制**：
+  · UI 引擎的三个 init 都被 resolve（模块加载齐全）
+  · 但 INITSEQ 走到第 62 项（BluetoothLE）后停住
+  · 之后既没有 notifyDraw，也没有任何 GPE 绘制包
+⇒ 阻断点在 **INITSEQ 的中途**，不在绘制环节
+```
+
+## ③ 这修正了本会话一个长期误判方向
+
+```text
+我前面几十轮都在"绘制链"里找问题（bitmap 创建、present、画布）
+⇒ 但固件连"发起绘制"这一步都没到
+⇒ 真正的阻断点是**模块初始化序列（INITSEQ）没走完**
+```
+
+## ④ 当前最值得查的一件事
+
+```text
+INITSEQ 第 62 项是 InfraBluetoothLowEnergy_init —— 之后没有第 63 项。
+是"清单只有 62 项"还是"卡在第 63 项"？
+查：INITSEQ 的清单来源（哪张表？共多少项？）
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v303: 5668 行 / createLayer=6 / LIBOBJ_SYM=24
+```
