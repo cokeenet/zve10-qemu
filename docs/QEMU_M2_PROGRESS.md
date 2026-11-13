@@ -53158,3 +53158,50 @@ preload 对象覆盖它会改变动态链接器的解析顺序/作用域，
 QEMU 实例   0
 基线        v286: 5755 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+# ★★★★★★★★ 2026-11-13 第六百一十六章（R2571–R2600）：**查清了 im.elf 与 libIMDB 的接口面，并排除一个路径假设**
+
+## ① im.elf 导入的 IMDB 接口只有三个
+
+```text
+U IMDB_find_entry
+U IMDB_find_target_bit
+U IMDB_get_entries
+⇒ 与 libIMDB 导出的三个函数完全对应
+```
+
+## ② 模块表不在任何数据段里
+
+```text
+libIMDB:  .rodata=0x3190  .data.rel.ro=0x27b4  （导出符号仅十几个）
+im.elf:   .rodata=0x922   .data=0x29c  .bss=0x14
+⇒ 两者数据段都很小，**装不下"几十个模块"的表**
+⇒ 表必然来自**运行时读取的文件或 env**
+```
+
+## ③ 但 libIMDB 里的路径字符串是**旧平台遗留**
+
+```text
+/usr/local/lib/libVssApp.so        ← 我们树里没有 /usr/local/lib
+/usr/local/lib/AdjChkConfig.so
+/usr/kmod/liro.ko
+⇒ 这些是 **CXD90047(A7C2) 平台的路径**，与 Gen5 不符
+⇒ 不能当作模块表线索
+```
+
+## ④ 因此模块表来源仍未确定（如实记录）
+
+```text
+已排除：libIMDB 数据段 / im.elf 数据段 / libIMDB 的路径字符串
+剩下可能：
+  · 从 argv 或 env 传入（bootin 组命令行时）
+  · 从 /setting 或 /usr/share 下的某个配置文件读
+  · 由 im.elf 的 rodata 里一个我还没识别的结构给出
+```
+
+## ⑤ 约束
+
+```text
+QEMU 实例   0
+基线        v286: 5755 行 / createLayer=6 / LIBOBJ_SYM=24
+```
