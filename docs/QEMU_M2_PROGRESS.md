@@ -57185,3 +57185,31 @@ grep '80820884|80820885' out/v314/serial0.log → **0 条**
 QEMU 实例   0
 基线        v314/v316: 5586~5656 行 / createLayer=6 / LIBOBJ_SYM=24
 ```
+
+## ⑧ 关于 GPE 队列号的进一步澄清（同轮）
+
+```text
+A7M5 文档原话："libgpe 生产者在 param+26 无同步位时分配原 **dynamic queue token**"
+⇒ 0x80820884/885 是**运行时动态分配的 token**，不是静态字面量
+⇒ ZV-1M2 的字面量搜索（libObj 0 处 / appFw 3 处但都是 SID 样值）**不适用**
+
+正确做法：从**运行日志里的 osal_dynamic_id 产物**去定位 GPE 队列，
+或者从 libObj 里 `SendDraw` 等价函数的实际参数去取。
+```
+
+## ⑨ 但更重要的是：这次同步给出了完整的**可执行范式**
+
+```text
+A7M5 的成功路径（原文归纳）：
+  1. 不启用真 LIRO（承认它停在启动等待）
+  2. 自建 software-owned-queue-v1：从原 OSAL 队列消费真实绘制消息
+  3. 用软件栅格（Fill/Blit/Flush）消费，写真实 DMM 页
+  4. 只有实际工作成功才发原 4B 完成
+  5. panel 输出走原 MP/OSD 提交，finally LCD
+  6. 显式 profile gate（A7M5_ACCEPT_SOFTWARE_GPE=...），默认关闭
+
+⇒ 这套范式**与判据 1 完全兼容**：消费的是"原 AP 发出的真实绘制请求"，
+  像素由软件栅格计算，但**绘制意图、几何、颜色都来自原固件**。
+```
+
+**⇒ 这正是我们该走的路，它已被同代机型验证过。**
