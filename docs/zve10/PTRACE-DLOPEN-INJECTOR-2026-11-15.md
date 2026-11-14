@@ -100,3 +100,64 @@ menu through a boot-time path, not a late inject.
 So the honest status is: **delivery is now solved, insertion timing is not.**
 The injector can be run repeatedly, and each run is a fresh `dlopen` that returns
 a handle, so if one insertion is too early or too late a second run costs nothing.
+
+## Update: the injector is now self-verifying and one-command
+
+`tools/zve10/inject/` now holds:
+
+| file | role |
+|---|---|
+| `ptinject.c` | source |
+| `ptinject.elf` | built binary, 13,168 B, NEEDED only `libc.so.6` |
+| `verify_constants.py` | re-derives every hard-coded constant from the firmware and fails if any drifted |
+| `run_inject.sh` | pushes the binary over the agent and runs it |
+
+`verify_constants.py` output against `ref_e10/usr/bin/im.elf`:
+
+```
+free@plt stub is bx lr ; nop                 OK  got=7847c046
+dlopen@plt starts add ip,pc,#0               OK  got=00c68fe2
+GOT slot 0x15188 resolves to                 OK  free
+GOT slot 0x151DC resolves to                 OK  dlopen
+direct BL/BLX call sites to 0x9000           OK  0
+SELFCHK PASS
+```
+
+That last line is the important one: `0x9000` is confirmed to be a real PLT
+entry for `free` **and** to have zero call sites, so overwriting its first four
+bytes with `BKPT` cannot disturb any live call path.
+
+## The injector now proves its own effect
+
+It no longer trusts `dlopen`'s return value alone. It counts `libnewmenu` lines
+in `/proc/<pid>/maps` before and after, and prints:
+
+```
+VERDICT LIBRARY_MAPPED            maps grew  -> the library is in the process
+VERDICT HANDLE_BUT_NOT_MAPPED     handle non-NULL but no mapping appeared
+VERDICT NOT_MAPPED                dlopen failed or was never reached
+```
+
+`maps` is kernel-owned, so this cannot be faked by the library or by the
+injector. It is the check to look at on hardware.
+
+## Repeat support exists for the timing problem
+
+`--repeat N` (up to 20) re-runs the whole attach/inject/detach cycle, one second
+apart, stopping early once `dlopen` succeeds. Since the unresolved question is
+whether a single late `dlopen` lands before or after `initSettingNode` finished
+building the tree, repeated invocations are the cheap way to cover both sides —
+each one is a fresh constructor run through `nm_try_install`.
+
+## Status
+
+Everything except the hardware run is done and checked. The camera was offline
+for this entire round (no USB device, agent unreachable), so the injector has
+still never executed. The moment it is reachable the sequence is:
+
+```
+sh tools/zve10/inject/run_inject.sh /etc/libnewmenu.so --repeat 5
+```
+
+then read `/log/newmenu.log` for `NE_MODULES` / `NE_TREE_ADDED`, and confirm the
+row on the camera screen.
