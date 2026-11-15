@@ -173,9 +173,56 @@ static struct ne_node *ne_find_own(struct ne_node *node, unsigned depth, unsigne
     }
     return NULL;
 }
+/* ---- 第二条插入路径（真机专用）----
+ *
+ * 原门禁 ne_caller_may_insert() 只接受 views_base+0x301921 这一个返回地址，
+ * 也就是原厂 CmnViewSettingNode 构造函数里那次调用。真机 im.elf 是快照恢复的
+ * 进程，菜单树早就建完，那个调用点在本进程生命周期内不会再跑，于是 hook 装好了
+ * 但 ne_add_row 永远不被调用 —— /log/newmenu.log 里 NE_ 事件数为 0 就是证据。
+ *
+ * 这里补一条不依赖该调用点的路径：进入设置页时 populate 钩子一定会被调用，
+ * 而 ne_original_populate(view) 之后 view+0x1b8 就是设置树根节点
+ * （同一次运行里 QEMU 版就是用这个等式验证 ne_root 的）。
+ * 用它作为 ne_add_row 的起点，把行补进已经建好的原生树。
+ */
+static int ne_late_attempts;
+static int ne_late_root_seen;
+#define NE_LATE_MAX 8
+
+/* 从任何一个携带设置树的视图上取根节点。不同调用点 view 的布局可能不同，
+ * 所以两条路都试：view+0x1b8（populate 已验证），以及 view 本身。 */
+static void *ne_late_root(void *view)
+{
+    void *r = (void *)ne_pointer((uintptr_t)view + 0x1b8);
+    if (r) return r;
+    return view;
+}
+
+/* 返回 1 表示本次已经消费掉这次调用（插入刚做完，聚焦留到下一次）。 */
+static int ne_late_insert(void *view)
+{
+    if (!ne_modules_installed || ne_installed || ne_late_attempts >= NE_LATE_MAX) return 0;
+    void *late_root = ne_late_root(view);
+    if (!late_root) return 0;
+    /* 只在看到真正像根节点的对象上尝试，避免对任意 widget 解引用 */
+    if (ne_late_root_seen || ne_pointer((uintptr_t)late_root) == 0) return 0;
+
+    ++ne_late_attempts;
+    ne_late_root_seen = 1;
+    int late_status = ne_add_row(late_root);
+    ne_line("NE_LATE_INSERT {\"attempt\":%d,\"root\":%u,\"status\":%d}\n",
+            ne_late_attempts, (unsigned)(uintptr_t)late_root, late_status);
+    return 1;
+}
+
 static void ne_populate_wrapper(void *view)
 {
     ne_original_populate(view);
+
+    /* 第二条插入路径：真机上原厂构造函数那个调用点不会再跑，
+     * 进入设置页时这里一定会被调用，用已建好的原生树补行。 */
+    if (ne_late_insert(view)) return;
+
     if (!ne_installed || ne_pointer((uintptr_t)view + 0x1b8) != (uintptr_t)ne_root) return;
     unsigned budget = 2048;
     struct ne_node *added = ne_find_own(ne_root, 0, &budget);
@@ -254,6 +301,9 @@ static int ne_bind_after_draw(void *view)
 }
 static void ne_main_wrapper(void *view, int *next_state, int *action)
 {
+    /* 第二条插入路径（main 版）：菜单主循环每帧都经过这里，机会远多于 populate。 */
+    ne_late_insert(view);
+
     uint32_t function = ((uint32_t (*)(void *))(object_base + 0x13a695))(view);
     uint32_t packed = __sync_fetch_and_add(&ne_packed, 0);
     if (function >= 1 && function <= 6 && function == ne_pending_function &&
