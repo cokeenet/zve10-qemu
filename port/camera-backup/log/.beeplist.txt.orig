@@ -1,0 +1,77 @@
+/* --------------------------------------------------------- */
+/* DSLR E-Mount                                              */
+/* --------------------------------------------------------- */
+
+/* FILE PATH */
+/* BeepID_Name, BeepID_Number, MemoryType, FileName, RsrcAcsType, Priority, KindID, continuous, contLength, contFirstLength */
+
+/* START */
+/usr/share/avsystemsound/
+BEEP_ID_STARTUP				0x0000	APP		None									AA_RT		1	0	0	0	0
+BEEP_ID_KA					0x0001	PIN		None									AA_RT		6	1	0	0	0
+BEEP_ID_SHA					0x0002	PIN		Dslr_Emnt_Shutter_Sha.bin				AA_RT		6	2	0	0	0
+BEEP_ID_KASHA				0x0003	PIN		Dslr_Emnt_10FPS_Kasha.bin				AA_RT		6	3	0	0	0
+BEEP_ID_FORCUSLOCK			0x0004	PIN		Dslr_Emnt_FocusLock.bin					AA_RT		3	4	0	0	0
+BEEP_ID_RECSTART			0x0005	APP		Dslr_Emnt_Rec_Start.bin					AA_FIFO		6	5	0	0	0
+BEEP_ID_RECSTOP				0x0006	APP		Dslr_Emnt_Rec_Stop.bin					AA_FIFO		6	6	0	0	0
+BEEP_ID_CAUTION				0x0007	APP		Dslr_Emnt_Caution.bin					AA_RT		5	0	0	0	0
+BEEP_ID_SELECT				0x0008	APP		Dslr_Emnt_T_Select.bin					AA_RT		2	0	0	0	0
+BEEP_ID_MOVE_DOWN			0x0009	APP		Dslr_Emnt_T_Move_Down.bin				AA_RT		2	0	0	0	0
+BEEP_ID_MOVE_UP				0x000A	APP		Dslr_Emnt_T_Move_Up.bin					AA_RT		2	0	0	0	0
+BEEP_ID_MOVE_LEFT			0x000B	APP		None									AA_RT		2	0	0	0	0
+BEEP_ID_MOVE_RIGHT			0x000C	APP		None									AA_RT		2	0	0	0	0
+BEEP_ID_SELFTIMER			0x000D	APP		Dslr_Emnt_SelfTimer_RemoteRelease.bin	AA_RT		4	0	0	0	0
+BEEP_ID_MENU_ON				0x000E	APP		Dslr_Emnt_T_Menu_Open.bin				AA_RT		2	0	0	0	0
+BEEP_ID_MENU_OFF			0x000F	APP		Dslr_Emnt_T_Menu_Close.bin				AA_RT		2	0	0	0	0
+BEEP_ID_OPTION_ON			0x0010	APP		Dslr_Emnt_Menu_Open_Option_On.bin		AA_RT		2	0	0	0	0
+BEEP_ID_OPTION_OFF			0x0011	APP		Dslr_Emnt_Menu_Close_Option_Off.bin		AA_RT		2	0	0	0	0
+BEEP_ID_JET_TOUCH			0x0012	APP		None									AA_RT		2	0	0	0	0
+BEEP_ID_JET_SENT			0x0013	APP		None									AA_RT		2	0	0	0	0
+BEEP_ID_JET_ERROR			0x0014	APP		None									AA_RT		2	0	0	0	0
+BEEP_ID_GESTURE				0x0015	APP		None									AA_RT		2	0	0	0	0
+BEEP_ID_AIR_ZOOM			0x0016	APP		None									AA_RT		2	0	0	0	0
+BEEP_ID_AIR_FOCUS			0x0017	APP		None									AA_RT		2	0	0	0	0
+BEEP_ID_TAP					0x0018	APP		Dslr_Emnt_T_Touch.bin					AA_RT		2	0	0	0	0
+BEEP_ID_MEDIA_CHANGE		0x0019	APP		None									AA_RT		2	0	0	0	0
+BEEP_ID_HELP_ON				0x001A	APP		None									AA_RT		2	0	0	0	0
+BEEP_ID_HELP_OFF			0x001B	APP		None									AA_RT		2	0	0	0	0
+BEEP_ID_SWITCH_MODE			0x001C	APP		Dslr_Emnt_Select_SwitchMode.bin			AA_RT		2	0	0	0	0
+BEEP_ID_DISABLE				0x001D	APP		None									AA_RT		2	0	0	0	0
+BEEP_ID_EVENT_ANIME_1LINE	0x001E	APP		None									AA_RT		2	0	0	0	0
+BEEP_ID_EVENT_ANIME_2LINE	0x001F	APP		None									AA_RT		2	0	0	0	0
+BEEP_ID_EVENT_ANIME_3LINE	0x0020	APP		None									AA_RT		2	0	0	0	0
+BEEP_ID_EVENT_ANIME_4LINE	0x0021	APP		None									AA_RT		2	0	0	0	0
+BEEP_ID_PULL_DOWN_ON		0x0022	APP		None									AA_RT		2	0	0	0	0
+BEEP_ID_PULL_DOWN_OFF		0x0023	APP		None									AA_RT		2	0	0	0	0
+BEEP_ID_SCROLL				0x0024	APP		None									AA_RT		2	0	0	0	0
+BEEP_ID_HOLD_ENTER			0x0025	APP		None									AA_RT		2	0	0	0	0
+BEEP_ID_BACK_CANCEL			0x0026	APP		Dslr_Emnt_Back_Cancel.bin				AA_RT		2	0	0	0	0
+BEEP_ID_BACK_CANCEL_TP		0x0027	APP		Dslr_Emnt_T_Back_Cancel.bin				AA_RT		2	0	0	0	0
+BEEP_ID_ON					0x0028	APP		Dslr_Emnt_T_On.bin						AA_RT		2	0	0	0	0
+BEEP_ID_OFF					0x0029	APP		Dslr_Emnt_T_Off.bin						AA_RT		2	0	0	0	0
+BEEP_ID_WHEEL_UP			0x002A	APP		Dslr_Emnt_Move_Up_Wheel_Up.bin			AA_RT		2	0	0	0	0
+BEEP_ID_WHEEL_DOWN			0x002B	APP		Dslr_Emnt_Move_Down_Wheel_Down.bin		AA_RT		2	0	0	0	0
+BEEP_ID_SELFTIMER_2SEC		0x002C	APP		Dslr_Emnt_SelfTimer_2sec.bin			AA_RT		4	0	0	0	0
+BEEP_ID_CLEANING			0x002D	APP		None									AA_RT		2	0	0	0	0
+BEEP_ID_RING_CW				0x002E	APP		None									AA_RT		2	0	0	0	0
+BEEP_ID_RING_CCW			0x002F	APP		None									AA_RT		2	0	0	0	0
+BEEP_ID_SND_WIFI_TOGGLE		0x0030	APP		Dslr_Emnt_Wifi_Toggle.bin				AA_RT		2	0	0	0	0
+BEEP_ID_SND_WIFI_TOGGLE_OFF	0x0031	APP		Dslr_Emnt_Wifi_Toggle_Off.bin			AA_RT		2	0	0	0	0
+BEEP_ID_SND_WPS_CONNECT		0x0032	APP		Dslr_Emnt_WPS_Connect.bin				AA_RT		2	0	0	0	0
+BEEP_ID_SND_WPS_PBC			0x0033	APP		Dslr_Emnt_WPS_PBC.bin					AA_RT		2	0	0	0	0
+BEEP_ID_SND_WPS_PUSH		0x0034	APP		Dslr_Emnt_WPS_Push.bin					AA_RT		2	0	0	0	0
+BEEP_ID_FIN_LONG_PROCESS	0x0035	APP		None									AA_RT		2	0	0	0	0
+BEEP_ID_SHUTDOWN			0x0036	APP		None									AA_RT		7	0	0	0	0
+BEEP_ID_KASHA_CONTINUOUS	0x0037	PIN		None									AA_RT		6	7	1	0	0
+BEEP_ID_BUFFERING_START		0x0038	APP		Dslr_Emnt_Rec_Start.bin					AA_FIFO		6	5	0	0	0
+BEEP_ID_BUFFERING_STOP		0x0039	APP		Dslr_Emnt_Rec_Stop.bin					AA_FIFO		6	6	0	0	0
+BEEP_ID_EXT_ONLY_RECSTART	0x003A	APP		Dslr_Emnt_Rec_Start.bin					AA_FIFO		6	5	0	0	0
+BEEP_ID_EXT_ONLY_RECSTOP	0x003B	APP		Dslr_Emnt_Rec_Stop.bin					AA_FIFO		6	6	0	0	0
+BEEP_ID_SPOT_KASHA      	0x003C	PIN		20fps_KaSha.bin							AA_RT		6	8	1	4E0	720
+BEEP_ID_SHA_2				0x003D	PIN		Dslr_Emnt_Shutter_Sha2.bin				AA_RT		6	B	0	0	0
+BEEP_ID_SHA_3				0x003E	PIN		Dslr_Emnt_Shutter_Sha3.bin				AA_RT		6	C	0	0	0
+BEEP_ID_SHA_4				0x003F	PIN		Dslr_Emnt_Shutter_Sha4.bin				AA_RT		6	D	0	0	0
+BEEP_ID_KASHA_2				0x0040	PIN		Dslr_Emnt_10FPS_Kasha2.bin				AA_RT		6	E	0	0	0
+BEEP_ID_KASHA_3				0x0041	PIN		Dslr_Emnt_10FPS_Kasha3.bin				AA_RT		6	F	0	0	0
+BEEP_ID_KASHA_4				0x0042	PIN		Dslr_Emnt_10FPS_Kasha4.bin				AA_RT		6	10	0	0	0
+/* END */
