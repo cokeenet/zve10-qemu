@@ -363,3 +363,80 @@ ZV-E10 没有这个名字，但有 InfraInput::GetPhyKeyStatus(int, _InfraInputP
 ③ 确认 GEN_Panel / GEN_Label 的构造对象大小与属性表（A6400 用 0x200/0x400 + 6 个 uint32 属性）
 ④ 确认 key 码（MENU / 放大鏡）在 ZV-E10 上的值
 ```
+
+---
+
+## 九、追加核实：对象大小与 A6400 完全一致
+
+我按 ZV-E10 原厂 libObj 反汇编，读出两个控件的构造写入范围：
+
+```text
+GEN_Panel::GEN_Panel()   写到的最大偏移 = 0x1f8
+  ⇒ 对象至少 0x1fc 字节 ⇒ **A6400 用 0x200 分配，正好够**
+  （写到的偏移：+0x15c Sprite, +0x1ec/+0x1f0/+0x1f4/+0x1f8 四个清零字段）
+
+GEN_Label::GEN_Label()   写到的最大偏移 = 0x374
+  ⇒ 对象至少 0x378 字节 ⇒ **A6400 用 0x400 分配，正好够**
+  （写到的偏移：+0x160 ID, +0x16c MultiLineTextSprite, +0x2a8 LayoutAttributeWriter,
+    +0x2cc/+0x2d0/+0x2d4/+0x2d5/+0x2d6/+0x2dc, +0x374）
+```
+
+**⇒ 这是本项研究最重要的架构证据：**
+
+```text
+**ZV-E10 与 A6400 的 WidgetSystem / GEN_Panel / GEN_Label 对象布局相同
+（连"构造写到 0x1f8"这种细节都一样）**
+⇒ 两者是同一代 UI 架构（同一份 libObj 代码族）
+⇒ A6400 Extra-Menu 的菜单构建代码**结构上可以直接移植**，
+   只需替换「API 偏移表」和「几个单例地址」
+```
+
+**A6400 的 Label 还有个特殊处理值得注意：**
+
+```text
+它构造 Label 后手工写 6 个 uint32 属性到 +0x2b4：
+  {0x02076000, 0x0207a00f, 0x0207a000, 0x02066027, 0x02076002, 0xffffffff}
+第 5 个（0x02076002）是字体资源 ID；第 6 个写 0xffffffff 表示"未设置"。
+注释说：原代码第 6 项是 0x0100061d（某次运行期的覆盖值），
+现在不存在了，原字体解析器会拒绝它，所以要保留构造函数未设置的第六项。
+⇒ 我们移植时也要按 ZV-E10 的真实字体资源 ID 重做这张表
+```
+
+---
+
+## 十、完整移植清单（可执行）
+
+### 需要重算的东西
+
+| 项目 | A6400 值 | 获取方式 |
+|---|---|---|
+| API 偏移表（18 项） | BASE+0x5ed5ad 等 | **我们已有全部地址**（见第五节表格） |
+| `BASE` | 0x05d18000 | 运行时从 dlsym 得到的指针减偏移反推 |
+| `UI_SYSTEM`（WidgetSystem 单例） | 0x956f0（硬编码） | `sys_getInstance()` 运行时取 |
+| `KEY_INSTANCE_SLOT` | 0x0713dad0 | 需运行时探测，或直接用 `InfraInput::GetInstance` |
+| keys 单例 | 0x59150 | 用 `InfraInput::GetInstanceEv` 替代 |
+| key 码 MENU / 放大鏡 | 0x1ab / 0x70dc | 需实测 |
+| Label 字体属性表 | 6 个 uint32 | 需从 ZV-E10 libObj 反查字体资源 ID |
+| 面板颜色结构 | `stella::CColor` | 我们也有（+0x164388） |
+
+### 可原样复用的东西
+
+```text
+✓ camera/film_menu.c / film_menu.h        —— 纯逻辑，零依赖
+✓ camera/film_native_view.c / .h          —— 状态机桥
+✓ camera/test_film_menu.c / test_film_native_view.c —— 单元测试
+✓ 建菜单的 10 步顺序（createLayer → Panel/Label → ticker）
+✓ vtable 克隆技巧（memcpy(original-2) 后改 slot 34）
+✓ 触摸枚举语义（5=按下 6=松开，不是布尔）
+✓ trial 时限 + 外部停止位设计
+```
+
+### 完全不需要的东西（因为我们的注入点更好）
+
+```text
+✗ native_freeze.h / native_ui_load_guard.c（ptrace 冻结写入器）
+✗ native_ui_load_payload.c / native_ui_trampoline.S / native_ui_payload.ld
+✗ 12 字节跳板替换
+⇒ 我们有 InfraInput::SetCallback，直接注册回调即可，
+   **不改任何代码字节、不冻结任何线程**
+```
