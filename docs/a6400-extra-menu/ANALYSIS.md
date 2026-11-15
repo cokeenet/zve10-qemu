@@ -301,3 +301,65 @@ ZV-E10：libObj 里同一个函数是 0x616fe4（sys_getInstance），不是 0x5
 ? ZV-E10 上是否存在与 mt_original_release 等价的"每帧/每输入回调"可挂
    —— 这是整个方案的注入点，**必须先找到**
 ```
+
+---
+
+## 八、追加核实：我们这边的注入点比 A6400 更干净
+
+### 8.1 A6400 的注入点（回顾）
+
+```text
+它必须把 mt_original_release 的头 12 字节换成跳板（改 im.elf 的 RAM 代码）
+⇒ 因为 A6400 没有可注册的公开回调
+```
+
+### 8.2 ZV-E10 有 `InfraInput::SetCallback` —— 不用改代码字节
+
+我在本机 ZV-E10 原厂 libObj 里核实到：
+
+```text
+_ZN10InfraInput11GetInstanceEv                0x8c22a0
+_ZN10InfraInput11SetCallbackEPiPFviP16_InfraInputEventE   0x8c2824
+_ZN10InfraInput10RmCallbackEi                 0x8c189c
+_ZN10InfraInput15GetPhyKeyStatusEiP21_InfraInputPhyKeyData  0x8c199c
+_ZN10InfraInput14GetEventStatusEiiP16_InfraInputEvent      0x8c2a00
+_ZN10InfraInput14RmEventKeyListEiP18_InfraInputKeyListi    0x8c3454
+_ZN10InfraInput15SetEventKeyListEiP18_InfraInputKeyListi   0x8c3540
+_ZN10InfraInput15ReleaseInstanceEv           0x8c1810
+_ZN10InfraInput17SendEventInitDataEi         0x8c2b28
+_ZN10InfraInput9GetKeyInhEi                  0x8c2d0e
+_ZN10InfraInput9SetKeyInhEib                 0x8c2e94
+_ZN10InfraInput9SetOsalIdEPii                0x8c27b8
+```
+
+**⇒ `SetCallback(int*, PFviP16_InfraInputEvent)` 意味着我们可以：
+  注册一个自己的按键回调，由原生输入服务每来一个事件就调一次。
+  **完全不需要改任何代码字节、不需要 ptrace、不需要冻结线程。**
+
+**这比 A6400 的跳板注入方式安全一个数量级。**
+
+### 8.3 同时 A6400 缺的那个 API 我们也有
+
+```text
+A6400 用 InfraInput::GetPhyKeyStatusCache(int, _InfraInputPhyKeyData*)
+ZV-E10 没有这个名字，但有 InfraInput::GetPhyKeyStatus(int, _InfraInputPhyKeyData*)
+  ⇒ 功能等价，只是少了 "Cache" 的语义差别，需要实测确认
+```
+
+### 8.4 因此 ZV-E10 的移植方案可以简化
+
+| 环节 | A6400 做法 | ZV-E10 可用的更简做法 |
+|---|---|---|
+| 拿到回调时机 | 改 mt_original_release 头 12 字节 + ptrace 写入 | **`InfraInput::SetCallback` 直接注册** |
+| 版本校验 | 硬编码 BASE+offset 断言 | 同样可做（我们有符号名，dlsym 后比偏移） |
+| 建菜单 | WidgetSystem::createLayer + Panel/Label | **完全相同，18/19 API 齐备** |
+| 输入 | 读 GetPhyKeyStatusCache | `GetPhyKeyStatus` 或回调里直接收事件 |
+| 退出 | trial 时限 + setActive(0) | 相同 |
+
+**⇒ 我们的工作量主要在：**
+```text
+① 重建 API 偏移表（18 个符号，我们已有地址）
+② 找到 WidgetSystem 单例与 UI 线程（createLayer 必须在 UI 线程调）
+③ 确认 GEN_Panel / GEN_Label 的构造对象大小与属性表（A6400 用 0x200/0x400 + 6 个 uint32 属性）
+④ 确认 key 码（MENU / 放大鏡）在 ZV-E10 上的值
+```
