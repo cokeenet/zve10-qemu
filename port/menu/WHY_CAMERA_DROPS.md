@@ -107,3 +107,68 @@ bootin 是 pid 149，**ppid = 1**（launch_shell）。
   MALLOC_MMAP_THRESHOLD_=32768  MALLOC_TRIM_THRESHOLD_=32768  LT_ABORTREASON=0
   cwd = /usr/share/app
 ```
+
+---
+
+## 七、实测确认：两次都是杀 bootin 导致断网
+
+```text
+第 1 次 23:33 → 23:44 回来（约 11 分钟）
+第 2 次 23:58 → 至今（>8 分钟未回）
+⇒ **两次都发生在 kill bootin(149) 之后**
+⇒ 因果关系明确
+```
+
+## 八、已修改的菜单库（v3）
+
+上一版 `menu_ui.so` 有三个致命问题，v3 全部修正：
+
+| 问题 | v1（失败版） | v3（当前） |
+|---|---|---|
+| 构造函数阻塞 | `sleep(10)` ⇒ 卡住 im.elf 启动 ⇒ watchdog 杀 | **`pthread_create` + `pthread_detach`，立刻返回** |
+| 找不到符号 | `dlsym(RTLD_DEFAULT)` ⇒ 返回 NULL（libObj 是 RTLD_LOCAL） | **`dlopen()` 拿 handle，再用 `dlsym(handle)`** |
+| 跨进程无效 | `fork()` ⇒ 子进程改的是地址空间副本 ⇒ 画不到屏幕 | **`pthread`（同地址空间）** |
+
+**验证（`zprobe.elf` 实测）：**
+```text
+dlsym(handle) 6/6 全部找到符号：
+  sys_getInstance = 0x5450fe5
+  genID           = 0x5476bbd
+  createLayer     = 0x54511fd
+  Layer::setActive= 0x544f3e3
+  GEN_Panel       = 0x4f9e451
+  GEN_Label       = 0x4f4fbb1
+推导 base = 0x4e3a000（页面对齐 ✓）
+```
+
+**但同一进程里 `sys_getInstance()` 返回 NULL**
+```text
+⇒ 因为那个进程是新 dlopen 的 libObj，单例从没被初始化
+⇒ **必须在 im.elf 里面**（那里单例已初始化）
+⇒ v3 用 pthread（同进程）是对的
+```
+
+## 九、新的安全启动方式（`launch_direct.sh`）
+
+```sh
+export HOME=/ TERM=linux PATH=... TOPRC=/etc/toprc
+export MALLOC_OPTIONS=gfffffffff MALLOC_MMAP_THRESHOLD_=32768 MALLOC_TRIM_THRESHOLD_=32768
+export LD_PRELOAD=/log/menu_ui.so      # ← 只在这次进程里生效
+cd /usr/share/app
+/usr/bin/im.elf debug s g r u l i a lazy-global &
+```
+
+**关键优点：**
+```text
+✓ 不杀 bootin（不会断网）
+✓ 不改 dmode / preload（零持久化改动）
+✓ LD_PRELOAD 只在这次进程生效，进程退出即消失
+✓ 若第二个 im.elf 起不来，什么都不用回滚，相机照常
+✗ 唯一风险：两个 im.elf 同时跑可能抢 UI 资源
+```
+
+**→ 所以更稳的做法还是先杀掉原来的 im.elf，但**保留 bootin**：
+```sh
+kill im.elf  →  sleep 2  →  LD_PRELOAD=... im.elf ... &
+```
+这样 bootin 一直在，Wi-Fi 不会断，而新的 im.elf 带着我们的库。
