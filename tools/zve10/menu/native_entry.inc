@@ -208,15 +208,23 @@ static int ne_late_insert(void *view)
     if (ne_late_root_seen || ne_pointer((uintptr_t)late_root) == 0) return 0;
 
     ++ne_late_attempts;
-    ne_late_root_seen = 1;
     int late_status = ne_add_row(late_root);
+    if (late_status == 0) ne_late_root_seen = 1;   /* 只有成功才锁定 root */
     ne_line("NE_LATE_INSERT {\"attempt\":%d,\"root\":%u,\"status\":%d}\n",
             ne_late_attempts, (unsigned)(uintptr_t)late_root, late_status);
     return 1;
 }
 
+static int ne_populate_hits, ne_main_hits;
+
 static void ne_populate_wrapper(void *view)
 {
+    if (ne_populate_hits < 3) {
+        ++ne_populate_hits;
+        ne_line("NE_POPULATE_CALLED {\"n\":%d,\"view\":%u,\"root\":%u}\n",
+                ne_populate_hits, (unsigned)(uintptr_t)view,
+                (unsigned)ne_pointer((uintptr_t)view + 0x1b8));
+    }
     ne_original_populate(view);
 
     /* 第二条插入路径：真机上原厂构造函数那个调用点不会再跑，
@@ -301,6 +309,11 @@ static int ne_bind_after_draw(void *view)
 }
 static void ne_main_wrapper(void *view, int *next_state, int *action)
 {
+    if (ne_main_hits < 3) {
+        ++ne_main_hits;
+        ne_line("NE_MAIN_CALLED {\"n\":%d,\"view\":%u,\"vptr\":%u}\n",
+                ne_main_hits, (unsigned)(uintptr_t)view, ui_u32(view));
+    }
     /* 第二条插入路径（main 版）：菜单主循环每帧都经过这里，机会远多于 populate。 */
     ne_late_insert(view);
 

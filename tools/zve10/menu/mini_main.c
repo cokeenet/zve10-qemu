@@ -737,3 +737,33 @@ static void nm_boot(void)
 }
 
 
+
+/* ---- 供 ptrace 注入器调用的导出入口 ----
+ *
+ * 真机上 im.elf 是快照恢复进程，菜单树早已建好，插入路径必须靠"菜单被打开"
+ * 才能触发。与其等人工按键，不如由 agent 直接投递原厂功能键事件：
+ * 这正是 QEMU 版验证过的那条路（event id = (0x13000000, 0xba, function)）。
+ *
+ * 这两个函数由注入器在目标进程里直接调用（r0=参数，陷阱抓返回）。
+ */
+__attribute__((visibility("default")))
+int nm_press(unsigned function)
+{
+    if (!nm_installed) return -1;
+    return ne_post_function(1u, (uint32_t)function);
+}
+
+__attribute__((visibility("default")))
+int nm_status(unsigned *out)
+{
+    if (!out) return -1;
+    out[0] = (unsigned)object_base;
+    out[1] = (unsigned)views_base;
+    out[2] = ne_modules_installed;
+    out[3] = ne_installed;
+    out[4] = (unsigned)ne_late_attempts;
+    out[5] = (unsigned)ne_title_sets;
+    out[6] = (unsigned)ne_entries;
+    out[7] = (unsigned)ne_exits;
+    return 0;
+}
